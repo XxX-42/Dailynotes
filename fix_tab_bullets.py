@@ -4,11 +4,11 @@ from config import Config
 
 def fix_tab_bullets():
     target_dir = Config.DAILY_NOTE_DIR
-    # Regex Explanation:
-    # ^(\t+)  : Start of line, one or more Tabs (Group 1)
-    # -       : Hyphen
-    # (?![ \t]) : Negative lookahead for Space or Tab. 
-    #             (Replaces user suggestion (?!\s) to ensure it matches \n at EOL)
+    # 正则解释：
+    # ^(\t+)  : 行首，一个或多个制表符（组 1）
+    # -       : 连字符
+    # (?![ \t]) : 空格或制表符的否定前瞻。
+    #             （替换用户建议的 (?!\s) 以确保匹配 EOL 处的 \n）
     pattern = re.compile(r'^(\t+)-(?![ \t])', re.MULTILINE)
     
     fixed_count = 0
@@ -27,7 +27,7 @@ def fix_tab_bullets():
             with open(filepath, 'r', encoding='utf-8') as f:
                 content = f.read()
             
-            # Sub logic: r'\1- ' means "Group 1 (Tabs) + Hyphen + Space"
+            # 替换逻辑：r'\1- ' 意味着 "组 1 (制表符) + 连字符 + 空格"
             new_content = pattern.sub(r'\1- ', content)
             
             if new_content != content:

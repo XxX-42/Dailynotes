@@ -1,7 +1,7 @@
 import sys
 import os
 
-# Ensure we can import from current directory
+# 确保我们可以从当前目录导入
 sys.path.append(os.getcwd())
 
 try:
@@ -13,16 +13,16 @@ except ImportError as e:
 class MockStateManager:
     pass
 
-# Instantiate real SyncCore with mock SM
+# 使用模拟 SM 实例化真实的 SyncCore
 scanner = SyncCore(MockStateManager())
 
-# Overwrite capture_block? No, I want to test the REAL one.
-# SyncCore.capture_block is what I modified.
+# 覆盖 capture_block？不，我想测试真实的那个。
+# SyncCore.capture_block 是我修改过的。
 
 print("--- Test Case: Header Swallowing (Real SyncCore) ---")
-# Scenario: Task -> Empty Line -> Header (maybe indented?)
-# If Header is NOT indented, get_indent=0. If base_indent=0. 0 > 0 False. Breaks.
-# If Header IS indented?
+# 场景：任务 -> 空行 -> 标题（可能有缩进？）
+# 如果标题未缩进，get_indent=0。如果 base_indent=0。0 > 0 False。中断。
+# 如果标题已缩进？
 lines = [
     "- [ ] Task 1",
     "",

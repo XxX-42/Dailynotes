@@ -16,7 +16,7 @@ class StateManager:
     def load(self):
         backup_file = Config.STATE_FILE + ".bak"
         
-        # 1. Try Main File
+        # 1. 尝试主文件
         if os.path.exists(Config.STATE_FILE):
             try:
                 with open(Config.STATE_FILE, 'r', encoding='utf-8') as f:
@@ -25,7 +25,7 @@ class StateManager:
             except Exception:
                 Logger.error_once("state_load_main", "主状态文件损坏，尝试读取备份...")
         
-        # 2. Try Backup File
+        # 2. 尝试备份文件
         if os.path.exists(backup_file):
             try:
                 with open(backup_file, 'r', encoding='utf-8') as f:
@@ -35,7 +35,7 @@ class StateManager:
             except Exception:
                 Logger.error_once("state_load_bak", "备份文件也损坏！")
         
-        # 3. Total Failure -> Reset
+        # 3. 完全失败 -> 重置
         if os.path.exists(Config.STATE_FILE) or os.path.exists(backup_file):
             print("\033[91m[CRITICAL] 状态文件严重损坏，且无法恢复！已重置为空状态。\033[0m")
         
@@ -43,14 +43,14 @@ class StateManager:
 
     def save(self):
         try:
-            # 1. Create Backup first (Safeguard)
+            # 1. 先创建备份（安全保障）
             if os.path.exists(Config.STATE_FILE):
                 try:
                     shutil.copy2(Config.STATE_FILE, Config.STATE_FILE + ".bak")
                 except OSError:
-                    pass # Backup fail should not stop main save
+                    pass # 备份失败不应阻止主保存
             
-            # 2. Write new state
+            # 2. 写入新状态
             with open(Config.STATE_FILE, 'w', encoding='utf-8') as f:
                 json.dump(self.state, f, ensure_ascii=False, indent=2)
         except Exception as e:
@@ -71,47 +71,47 @@ class StateManager:
 
     def normalize_text(self, text):
         """
-        [HASH NORM] Standardize text for fingerprinting.
-        1. Remove dates/time links
-        2. Unify whitespace (Tab/Space -> Single Space)
-        3. Unicode Normalization (NFKC)
+        [哈希规范化] 为指纹识别标准化文本。
+        1. 移除日期/时间链接
+        2. 统一空白 (制表符/空格 -> 单个空格)
+        3. Unicode 规范化 (NFKC)
         """
         if not text: return ""
         
-        # 1. Unicode Normalization (Full Compatibility)
-        # Converts full-width chars to half-width, decomposes encoding variations
+        # 1. Unicode 规范化 (完全兼容)
+        # 将全角字符转换为半角，分解编码变体
         text = unicodedata.normalize('NFKC', text)
         
-        # 2. Aggressively Strip Date Patterns (Links & Plain)
+        # 2. 激进地剥离日期模式 (链接和纯文本)
         # [[YYYY-MM-DD]], [[YYYY-MM-DD|...]], YYYY-MM-DD
         text = re.sub(r'\[\[\d{4}-\d{2}-\d{2}(?:\|.*?)?\]\]', '', text)
         text = re.sub(r'\d{4}-\d{2}-\d{2}', '', text)
         
-        # 3. Strip Time Patterns
+        # 3. 剥离时间模式
         # HH:MM - HH:MM, HH:MM
         text = re.sub(r'\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}', '', text)
         text = re.sub(r'\d{1,2}:\d{2}', '', text)
         
-        # 4. Strip Block IDs/Metadata (often sources of noise)
-        # [FIX] Stricter ID Regex: Space + ^ + 6-7 alphanum + End
+        # 4. 剥离块 ID/元数据（通常是噪声源）
+        # [修复] 更严格的 ID 正则：空格 + ^ + 6-7 个字母数字 + 结尾
         text = re.sub(r'(?<=\s)\^[a-zA-Z0-9]{6,7}\s*$', '', text)
         
-        # 5. Compress Whitespace
-        # \s captures [ \t\n\r\f\v], so this unifies ALL whitespace into single space
+        # 5. 压缩空白
+        # \s 捕获 [ \t\n\r\f\v]，因此这将所有空白统一为单个空格
         text = re.sub(r'\s+', ' ', text).strip()
         
         return text
 
     def calc_hash(self, status, content_text):
         """
-        Calculates a Stable Content Hash.
-        Input 'content_text' can be "Pure Text" or "Combined Text" (Text + Children).
+        计算稳定的内容哈希。
+        输入 'content_text' 可以是 "纯文本" 或 "组合文本" (文本 + 子项)。
         """
         # Normalize the content thoroughly
         norm_content = self.normalize_text(content_text)
         
-        # Combined Fingerprint: Status + Normalized Content
-        # Status usually strict (x, space, /, -), but let's strip it too just in case
+        # 组合指纹：状态 + 规范化内容
+        # 状态通常严格 (x, 空格, /, -)，但为了以防万一，我们也剥离它
         norm_status = status.strip()
         
         raw_fingerprint = f"{norm_status}|{norm_content}"

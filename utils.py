@@ -23,12 +23,12 @@ class Logger:
 
     @staticmethod
     def info(message, date_tag=None):
-        # [FEATURE] Focused Logging: Only show logs for today (Current File)
+        # [特性] 聚焦日志：仅显示今天的日志（当前文件）
         t = datetime.datetime.now().strftime('%H:%M:%S')
         today_str = datetime.date.today().strftime('%Y-%m-%d')
         
         if date_tag and date_tag != today_str:
-            return # Skip history logs to reduce noise
+            return # 跳过历史日志以减少干扰
             
         prefix = f"[{date_tag}] " if date_tag else ""
         print(f"\033[92m[{t} INFO] {prefix}{message}\033[0m")
@@ -66,13 +66,13 @@ class FileUtils:
 
     @staticmethod
     def write_file(filepath, lines_or_content):
-        # [ATOIMC] Uses tempfile + os.replace to ensure atomic writes
+        # [原子性] 使用 tempfile + os.replace 以确保原子写入
         dir_name = os.path.dirname(filepath) or '.'
         temp_name = None
         
         try:
-            # Create temp file in same directory (required for atomic rename)
-            # delete=False because we want to rename it, not have it deleted on close
+            # 在同一目录中创建临时文件（原子重命名所需）
+            # delete=False 因为我们想要重命名它，而不是在关闭时删除它
             with tempfile.NamedTemporaryFile('w', dir=dir_name, delete=False, encoding='utf-8') as tf:
                 temp_name = tf.name
                 
@@ -83,17 +83,17 @@ class FileUtils:
                 else:
                     tf.write(str(lines_or_content))
                 
-                # Flush and fsync to ensure data is physically written
+                # 刷新并 fsync 以确保数据物理写入
                 tf.flush()
                 os.fsync(tf.fileno())
             
-            # Atomic swap
+            # 原子交换
             os.replace(temp_name, filepath)
             return True
             
         except Exception as e:
             Logger.error_once(f"write_{filepath}", f"写入失败 {filepath}: {e}")
-            # Cleanup temp file if it exists
+            # 如果临时文件存在，则清理
             if temp_name and os.path.exists(temp_name):
                 try:
                     os.remove(temp_name)

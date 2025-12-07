@@ -8,8 +8,8 @@ class FormatCore:
     @staticmethod
     def _enforce_hyphen_space(line: str, context: str = "", filename: str = "") -> str:
         """
-        [NEUTERED] Originally used to force "- " format, but caused infinite loops.
-        Now delegated to 'fix_broken_tab_bullets_global' for safer batch processing.
+        [已阉割] 最初用于强制 "- " 格式，但导致了无限循环。
+        现在委托给 'fix_broken_tab_bullets_global' 进行更安全的批处理。
         """
         return line
 
@@ -68,7 +68,7 @@ class FormatCore:
         for line in lines:
             if not line.strip(): continue
             
-            # [BRUTE FORCE] Enforce Standard List Syntax FIRST
+            # [暴力] 首先强制标准列表语法
             line = cls._enforce_hyphen_space(line, context=context, filename=filename)
             
             if task_start_pattern.match(line.strip()):
@@ -99,7 +99,7 @@ class FormatCore:
         if not lines: return ""
         groups = {1: [], 2: [], 3: [], 4: []}
         for line in lines:
-            # [BRUTE FORCE] Enforce Standard List Syntax
+            # [暴力] 强制标准列表语法
             line = cls._enforce_hyphen_space(line, context=context, filename=filename)
                     
             cleaned = line.strip()
@@ -187,7 +187,7 @@ class FormatCore:
         fname = os.path.basename(filepath)
         c = cls.sort_markdown_sections(c, filename=fname)
         
-        # Ensure final newline
+        # 确保最后的换行符
         c = c.strip() + "\n"
 
         new_hash = hashlib.md5(c.encode('utf-8')).hexdigest()
@@ -199,14 +199,14 @@ class FormatCore:
     @staticmethod
     def fix_broken_tab_bullets_global():
         r"""
-        [GLOBAL FIX] Scan and fix 'Tab-Hyphen-NoSpace' pattern globally.
-        Regex: ^(\t+)-(?!\s) -> \1- 
-        Target: \t-Text -> \t- Text
-        Ignores: \t- (EOL) due to (?!\s) checks for NON-whitespace (newline is whitespace)
+        [全局修复] 全局扫描并修复 'Tab-Hyphen-NoSpace' 模式。
+        正则：^(\t+)-(?!\s) -> \1- 
+        目标：\t-Text -> \t- Text
+        忽略：\t- (EOL) 因为 (?!\s) 检查非空白字符（换行符是空白字符）
         """
         if not os.path.exists(Config.DAILY_NOTE_DIR): return
 
-        # Regex: Start of line, Tabs, Hyphen, followed by NON-Whitespace
+        # 正则：行首，制表符，连字符，后跟非空白字符
         pattern = re.compile(r'(?m)^(\t+)-(?!\s)')
 
         for filename in os.listdir(Config.DAILY_NOTE_DIR):

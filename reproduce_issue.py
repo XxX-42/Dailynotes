@@ -1,6 +1,6 @@
 import re
 
-# Mocking SyncCore methods for isolation
+# 为了隔离而模拟 SyncCore 方法
 class MockSyncCore:
     def format_line(self, indent, status, text, dates, fname, bid, is_daily):
         tab_count = indent // 4 
@@ -17,8 +17,8 @@ class MockSyncCore:
         
         children = []
         for line in sd['raw'][1:]:
-            # [Logic from sync_core.py]
-            # Remove '> ' prefix and leading spaces to get pure content
+            # [逻辑来自 sync_core.py]
+            # 移除 '> ' 前缀和前导空格以获取纯内容
             child_clean = re.sub(r'^[\s>]+', '', line).rstrip('\n\r')
             
             trimmed_content = child_clean.strip()
@@ -68,26 +68,26 @@ class MockSyncCore:
 scanner = MockSyncCore()
 
 
-# Test Data 2: Indented Empty Lines
+# 测试数据 2：缩进的空行
 source_lines_2 = [
     "> - [ ] Parent",
     ">     - Child 1",
-    ">     ",  # Indented empty line
-    ">     "   # Another indented empty line
+    ">     ",  # 缩进的空行
+    ">     "   # 另一个缩进的空行
 ]
 
 print("\n--- Test 2: Indented Empty Lines ---")
-# 1. Clean
+# 1. 清理
 clean_lines = scanner.aggressive_callout_clean(list(source_lines_2))
 print("Cleaned Lines:")
 for l in clean_lines: print(repr(l))
 
-# 2. Capture (on Cleaned)
+# 2. 捕获（在清理后）
 raw_block = scanner.capture_block_mock(clean_lines, 0)
 print("Captured:")
 for l in raw_block: print(repr(l))
 
-# 3. Reconstruct
+# 3. 重建
 sd = {'fname': 'Test', 'bid': 'x', 'status': ' ', 'pure': 'P', 'indent': 0, 'raw': raw_block}
 daily_lines = scanner.reconstruct_daily_block(sd, "Date")
 print("Reconstructed:")

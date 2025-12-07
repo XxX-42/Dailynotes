@@ -15,15 +15,15 @@ class MockStateManager:
 print("\n=== VERIFICATION: SyncCore Critical Fixes ===")
 sync = SyncCore(MockStateManager())
 
-# --- Test 1: Ping-Pong Loop (Ghost Bullets) ---
+# --- 测试 1: Ping-Pong 循环（幽灵子弹）---
 print("\n[Test 1] Ghost Bullet Filtering")
 print("Input Block: Normal line, Empty line, Dash line, Dash-Space line")
 block = [
     "- [ ] Normal Task",
-    "",        # Empty
-    "-",       # Just dash
-    "- ",      # Dash space
-    "  - "     # Indented dash space
+    "",        # 空
+    "-",       # 仅连字符
+    "- ",      # 连字符空格
+    "  - "     # 缩进连字符空格
 ]
 normalized = sync.normalize_block_content(block)
 print(f"Normalized Block Content: {repr(normalized)}")
@@ -33,7 +33,7 @@ if normalized == "Normal Task":
 else:
     print(f"FAIL: Ghost bullets remain! Got: {repr(normalized)}")
 
-# Test Child Normalization
+# 测试子项标准化
 print("Input Children: ['- Child', '', '- ', '-']")
 children = sync.normalize_child_lines(['- Child', '', '- ', '-'], 0, as_quoted=False)
 print("Normalized Children output:")
@@ -45,12 +45,12 @@ else:
     print(f"FAIL: Children not filtered correctly. Len={len(children)}")
 
 
-# --- Test 2: Header Swallowing ---
+# --- 测试 2: 标题吞噬 ---
 print("\n[Test 2] Header Swallowing (Neutered Cleanup)")
 lines_with_header = [
     "# Day planner\n",
     "\n",
-    "## [[Project A]]",   # Empty header
+    "## [[Project A]]",   # 空标题
     "\n",
     "# Journey\n"
 ]
@@ -68,23 +68,23 @@ else:
     print("FAIL: Header was deleted!")
 
 
-# --- Test 3: Format Collapse (Conservative Clean) ---
+# --- 测试 3: 格式崩溃保护（保守清理）---
 print("\n[Test 3] Format Collapse protection")
 raw_line = "  - [ ] [[Project|Link]] Task Name ^123456"
 print(f"Raw: '{raw_line}'")
 
-# Old aggressive clean would strip 'Link' or maybe do weird things? 
-# We just want to check if it's cleaner now.
+# 旧的激进清理会剥离 'Link' 或者可能做一些奇怪的事情？
+# 我们只想检查现在是否更干净。
 cleaned = sync.clean_task_text(raw_line, "123456", "Project")
 print(f"Cleaned: '{cleaned}'")
 
-# Expected: "Task Name" (Link removed because context matches, Status removed, ID removed)
+# 预期："Task Name"（链接已移除因为上下文匹配，状态已移除，ID 已移除）
 if cleaned == "Task Name":
     print("PASS: Cleaned correctly.")
 else:
     print(f"FAIL: Cleaned text unexpected: '{cleaned}'")
 
-# Check regex for space preservation
+# 检查正则是否保留空格
 raw_spaced = "- [ ] Task  With   Spaces"
 cleaned_spaced = sync.clean_task_text(raw_spaced)
 print(f"Cleaned Spaced: '{cleaned_spaced}'")
@@ -93,12 +93,12 @@ if "Task  With   Spaces" in cleaned_spaced:
 else:
     print("FAIL: Internal spaces collapsed.")
 
-# --- Test 4: Format Loop Fix (Neutered _enforce_hyphen_space) ---
+# --- 测试 4: 格式循环修复（阉割版 _enforce_hyphen_space）---
 print("\n[Test 4] Format Loop Fix (Neutered _enforce_hyphen_space)")
 from format_core import FormatCore
 
-# Case A: "-Text" (Should be LEFT ALONE by this function now)
-# The brute force is gone. It relies on Global Cleaner now.
+# 情况 A: "-Text"（现在该函数应保持原样）
+# 暴力方式已移除。现在依赖于全局清理器。
 bad_hyphen = "\t-Text"
 fixed_hyphen = FormatCore._enforce_hyphen_space(bad_hyphen)
 print(f"Input: '{bad_hyphen}' -> Output: '{fixed_hyphen}'")
@@ -107,7 +107,7 @@ if fixed_hyphen == bad_hyphen:
 else:
     print(f"FAIL: Function still modifying text! Got '{fixed_hyphen}'")
 
-# Case B: "\t-" (Should be IGNORED)
+# 情况 B: "\t-"（应被忽略）
 empty_hyphen = "\t-"
 fixed_empty = FormatCore._enforce_hyphen_space(empty_hyphen)
 print(f"Input: '{empty_hyphen}' -> Output: '{fixed_empty}'")

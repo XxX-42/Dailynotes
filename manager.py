@@ -21,31 +21,31 @@ class FusionManager:
 
     def process_all_dates(self):
         today_str = datetime.date.today().strftime('%Y-%m-%d')
-        # [MODIFIED] Only process TODAY's note as requested for this debugging phase
-        # Or priority processing.
-        # User request: "只检测今天的日记" (Only check today's diary)
+        # [已修改] 应此调试阶段的要求，仅处理今天的日记
+        # 或优先处理。
+        # 用户请求："只检测今天的日记"
         
         all_dates = {today_str}
         
-        # Original logic scanned all, but user wants to focus on today to reduce noise.
-        # However, we must ensure Source tasks for other dates are monitored if they change.
-        # But for *formatting alerts* which are noisy, restricting to Today is useful.
+        # 原始逻辑扫描所有内容，但用户希望专注于今天以减少干扰。
+        # 但是，如果其他日期的源任务发生变化，我们必须确保对其进行监控。
+        # 但对于嘈杂的 *格式化警报*，限制为今天很有用。
         
-        # Let's check if we should restrict strictly.
-        # "Your console output is spamming. Only check today's diary."
-        # OK, I will filter the loop below.
+        # 让我们检查是否应该严格限制。
+        # "你的控制台输出正在刷屏。只检查今天的日记。"
+        # 好的，我将过滤下面的循环。
 
-        # source_data_by_date contains keys for valid tasks found.
-        # Use full data but filter execution.
+        # source_data_by_date 包含找到的有效任务的键。
+        # 使用完整数据但过滤执行。
         
         source_data_by_date = self.sync_core.scan_all_source_tasks()
         
-        # Override all_dates to ONLY be Today
+        # 将 all_dates 覆盖为仅今天
         all_dates = {today_str}
-        # [STRICT] Skip scanning other daily files
-        # for f in daily_files: ... (Removed)
+        # [严格] 跳过扫描其他每日文件
+        # for f in daily_files: ... (已移除)
         
-        # Ensure we only process today_str
+        # 确保我们只处理 today_str
         all_dates = {today_str}
 
         for date_str in all_dates:
@@ -74,7 +74,7 @@ class FusionManager:
         # 移除这里的 ProcessLock.acquire()，因为 main.py 已经处理过了
         # 移除原本的 print 头部信息，main.py 已经打印过了
         
-        # [Graceful Shutdown] Capture SIGTERM to ensure 'finally' block runs
+        # [优雅关闭] 捕获 SIGTERM 以确保 'finally' 块运行
         def _term_handler(signum, frame):
             raise SystemExit("Received SIGTERM")
             
@@ -82,12 +82,12 @@ class FusionManager:
         
         try:
             while True:
-                # [FIX] Global Cleanup Cycle (Pre-Sync)
+                # [修复] 全局清理周期（同步前）
                 FormatCore.fix_broken_tab_bullets_global()
 
                 self.process_all_dates()
                 
-                # [FIX] Global Cleanup Cycle (Post-Sync)
+                # [修复] 全局清理周期（同步后）
                 FormatCore.fix_broken_tab_bullets_global()
                 
                 time.sleep(Config.TICK_INTERVAL)

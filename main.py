@@ -28,11 +28,11 @@ if __name__ == "__main__":
             try:
                 os.kill(old_pid, signal.SIGTERM)
                 
-                # [Graceful Shutdown] Give it 3 seconds to save state and expire
+                # [优雅关闭] 给它 3 秒时间保存状态并退出
                 for _ in range(30): # 30 * 0.1s = 3s
                     time.sleep(0.1)
                     try:
-                        os.kill(old_pid, 0) # Check if alive
+                        os.kill(old_pid, 0) # 检查是否存活
                     except OSError:
                         print("   原进程已优雅退出。")
                         break

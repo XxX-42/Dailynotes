@@ -2,7 +2,7 @@ import os
 import signal
 import sys
 
-# Ensure imports work
+# 确保导入工作
 sys.path.append(os.getcwd())
 from config import Config
 from utils import ProcessLock
@@ -20,7 +20,7 @@ def kill_cleanly():
         except Exception as e:
             print(f"Error killing process: {e}")
         
-        # Clean up lock file to be sure
+        # 清理锁文件以确保万无一失
         if os.path.exists(Config.LOCK_FILE):
              os.remove(Config.LOCK_FILE)
              print("Lock file removed.")

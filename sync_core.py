@@ -90,6 +90,13 @@ class SyncCore:
         j = start_idx + 1
         while j < len(lines):
             nl = lines[j]
+            
+            # [FIX] Boundary Guards: Immediate Stop for Headers or Dividers
+            # Even if they are indented, they should probably break the block context
+            stripped_check = nl.lstrip()
+            if stripped_check.startswith('#'): break
+            if stripped_check.startswith('---'): break
+
             # Blank line is part of block? Yes, if indented or if inside block logic.
             # But here we just check if it's "indented relative to base".
             # For blank lines, get_indent might be 0.
@@ -1048,12 +1055,8 @@ class SyncCore:
                     was_quoted = sd.get('is_quoted', False)
                     if was_quoted and not n_l.strip().startswith('>'): n_l = f"> {n_l}"
 
-                    blk = [n_l]
-                    for child in dd['raw'][1:]:
-                        if was_quoted and not child.strip().startswith('>'):
-                            blk.append(f"> {child}")
-                        else:
-                            blk.append(child)
+                    # [FIX] Normalize children for Source (as_quoted=True)
+                    blk = [n_l] + self.normalize_child_lines(dd['raw'][1:], sd['indent'], as_quoted=True)
 
                     if sd['path'] not in src_updates: src_updates[sd['path']] = {}
                     
@@ -1072,12 +1075,8 @@ class SyncCore:
                         was_quoted = sd.get('is_quoted', False)
                         if was_quoted and not n_l.strip().startswith('>'): n_l = f"> {n_l}"
 
-                        blk = [n_l]
-                        for child in dd['raw'][1:]:
-                            if was_quoted and not child.strip().startswith('>'):
-                                blk.append(f"> {child}")
-                            else:
-                                blk.append(child)
+                        # [FIX] Normalize children for Source (as_quoted=True)
+                        blk = [n_l] + self.normalize_child_lines(dd['raw'][1:], sd['indent'], as_quoted=True)
 
                         if sd['path'] not in src_updates: src_updates[sd['path']] = {}
                         src_updates[sd['path']][bid] = blk
@@ -1195,7 +1194,9 @@ class SyncCore:
                 txt_blk = []
                 for t in tasks:
                     l1 = self.format_line(t['indent'], t['status'], t['pure'], "", t['fname'], t['bid'], True)
-                    txt_blk.extend([l1] + t['raw'][1:])
+                    # [FIX] Normalize children for Daily (as_quoted=False)
+                    children = self.normalize_child_lines(t['raw'][1:], t['indent'], as_quoted=False)
+                    txt_blk.extend([l1] + children)
                     if not txt_blk[-1].endswith('\n'): txt_blk[-1] += '\n'
 
                 if h_idx != -1:

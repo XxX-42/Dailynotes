@@ -79,7 +79,9 @@ class SyncCore:
             # [修复] 幽灵子弹过滤器：忽略空行或仅有子弹点的行
             if not clean or clean in ['-', '- ']: continue
             normalized.append(clean)
-        return "".join(normalized)
+        # [修复] 物理防粘连：使用换行符连接，防止 # 号被吞噬
+        # 原逻辑：return "".join(normalized) -> 危险！
+        return "\n".join(normalized) + "\n"
 
     def extract_routing_target(self, line):
         clean = re.sub(r'\[\[[^\]]*?\#\^[a-zA-Z0-9]{6,}\|[⚓\*🔗⮐📅]\]\]', '', line)
@@ -107,10 +109,17 @@ class SyncCore:
         while j < len(lines):
             nl = lines[j]
             
-            # [修复] 边界卫士：遇到标题或分隔符立即停止
-            # 即使它们有缩进，也应该中断块上下文
-            stripped_check = nl.lstrip()
+            # 规则 A: 原始行检查 (如果原始行就是 # Header，即使被引用逻辑处理前也应中止)
+            if nl.lstrip().startswith('#'): break
+
+            # 规则 B: 剥离引用符号 (> 和空白) 后的检查
+            # 必须先剥离引用符号（>）和空白，以捕捉像 ">   # Header" 这样的情况
+            stripped_check = re.sub(r'^[>\s]+', '', nl)
+            
+            # 规则 B.1: 深度标题检查
             if stripped_check.startswith('#'): break
+            
+            # 规则 C: 分隔符检查
             if stripped_check.startswith('---'): break
 
             # 空行是块的一部分吗？是的，如果有缩进或在块逻辑内部。
@@ -307,7 +316,9 @@ class SyncCore:
         if final_task_lines:
             new_block.append(f"{final_header}\n")
             new_block.extend(final_task_lines)
-            new_block.append("\n") # 间隔符
+            # [CRITICAL FIX] 移除了重复的 extend 调用
+            new_block.append("> \n") # [修复] 强制隔离：任务块后追加空引用行
+            new_block.append("\n")   # [修复] 物理隔离：追加物理空行以区隔后续标题
 
         return yaml_lines + new_block + clean_body
 

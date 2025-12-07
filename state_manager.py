@@ -37,7 +37,7 @@ class StateManager:
         
         # 3. 完全失败 -> 重置
         if os.path.exists(Config.STATE_FILE) or os.path.exists(backup_file):
-            print("\033[91m[CRITICAL] 状态文件严重损坏，且无法恢复！已重置为空状态。\033[0m")
+            Logger.info("\033[91m[CRITICAL] 状态文件严重损坏，且无法恢复！已重置为空状态。\033[0m")
         
         self.state = {}
 

@@ -2,6 +2,7 @@ import os
 import datetime
 import time
 import tempfile
+import inspect
 from typing import List, Union
 from config import Config
 
@@ -16,9 +17,26 @@ class Logger:
     _shown_errors = set()
 
     @staticmethod
+    def _get_caller_info():
+        # Stack: 0=here, 1=caller(info/debug), 2=actual caller
+        try:
+            stack = inspect.stack()
+            # Find the first frame outside of utils.py/Logger
+            for frame in stack[1:]:
+                fn = os.path.basename(frame.filename)
+                if fn != 'utils.py':
+                    func = frame.function
+                    if func == '<module>': func = 'Main'
+                    return f"[{fn}:{func}]"
+            return "[Unknown:Unknown]"
+        except Exception:
+            return "[Unknown:Unknown]"
+
+    @staticmethod
     def error_once(key, message):
         if key not in Logger._shown_errors:
-            print(f"\033[91m[ERROR] {message}\033[0m")
+            caller = Logger._get_caller_info()
+            print(f"\033[91m[ERROR] {caller} {message}\033[0m")
             Logger._shown_errors.add(key)
 
     @staticmethod
@@ -31,17 +49,20 @@ class Logger:
             return # 跳过历史日志以减少干扰
             
         prefix = f"[{date_tag}] " if date_tag else ""
-        print(f"\033[92m[{t} INFO] {prefix}{message}\033[0m")
+        caller = Logger._get_caller_info()
+        print(f"\033[92m[{t} INFO] {caller} {prefix}{message}\033[0m")
 
     @staticmethod
     def debug(message):
         if Config.DEBUG_MODE:
-            print(f"\033[90m[DEBUG] {message}\033[0m")
+            caller = Logger._get_caller_info()
+            print(f"\033[90m[DEBUG] {caller} {message}\033[0m")
 
     @staticmethod
     def debug_block(title, lines):
         if Config.DEBUG_MODE:
-            print(f"\033[96m--- [DEBUG] {title} ---\033[0m")
+            caller = Logger._get_caller_info()
+            print(f"\033[96m--- [DEBUG] {caller} {title} ---\033[0m")
             for line in lines:
                 print(f"  | {line.rstrip()}")
             print(f"\033[96m-----------------------\033[0m")

@@ -8,38 +8,9 @@ class FormatCore:
     @staticmethod
     def _enforce_hyphen_space(line: str, context: str = "", filename: str = "") -> str:
         """
-        [BRUTE FORCE] Enforce standard list format.
-        1. Protect Frontmatter (---)
-        2. Fix " -" (strict regex: hyphen NOT followed by space)
+        [NEUTERED] Originally used to force "- " format, but caused infinite loops.
+        Now delegated to 'fix_broken_tab_bullets_global' for safer batch processing.
         """
-        stripped = line.strip()
-        
-        # 1. Frontmatter Protection
-        if line.lstrip().startswith('---'):
-            return line
-            
-        file_tag = f"[{filename}]" if filename else ""
-        ctx_tag = f"[{context}]" if context else ""
-        full_tag = f"{file_tag} {ctx_tag}".strip()
-        if full_tag: full_tag += " "
-
-        # 2. Strict Hyphen Enforcement
-        # Regex: Start, optional whitespace, hyphen, NEGATIVE LOOKAHEAD for space
-        # Matches: "-Text", "-[ ]", "-", "  -"
-        # Does NOT match: "- Text", "- ", "  - "
-        pattern = r'^(\s*)-(?!\s)'
-        
-        match = re.match(pattern, line)
-        if match:
-            # [KILL] Found non-standard hyphen
-            # group(1) is the indentation
-            # We want to replace the match (indent + hyphen) with (indent + hyphen + space)
-            # Use count=1 to only replace the start
-            new_line = re.sub(r'^(\s*)-', r'\1- ', line, count=1)
-            
-            print(f"\033[91m[KILL] {full_tag}发现不规范横线，强制处决: {repr(line)} -> {repr(new_line)}\033[0m")
-            return new_line
-
         return line
 
     @staticmethod
@@ -224,3 +195,33 @@ class FormatCore:
             Logger.info(f"格式化生效，正在重写文件: {fname}")
             return FileUtils.write_file(filepath, c)
         return False
+
+    @staticmethod
+    def fix_broken_tab_bullets_global():
+        r"""
+        [GLOBAL FIX] Scan and fix 'Tab-Hyphen-NoSpace' pattern globally.
+        Regex: ^(\t+)-(?!\s) -> \1- 
+        Target: \t-Text -> \t- Text
+        Ignores: \t- (EOL) due to (?!\s) checks for NON-whitespace (newline is whitespace)
+        """
+        if not os.path.exists(Config.DAILY_NOTE_DIR): return
+
+        # Regex: Start of line, Tabs, Hyphen, followed by NON-Whitespace
+        pattern = re.compile(r'(?m)^(\t+)-(?!\s)')
+
+        for filename in os.listdir(Config.DAILY_NOTE_DIR):
+            if not filename.endswith('.md'): continue
+            
+            filepath = os.path.join(Config.DAILY_NOTE_DIR, filename)
+            try:
+                content = FileUtils.read_content(filepath) 
+                if not content: continue
+
+                new_content = pattern.sub(r'\1- ', content)
+                
+                if new_content != content:
+                    FileUtils.write_file(filepath, new_content) 
+                    Logger.info(f"全局修复幽灵列表项: {filename}")
+            except Exception as e:
+                Logger.error(f"Global Fix Error {filename}: {e}")
+

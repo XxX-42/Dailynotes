@@ -43,25 +43,41 @@ class SyncCore:
         return tags
 
     def clean_task_text(self, line, block_id=None, context_name=None):
-        line = re.sub(r'📅\s*\d{4}-\d{2}-\d{2}', '', line)
-        line = re.sub(r'✅\s*\d{4}-\d{2}-\d{2}', '', line)
-        # [FIX] Stricter ID Regex: Space + ^ + 6-7 alphanum + End
-        line = re.sub(r'(?<=\s)\^[a-zA-Z0-9]{6,7}\s*$', '', line)
-        line = re.sub(r'\(connect::.*?\)', '', line)
-        line = re.sub(r'\s*\[\[[^\]]*?\|[⮐📅]\]\]', '', line)
-        line = re.sub(r'\s*\[\[\d{4}-\d{2}-\d{2}\]\]', '', line)
-        line = re.sub(r'^[\s>]*-\s*\[.\]\s*', '', line)
+        # [FIX] Conservative Clean: Only target specific patterns, avoid aggressive full-line regexes
+        
+        # 1. Remove internal links to self (e.g. [[filename|...]])
         if context_name:
-            line = re.sub(rf'\[\[{re.escape(context_name)}(\|.*?)?\]\]', '', line)
-        text = line.strip()
+             # Use specific pattern to only match [[context_name|...]] or [[context_name]]
+             # Be careful not to matching generic [[...]]
+             line = re.sub(rf'\[\[{re.escape(context_name)}(?:\|.*?)?\]\]', '', line)
+
+        # 2. Status Mark: Remove "- [ ] " prefix
+        line = re.sub(r'^[\s>]*-\s*\[.\]\s?', '', line)
+        
+        # 3. Block ID: Remove strict ID at end
+        # (Already strict: Space + ^ + 6-7 alphanum + End)
+        clean_text = line
         if block_id:
-            while text.endswith(block_id): text = text[:-len(block_id)].strip()
-        return text
+             # Only remove if it strictly matches exactly
+             # Using re.split might be better or simple string replacement?
+             # Regex is safer for boundary
+             clean_text = re.sub(rf'(?<=\s)\^{re.escape(block_id)}\s*$', '', clean_text)
+        
+        # 4. Remove Dates/Connectors (Targeted)
+        clean_text = re.sub(r'📅\s*\d{4}-\d{2}-\d{2}', '', clean_text)
+        clean_text = re.sub(r'✅\s*\d{4}-\d{2}-\d{2}', '', clean_text)
+        clean_text = re.sub(r'\(connect::.*?\)', '', clean_text)
+        clean_text = re.sub(r'\[\[[^\]]*?\|[⮐📅]\]\]', '', clean_text) # SymLinks
+        clean_text = re.sub(r'\[\[\d{4}-\d{2}-\d{2}\]\]', '', clean_text) # Date Links
+
+        return clean_text.strip()
 
     def normalize_block_content(self, block_lines):
         normalized = []
         for line in block_lines:
             clean = re.sub(r'^[\s>]+', '', line).strip()
+            # [FIX] Ghost Bullet Filter: Ignore empty lines or just bullets
+            if not clean or clean in ['-', '- ']: continue
             normalized.append(clean)
         return "".join(normalized)
 
@@ -450,10 +466,11 @@ class SyncCore:
              # Cleaning: Remove > and whitespace
              content = re.sub(r'^[>\s]+', '', line).strip()
              
+             # [FIX] Ghost Bullet Filter: Skip empty or pure-dash lines
+             if not content or content in ['-', '- ']: continue
+
              # Enforce Bullet Syntax
-             if content == '-' or content == '':
-                 final_content = "- "
-             elif content.startswith('-'):
+             if content.startswith('-'):
                  if not content.startswith('- '):
                       final_content = "- " + content[1:].strip()
                  else:
@@ -629,42 +646,9 @@ class SyncCore:
         return lines
 
     def cleanup_empty_headers(self, lines, date_tag):
+        # [FIX] Neuter Header Swallowing:
+        # Only ensure structure, DO NOT delete empty headers.
         lines = self.ensure_structure(lines)
-
-        try:
-            j_idx = next(i for i, l in enumerate(lines) if l.strip() == "# Journey")
-        except StopIteration:
-            return lines, False
-
-        end_idx = len(lines)
-        for i in range(j_idx + 1, len(lines)):
-            if lines[i].startswith('# '): end_idx = i; break
-
-        indices_to_delete = []
-        i = j_idx + 1
-        while i < end_idx:
-            line = lines[i]
-            if re.match(r'^##\s*\[\[.*?\]\]', line.strip()):
-                has_content = False
-                j = i + 1
-                while j < end_idx:
-                    check_line = lines[j].strip()
-                    if check_line == "": j += 1; continue
-                    if check_line.startswith('#'): break
-                    has_content = True;
-                    break
-                if not has_content:
-                    for k in range(i, j): indices_to_delete.append(k)
-                    i = j
-                else:
-                    i += 1
-            else:
-                i += 1
-
-        if indices_to_delete:
-            for idx in sorted(indices_to_delete, reverse=True): del lines[idx]
-            Logger.info(f"已清理 {len(set(indices_to_delete))} 行空标题", date_tag)
-            return lines, True
         return lines, False
 
     def scan_projects(self):

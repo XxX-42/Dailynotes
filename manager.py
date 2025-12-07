@@ -82,7 +82,14 @@ class FusionManager:
         
         try:
             while True:
+                # [FIX] Global Cleanup Cycle (Pre-Sync)
+                FormatCore.fix_broken_tab_bullets_global()
+
                 self.process_all_dates()
+                
+                # [FIX] Global Cleanup Cycle (Post-Sync)
+                FormatCore.fix_broken_tab_bullets_global()
+                
                 time.sleep(Config.TICK_INTERVAL)
         except KeyboardInterrupt:
             # 异常处理交给 main.py

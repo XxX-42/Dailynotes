@@ -1009,25 +1009,33 @@ class SyncCore:
 
                 else:
                     # [Source Only]
-                    has_ghost_match = False
-                    for d_val in dn_tasks.values():
-                        if d_val['hash'] == sd['hash']:
-                            has_ghost_match = True; break
-                    if last_date == target_date and not has_ghost_match:
+                    # 场景：Source 有，Daily 无。
+                    # 通常意味着用户在 Daily 中删除了该任务。
+
+                    # [FIX] 彻底移除 "has_ghost_match" 幽灵检测逻辑。
+                    # 原因：该逻辑会导致严重副作用——如果日记中有内容相似的其他任务，
+                    # 系统会误判为“任务只是改了ID”，从而拒绝删除，导致任务删不掉（僵尸任务）。
+                    # 现在：只要 last_date 匹配，且 Daily 没了，就坚决执行删除。
+
+                    if last_date == target_date:
                         Logger.info(f"   🗑️ 删除 Source ({bid}): 因 Daily 移除")
                         if sd['path'] not in src_deletes: src_deletes[sd['path']] = {}
                         src_deletes[sd['path']][bid] = sd['path']
                         self.sm.remove_task(bid)
                     else:
-                        if has_ghost_match:
-                            Logger.info(f"   🛡️ 拦截删除 Source ({bid}): Daily 中发现同内容异号任务")
+                        # 如果 last_date != target_date，说明这是一个新加入 Source 的任务，
+                        # 或者是一个归属日期变了的任务，此时应该追加到 Daily，而不是删除。
+
+                        # 防御检查：确保任务确实属于当前日期
                         task_dates_str = sd.get('dates', '')
                         linked_dates = re.findall(r'(\d{4}-\d{2}-\d{2})', task_dates_str)
                         is_misjudged = False
                         if linked_dates and target_date not in linked_dates: is_misjudged = True
+
                         if is_misjudged:
                             Logger.info(f"   🛡️ 拦截追加 ({bid}): 归属 {linked_dates} != 当前 {target_date}")
                             continue
+
                         Logger.info(f"   ➕ 追加 Daily ({bid}): 来自 {sd['fname']}")
                         if sd['proj'] not in append_to_dn: append_to_dn[sd['proj']] = []
                         append_to_dn[sd['proj']].append(sd)

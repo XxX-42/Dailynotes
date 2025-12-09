@@ -1044,15 +1044,32 @@ class SyncCore:
             elif in_d and not in_s:
                 # [CRITICAL FIX] 归档任务晋升逻辑 (Graduate Logic)
                 dd = dn_tasks[bid]
-                raw_first = dd['raw'][0] # [Fix] 变量前置
+                raw_first = dd['raw'][0]
 
+                # 1. 获取它在数据库里的老家
                 db_data = self.sm.state.get(bid, {})
                 last_path = db_data.get('source_path', '')
+
+                # 2. 判断是否是"原生于Daily"的任务 (Orphan)
                 is_daily_native = (not last_path) or (Config.DAILY_NOTE_DIR in last_path)
 
+                # 3. 提取路由目标
                 target_file_direct = self.extract_routing_target(raw_first)
-                should_push = (bid in organized_bids) or is_daily_native or (
-                            target_file_direct and os.path.exists(target_file_direct))
+
+                # [FIX] 回头草检测：如果目标文件就是它上次的老家，说明它是被该文件删除了 -> 禁止推送
+                is_deleted_from_source = False
+                if target_file_direct and last_path:
+                    # 标准化路径进行比较
+                    p1 = os.path.normcase(os.path.abspath(target_file_direct))
+                    p2 = os.path.normcase(os.path.abspath(last_path))
+                    if p1 == p2:
+                        is_deleted_from_source = True
+
+                # 4. 判定是否允许晋升
+                # 只有当：(是刚归档的) OR (是原生流浪汉) OR (有明确目标且不是被该目标删除的)
+                should_push = (bid in organized_bids) or \
+                              is_daily_native or \
+                              (target_file_direct and os.path.exists(target_file_direct) and not is_deleted_from_source)
 
                 if should_push:
                     target_file = None
@@ -1066,12 +1083,16 @@ class SyncCore:
                         Logger.info(f"   🚀 [GRADUATE] 归档任务晋升上行 ({bid}) -> {os.path.basename(target_file)}")
                         fname = os.path.splitext(os.path.basename(target_file))[0]
                         clean = dd['pure']
+
                         raw_no_quote = re.sub(r'^>\s?', '', raw_first)
                         raw_indent = 0
                         for char in raw_no_quote:
-                            if char == '\t': raw_indent += 4
-                            elif char == ' ': raw_indent += 1
-                            else: break
+                            if char == '\t':
+                                raw_indent += 4
+                            elif char == ' ':
+                                raw_indent += 1
+                            else:
+                                break
 
                         n_l = self.format_line(raw_indent, dd['status'], clean, target_date, fname, bid, False)
                         blk = [n_l] + self.normalize_child_lines(dd['raw'][1:], raw_indent, as_quoted=False)
@@ -1080,8 +1101,11 @@ class SyncCore:
                         src_updates[target_file][bid] = blk
                         self.sm.update_task(bid, dd['hash'], target_file, target_date)
                     else:
+                        # 只有真的找不到家，才会被删
                         Logger.info(f"   ⚠️ [ORPHAN] 无法同步，找不到目标文件")
                 else:
+                    # [删除执行]
+                    # 只有在这里，当确定不应该 push 时，才执行删除
                     Logger.info(f"   🗑️ 删除 Daily ({bid}): 因 Source 移除")
                     for k in range(dd['idx'], dd['idx'] + dd['len']): dn_lines[k] = "__DEL__\n"
                     dn_mod = True

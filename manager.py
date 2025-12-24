@@ -44,14 +44,21 @@ class FusionManager:
         today_str = datetime.date.today().strftime('%Y-%m-%d')
         all_dates = {today_str}
 
-        # 1. 获取源任务数据
+        # 1. 获取源任务数据 (SyncCore 内部也会过滤，这里拿到的都是合法的)
         source_data_by_date = self.sync_core.scan_all_source_tasks()
 
         # 2. 合并涉及的所有日期
         all_dates.update(source_data_by_date.keys())
 
         # 3. 遍历处理所有日期
-        for date_str in all_dates:
+        for date_str in list(all_dates):  # 使用 list 副本以防迭代中修改
+
+            # --- [TIME GATE] 时间门控拦截 ---
+            # 如果日期早于设定值，直接忽略，不读不写不处理
+            if date_str < Config.SYNC_START_DATE:
+                continue
+            # ------------------------
+
             daily_path = os.path.join(Config.DAILY_NOTE_DIR, f"{date_str}.md")
 
             if os.path.exists(daily_path):
@@ -66,6 +73,12 @@ class FusionManager:
                 except Exception as e:
                     Logger.error_once(f"sync_fail_{date_str}", f"同步异常 [{date_str}]: {e}")
 
+                # [RESTORED] 恢复日记格式化
+                # 注意：FormatCore 现已更新为"靶向格式化"，只会触碰 # Day planner 和 # Journey
+                # 其他区域（如 Log, Sport）会被安全忽略。
+                if os.path.exists(daily_path):
+                    FormatCore.execute(daily_path)
+
     def run(self):
         def _term_handler(signum, frame):
             raise SystemExit("Received SIGTERM")
@@ -78,8 +91,6 @@ class FusionManager:
         RAMP_UP_TIME = 1800  # 爬坡时间：30分钟 (1800秒)
 
         # 对数增长模型: I(t) = A + B * ln(t + 1)
-        # t=0, I=3  => A=3
-        # t=1800, I=15 => 15 = 3 + B * ln(1801) => B = 12 / ln(1801)
         A = MIN_INTERVAL
         B = (MAX_INTERVAL - MIN_INTERVAL) / math.log(RAMP_UP_TIME + 1)
 
@@ -96,7 +107,6 @@ class FusionManager:
                 if self.is_user_active():
                     # 发现编辑动作！重置计时器，瞬间拉回战斗模式
                     self.last_active_time = time.time()
-                    # Logger.debug("⚡️ 检测到活跃编辑，引擎全速运转")
 
                 # 3. [计算] 下一次睡多久
                 idle_seconds = time.time() - self.last_active_time
@@ -106,17 +116,11 @@ class FusionManager:
                     dynamic_interval = MIN_INTERVAL
                 else:
                     # 1分钟后：开始对数退避
-                    # I(t) = 3 + B * ln(t_idle)
-                    # 我们让 t 从 1 开始算 (idle_seconds - 60) 以保持平滑，或者直接用 idle_seconds
                     dynamic_interval = A + B * math.log(idle_seconds + 1)
 
                 # 封顶限制 (防止睡死)
                 if dynamic_interval > MAX_INTERVAL:
                     dynamic_interval = MAX_INTERVAL
-
-                # 可选：调试心跳
-                # if idle_seconds > 60:
-                #     Logger.debug(f"💤 闲置 {int(idle_seconds/60)}m, 心跳降频至: {dynamic_interval:.2f}s")
 
                 time.sleep(dynamic_interval)
 

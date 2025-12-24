@@ -1,14 +1,13 @@
 import re
 import unicodedata
 
-def get_indent_depth(line):
-    """
-    [Helper] 统一计算缩进视觉深度 (Tab=4 spaces)
-    解决 Tab/Space 混用导致的层级判断失效问题。
-    """
+def _get_indent_depth(line):
     no_quote = re.sub(r'^>\s?', '', line)
     expanded = no_quote.expandtabs(4)
     return len(expanded) - len(expanded.lstrip())
+
+# Alias for external use
+get_indent_depth = _get_indent_depth
 
 def parse_yaml_tags(lines):
     tags = []
@@ -22,39 +21,32 @@ def parse_yaml_tags(lines):
     return tags
 
 def clean_task_text(line, block_id=None, context_name=None):
-    """
-    [v10.7 Aggressive Clean]
-    增加通用尾部清理，防止救援模式下残缺 ID (如 ^04cn) 未被清除导致 ID 重复。
-    [v10.8 Time Strip] 增加时间段剥离，防止 07:00 - 11:20 污染源文件。
-    """
-    # 1. 移除 Checkbox (保留)
-    line = re.sub(r'^\s*-\s*\[.\]\s?', '', line)
-
-    # === [新增] 2. 移除 Day Planner 时间段 ===
-    # 匹配: "07:00 " 或 "07:00 - 11:20 "
-    # 逻辑: 只有位于行首（去除 checkbox 后）的时间才会被视为调度信息
-    line = re.sub(r'^\s*\d{1,2}:\d{2}(?:\s*-\s*\d{1,2}:\d{2})?\s+', '', line)
-
-    clean_text = line
-
-    # 3. 移除指定块 ID (原逻辑)
+    # 1. remove status and indent
+    clean_text = re.sub(r'^[\s>]*-\s*\[.\]', '', line)
+    
+    # 2. remove time (00:00 - 00:00)
+    clean_text = re.sub(r'\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}', '', clean_text)
+    clean_text = re.sub(r'\d{1,2}:\d{2}', '', clean_text)
+    
+    # 3. remove ID
     if block_id:
-        clean_text = re.sub(rf'(?<=\s)\^{re.escape(block_id)}\s*$', '', clean_text)
+        clean_text = re.sub(r'\^' + re.escape(block_id) + r'\s*$', '', clean_text)
+    else:
+        clean_text = re.sub(r'\^[a-zA-Z0-9]{6,}\s*$', '', clean_text)
+        
+    # 4. remove return links
+    clean_text = re.sub(r'\[\[[^\]]*?\#\^[a-zA-Z0-9]{6,}\|[⚓\*🔗⮐📅]\]\]', '', clean_text)
+    
+    # 5. remove date links
+    clean_text = re.sub(r'\[\[\d{4}-\d{2}-\d{2}]]', '', clean_text)
+    # remove emoji date
+    clean_text = re.sub(r'📅\s?\[\[\d{4}-\d{2}-\d{2}]]', '', clean_text)
 
-    # 4. 通用尾部清理 (原逻辑)
-    clean_text = re.sub(r'\s+\^[a-zA-Z0-9]*$', '', clean_text)
-
-    # 5. 移除日期链接 (原逻辑)
-    clean_text = re.sub(r'\[\[\d{4}-\d{2}-\d{2}(?:#\^[a-zA-Z0-9]+)?(?:\|.*?)?\]\]', '', clean_text)
-
-    # 6. 移除文件自身链接 (原逻辑)
-    if context_name:
-        clean_text = re.sub(rf'\[\[{re.escape(context_name)}(?:#\^[a-zA-Z0-9]+)?(?:\|.*?)?\]\]', '', clean_text)
-
-    # 7. 移除 Emoji 日期 (原逻辑)
-    clean_text = re.sub(r'[📅✅]\s*\d{4}-\d{2}-\d{2}', '', clean_text)
-    clean_text = re.sub(r'\(connect::.*?\)', '', clean_text)
-
+    # 6. If context_name provided, try to remove context tag ONLY if it looks like a tag (e.g. at end or specific format?)
+    # The original sync_core logic didn't aggressively remove context tags here for display, 
+    # but `dispatch_project_tasks` logic usually handles tagging explicitly.
+    # We will leave simple text cleaning here.
+    
     return clean_text.strip()
 
 def normalize_block_content(block_lines):
@@ -66,59 +58,50 @@ def normalize_block_content(block_lines):
     return "\n".join(normalized) + "\n"
 
 def capture_block(lines, start_idx):
-    """
-    [v14.2 Indent-Priority Capture]
-    修复双重缩进任务 (- [ ]) 被截断的 Bug。
-    核心逻辑变更：确立【缩进霸权】。
-    只要当前行缩进 > 父级缩进，无条件视为子内容，跳过任何内容检查（如 # 或 ---）。
-    只有缩进 <= 父级时，才进行结束判定。
-    """
-    if start_idx >= len(lines): return [], 0
-
-    # 1. 获取父级（锚点）的视觉缩进深度
-    base_depth = get_indent_depth(lines[start_idx])
-
+    parent_indent = _get_indent_depth(lines[start_idx])
     block = [lines[start_idx]]
     consumed = 1
-    j = start_idx + 1
-
-    while j < len(lines):
-        nl = lines[j]
-
-        # 1. 空行处理：始终保留，不作为判定依据
-        if not nl.strip():
-            block.append(nl)
+    
+    for i in range(start_idx + 1, len(lines)):
+        line = lines[i]
+        if not line.strip(): # Empty line, include it but...
+             block.append(line)
+             consumed += 1
+             continue
+             
+        curr_indent = _get_indent_depth(line)
+        if curr_indent > parent_indent:
+            block.append(line)
             consumed += 1
-            j += 1
-            continue
-
-        # 2. 强分隔符：唯一的例外，必须截断
-        if nl.strip() == '----------': break
-
-        # 3. 计算当前行缩进
-        curr_depth = get_indent_depth(nl)
-
-        # === [核心修复] 缩进优先原则 ===
-        # 如果当前行比父级缩进深，它就是子元素。
-        # 不检查它是否以 '#' 开头，也不做任何正则清洗。
-        # 这保证了 `      - [ ]` 这种结构绝对会被捕获。
-        if curr_depth > base_depth:
-            block.append(nl)
-            consumed += 1
-            j += 1
-            continue
-
-        # 4. 只有当缩进 <= 父级时，才视为潜在的结束
-        # 此时遇到同级任务、同级标题或更浅的内容，均结束捕获
-        break
-
+        else:
+            break
+            
     return block, consumed
 
-def extract_routing_target(line, file_path_map):
+def extract_routing_info(line, file_path_map):
+    """
+    Extracts routing target from a line.
+    Returns: (absolute_path_to_file, raw_link_text)
+    """
+    # Remove return links first to avoid false positives
     clean = re.sub(r'\[\[[^\]]*?\#\^[a-zA-Z0-9]{6,}\|[⚓\*🔗⮐📅]\]\]', '', line)
-    matches = re.findall(r'\[\[(.*?)\]\]', clean)
-    for match in matches:
-        pot = match.split('|')[0]
+    
+    matches = re.finditer(r'\[\[(.*?)\]\]', clean)
+    for m in matches:
+        raw_text = m.group(0) # [[WikiLink]]
+        inner = m.group(1)
+        pot = inner.split('|')[0].split('#')[0]
         pot = unicodedata.normalize('NFC', pot)
-        if pot in file_path_map: return file_path_map[pot]
-    return None
+        
+        if pot in file_path_map:
+            return file_path_map[pot], raw_text
+            
+    return None, None
+
+def extract_routing_target(line, file_path_map):
+    """
+    Compatibility wrapper for extract_routing_info.
+    Returns just the path.
+    """
+    path, _ = extract_routing_info(line, file_path_map)
+    return path

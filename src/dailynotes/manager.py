@@ -4,10 +4,11 @@ import datetime
 import signal
 import math
 from config import Config
-from utils import Logger, FileUtils
-from format_core import FormatCore
-from state_manager import StateManager
-from sync_core import SyncCore
+from config import Config
+from .utils import Logger, FileUtils
+from .format_core import FormatCore
+from .state_manager import StateManager
+from .sync import SyncCore
 
 
 class FusionManager:

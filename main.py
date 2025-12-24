@@ -1,10 +1,13 @@
 import time
 import signal
 import os
-from manager import FusionManager
+import sys
+
+# Add src to sys.path to allow importing dailynotes package
+sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
+from dailynotes.manager import FusionManager
 from config import Config
-from config import Config
-from utils import ProcessLock, Logger
+from dailynotes.utils import ProcessLock, Logger
 
 if __name__ == "__main__":
     app = FusionManager()

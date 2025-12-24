@@ -6,7 +6,7 @@ import re
 import shutil
 import unicodedata
 from config import Config
-from utils import Logger
+from .utils import Logger
 
 
 class StateManager:

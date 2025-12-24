@@ -4,7 +4,7 @@ import hashlib
 import difflib
 import unicodedata  # [NEW] 引入 unicode 支持
 from config import Config
-from utils import FileUtils, Logger
+from .utils import FileUtils, Logger
 
 
 class FormatCore:

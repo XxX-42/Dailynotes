@@ -55,105 +55,181 @@ class SyncCore:
         self.scan_projects()
         return scan_all_source_tasks(self.project_map, self.sm)
 
-    def organize_orphans(self, filepath, date_tag):
+    def dispatch_project_tasks(self, filepath, date_tag):
+        """
+        [Replaces organize_orphans]
+        Responsible for moving tasks from Daily Note (start of the day) to their respective Project files.
+        Implements:
+        1. Nearest Ancestor Resolution (Nested Projects).
+        2. Robust Matching for Headers.
+        3. Idempotent Tagging.
+        """
         lines = FileUtils.read_file(filepath)
         if not lines: return set()
         lines = ensure_structure(lines)
         tasks_to_move = []
         processed_bids = set()
+        
+        # Context tracking
         ctx = "ROOT"
         i = 0
         while i < len(lines):
             l = lines[i].strip()
+            
+            # Context Detection
             if l.startswith('# '):
-                ctx = 'JOURNEY' if l == '# Journey' else ('PLANNER' if l == '# Day planner' else 'OTHER')
-                i += 1;
+                if l == '# Journey': ctx = 'JOURNEY'
+                elif l == '# Day planner': ctx = 'PLANNER'
+                else: ctx = 'OTHER'
+                i += 1; continue
+            
+            # Skip Project Archival Sections (## [[Project]]) inside Daily Note
+            if re.match(r'^##\s*\[\[.*?\]\]', l): 
+                ctx = 'PROJECT'
+                i += 1
                 continue
-            if l.startswith('## [[') and l.endswith(']]'): ctx = 'PROJECT'; i += 1; continue
+
+            # Capture Tasks
             if re.match(r'^[\s>]*-\s*\[.\]', lines[i]):
+                # Only process tasks in PLANNER or JOURNEY sections
                 if ctx in ['JOURNEY', 'PLANNER']:
                     routing_target = extract_routing_target(lines[i], self.file_path_map)
                     p_name = None
+                    
+                    # === Logic 1: Nearest Ancestor Resolution ===
                     if routing_target:
-                        curr = os.path.dirname(routing_target)
+                        # Explicit routing via [[Target]]
+                        search_start = os.path.dirname(routing_target)
                     else:
-                        curr = Config.ROOT_DIR
-                    search_start = curr
-                    while search_start.startswith(Config.ROOT_DIR):
-                        if search_start in self.project_map: p_name = self.project_map[search_start]; break
-                        parent = os.path.dirname(search_start)
-                        if parent == search_start: break
-                        search_start = parent
+                        # Implicit routing via configuration root
+                        search_start = Config.ROOT_DIR
+                    
+                    # Traverse upwards to find the nearest project root
+                    curr_search = search_start
+                    while curr_search.startswith(Config.ROOT_DIR):
+                        if curr_search in self.project_map:
+                            p_name = self.project_map[curr_search]
+                            break # Found Nearest Ancestor! Stop.
+                        
+                        parent = os.path.dirname(curr_search)
+                        if parent == curr_search: break # Safety break
+                        curr_search = parent
+                    
                     if p_name:
                         content, length = capture_block(lines, i)
                         raw_first = content[0]
                         bid_m = re.search(r'\^([a-zA-Z0-9]{6,})\s*$', raw_first)
                         bid = bid_m.group(1) if bid_m else self.generate_block_id().replace('^', '')
 
+                        # Determine final link tag name
                         final_tag_name = p_name
-                        if routing_target: final_tag_name = os.path.splitext(os.path.basename(routing_target))[0]
+                        if routing_target: 
+                            final_tag_name = os.path.splitext(os.path.basename(routing_target))[0]
 
-                        # [MODIFIED] 保留时间并修改链接指向
+                        # Clean existing tags to prevent duplicates (Idempotency)
                         clean_pure = clean_task_text(raw_first, bid, final_tag_name)
-
-                        # Use raw string slicing for preservation, but logic relies on capture_block
+                        
+                        # Preserve indentation
                         indent_len = len(raw_first) - len(raw_first.lstrip())
                         indent_str = raw_first[:indent_len]
 
                         st_m = re.search(r'-\s*\[(.)\]', raw_first)
                         status = st_m.group(1) if st_m else ' '
 
-                        # 1. 提取时间 (防止 clean_task_text 把时间吞掉)
+                        # Extract time
                         time_part = ""
                         body_only = re.sub(r'^\s*-\s*\[.\]\s?', '', raw_first)
-                       
                         tm = re.match(r'^(\d{1,2}:\d{2}(?:\s*-\s*\d{1,2}:\d{2})?)', body_only)
                         if tm: time_part = tm.group(1) + " "
 
-                        # 2. 链接指向项目文件 (Target) 而非 日期 (Date)
+                        # Construct Link Back to Project
                         ret_link = f"[[{final_tag_name}#^{bid}|⮐]]"
 
-                        file_tag = f"[[{final_tag_name}]]"
-                        # 3. 组装：缩进 - [x] 时间 链接 文件标签 内容 ID
-                        new_line = f"{indent_str}- [{status}] {time_part}{ret_link} {file_tag} {clean_pure} ^{bid}\n"
+                        # === Logic 2: Idempotent Tagging ===
+                        # Check if [[ProjectName]] already exists in the clean text
+                        project_tag_link = f"[[{final_tag_name}]]"
+                        if project_tag_link in clean_pure:
+                            file_tag = "" # Already tagged
+                        else:
+                            file_tag = f" {project_tag_link}"
+                        
+                        # Reassemble
+                        new_line = f"{indent_str}- [{status}] {time_part}{ret_link}{file_tag} {clean_pure} ^{bid}\n"
 
                         content[0] = new_line
                         tasks_to_move.append({'idx': i, 'len': length, 'proj': p_name, 'raw': content})
                         processed_bids.add(bid)
-                        i += length;
+                        i += length
                         continue
             i += 1
+        
         if not tasks_to_move: return set()
+        
+        # Remove moved tasks from original lines
         tasks_to_move.sort(key=lambda x: x['idx'], reverse=True)
         for t in tasks_to_move: del lines[t['idx']:t['idx'] + t['len']]
+        
+        # Group by Project
         grouped = {}
         for t in tasks_to_move:
             if t['proj'] not in grouped: grouped[t['proj']] = []
             grouped[t['proj']].extend(t['raw'])
-        try:
-            j_idx = next(i for i, l in enumerate(lines) if l.strip() == "# Journey")
-        except:
+            
+        # === Logic 3: Safe Insertion (Robust Matching + Position) ===
+        
+        # Find insertion point: After "# Journey" (or end of Planner), before next H1.
+        
+        # Locate '# Journey' index
+        j_idx = -1
+        for idx, line in enumerate(lines):
+            if line.strip() == "# Journey":
+                j_idx = idx
+                break
+        
+        if j_idx == -1: 
+            # Fallback: End of file
             j_idx = len(lines)
+        
+        # Find the next H1 after Journey to bound our insertion area
         ins_pt = len(lines)
         for i in range(j_idx + 1, len(lines)):
-            if lines[i].startswith('# '): ins_pt = i; break
+            if lines[i].startswith('# '): 
+                ins_pt = i
+                break
+                
         offset = 0
         for proj, blocks in grouped.items():
-            header = f"## [[{proj}]]"
+            # Robust Header Matching
+            target_header_clean = f"## [[{proj}]]".replace(" ", "")
+            
             h_idx = -1
+            # Search within the allowed bounded area
             for k in range(j_idx, ins_pt + offset):
-                if lines[k].strip() == header: h_idx = k; break
+                current_line_clean = lines[k].strip().replace(" ", "")
+                if current_line_clean == target_header_clean:
+                    h_idx = k
+                    break
+            
             if blocks and not blocks[-1].endswith('\n'): blocks[-1] += '\n'
+            
             if h_idx != -1:
+                # Append to existing section
+                # Find the next header (H1 or H2 ... actually just H1 or next H2 or anything that breaks the block)
+                # But usually we just append to the end of that section.
+                # Let's find the end of this subsection.
                 sub_ins = ins_pt + offset
                 for k in range(h_idx + 1, ins_pt + offset):
-                    if lines[k].startswith('#'): sub_ins = k; break
+                    if lines[k].startswith('#'): 
+                        sub_ins = k
+                        break
                 lines[sub_ins:sub_ins] = blocks
                 offset += len(blocks)
             else:
-                chunk = [f"\n{header}\n"] + blocks
+                # Create new section
+                chunk = [f"\n## [[{proj}]]\n"] + blocks
                 lines[ins_pt + offset:ins_pt + offset] = chunk
                 offset += len(chunk)
+                
         Logger.info(f"归档 {len(tasks_to_move)} 个流浪任务", date_tag)
         Logger.info(f"   💾 [WRITE] 更新归档文件 (Orphans): {os.path.basename(filepath)}")
         if FileUtils.write_file(filepath, lines): return processed_bids
@@ -180,7 +256,10 @@ class SyncCore:
                 FileUtils.write_file(daily_path, base_scaffold)
 
         organized_bids = set()
-        if os.path.exists(daily_path): organized_bids = self.organize_orphans(daily_path, target_date)
+        if os.path.exists(daily_path): 
+            # Use new dispatch method
+            organized_bids = self.dispatch_project_tasks(daily_path, target_date)
+            
         dn_tasks = {}
         new_dn_tasks = []
         dn_lines = []

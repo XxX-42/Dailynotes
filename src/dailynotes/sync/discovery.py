@@ -9,10 +9,9 @@ def scan_projects():
     project_path_map = {}
     file_path_map = {}
 
-    # 预处理：标准化聚合目录路径，避免不同系统的斜杠差异
-    forced_dirs = [os.path.normpath(p) for p in Config.FORCED_AGGREGATION_DIRS]
-
+    # 遍历整个目录树，不做早期截断，支持嵌套项目
     for root, dirs, files in os.walk(Config.ROOT_DIR):
+        # 1. 过滤排除目录 (保持原有的 exclude 逻辑)
         dirs[:] = [d for d in dirs if not FileUtils.is_excluded(os.path.join(root, d))]
         if FileUtils.is_excluded(root): continue
 
@@ -23,25 +22,13 @@ def scan_projects():
                 f_name = unicodedata.normalize('NFC', os.path.splitext(f)[0])
                 file_path_map[f_name] = path
 
-                # 依然读取 tags，保持文件级别的识别能力
+                # 识别含有 'main' 标签的文件
+                # 注意：这里我们读取文件内容来查找 tags: [main]
                 if 'main' in parse_yaml_tags(FileUtils.read_file(path) or []):
                     main_files.append(f)
 
-        # === [核心修改 START] ===
-        is_shadowed = False
-        norm_root = os.path.normpath(root)
-
-        for parent_dir in forced_dirs:
-            if norm_root.startswith(parent_dir) and len(norm_root) > len(parent_dir):
-                rel_path = norm_root[len(parent_dir):]
-                if rel_path.startswith(os.sep):
-                    is_shadowed = True
-                    break
-
-        if is_shadowed:
-            continue
-        # === [核心修改 END] ===
-
+        # 2. 如果当前目录恰好包含唯一的 main 文件，则认定为一个项目节点
+        # 即使父目录也是项目，这里也会被记录，从而支持嵌套结构
         if len(main_files) == 1:
             p_name = unicodedata.normalize('NFC', os.path.splitext(main_files[0])[0])
             project_map[root] = p_name

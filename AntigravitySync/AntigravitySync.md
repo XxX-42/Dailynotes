@@ -475,6 +475,7 @@ Priority Order:
 Key Features:
 - Dirty Flag Blocking: If internal modified file, skip external sync for this tick
 - Frequency Layering: Internal 3s tick, External 10s minimum interval (Per-Date)
+- [FIX] Self-Awareness: Immune to system-triggered file modifications
 """
 import os
 import time
@@ -515,10 +516,20 @@ class FusionManager:
         self.APPLE_SYNC_INTERVAL = 10  # Minimum 10 seconds between external syncs PER FILE
 
     def check_debounce(self, filepath):
-        """Check if file has been idle long enough for processing."""
+        """
+        Check if file has been idle long enough for processing.
+        [FIX] Now implements 'Self-Awareness' - ignores system's own writes.
+        """
         if not os.path.exists(filepath):
             return False
         mtime = FileUtils.get_mtime(filepath)
+        
+        # [CRITICAL FIX] Self-Exemption
+        # If the last modification matches the system's last write time (within 1s margin),
+        # treat the file as STABLE (it was modified by us, not the user).
+        if abs(mtime - FileUtils.last_system_write_time) < 1.0:
+            return True
+            
         idle = time.time() - mtime
         return idle >= Config.TYPING_COOLDOWN_SECONDS
 
@@ -532,7 +543,12 @@ class FusionManager:
 
         if os.path.exists(daily_path):
             mtime = FileUtils.get_mtime(daily_path)
-            # If file was modified in the last 60 seconds, user is in "flow" state
+            
+            # [CRITICAL FIX] Ignore system's own edits for activity detection
+            if abs(mtime - FileUtils.last_system_write_time) < 1.0:
+                return False
+
+            # If file was modified by USER in the last 60 seconds, user is in "flow" state
             if time.time() - mtime < 60:
                 return True
 
@@ -561,11 +577,16 @@ class FusionManager:
 
             # --- [PRIORITY 1] Debounce and existence check ---
             if os.path.exists(daily_path):
-                idle_duration = time.time() - FileUtils.get_mtime(daily_path)
-                wait_time = Config.TYPING_COOLDOWN_SECONDS - idle_duration
-                if wait_time > 0:
-                    # User is typing, skip ALL operations including Apple Sync
-                    continue
+                mtime = FileUtils.get_mtime(daily_path)
+                # Check if this modification was caused by the system
+                is_system_edit = abs(mtime - FileUtils.last_system_write_time) < 1.0
+                
+                if not is_system_edit:
+                    idle_duration = time.time() - mtime
+                    wait_time = Config.TYPING_COOLDOWN_SECONDS - idle_duration
+                    if wait_time > 0:
+                        # User is typing (and it wasn't us), skip ALL operations
+                        continue
 
             internal_modified = False
 
@@ -582,26 +603,31 @@ class FusionManager:
                     if os.path.exists(daily_path):
                         if FormatCore.execute(daily_path):
                             internal_modified = True
-                            Logger.info(f"   ✨ [Internal] 格式化完成，跳过本轮外部同步: {date_str}")
+                            Logger.info(f"   ✨ [Internal] 格式化完成: {date_str}")
 
                 except Exception as e:
                     Logger.error_once(f"sync_fail_{date_str}", f"内部同步异常 [{date_str}]: {e}")
 
             # --- [PRIORITY 3] Apple Calendar Sync (External Logic) ---
-            # Core mechanism: If internal processing modified the file (internal_modified),
-            # the file state is unstable - DO NOT perform external sync!
+            # [FIX] Logic Overhaul for Ouroboros Deadlock:
+            # 1. Immediate Push: If internal_modified is True, we MUST sync now. 
+            #    We just changed the file, so we know it's in a valid state. 
+            #    Waiting for next tick risks getting blocked by debounce logic again.
+            # 2. Lazy Pull: If no internal change, we respect the cooldown timer.
             
-            should_sync_apple = (
-                not internal_modified and         # File is stable
-                os.path.exists(daily_path) and    # File exists
-                self.check_debounce(daily_path)   # User is not typing
-            )
-
-            # [FIX] Frequency control: Check specifically for THIS date
+            should_sync_apple = False
             last_run = self.apple_sync_timers.get(date_str, 0)
-            time_since_last_apple = time.time() - last_run
             
-            if should_sync_apple and time_since_last_apple > self.APPLE_SYNC_INTERVAL:
+            if internal_modified:
+                # Scenario 1: Push Model (System just edited)
+                should_sync_apple = True
+                Logger.info(f"   ⚡ [Trigger] 内部修改触发立即同步: {date_str}")
+            elif os.path.exists(daily_path) and self.check_debounce(daily_path):
+                # Scenario 2: Pull Model (Check for Apple side changes)
+                if time.time() - last_run > self.APPLE_SYNC_INTERVAL:
+                    should_sync_apple = True
+
+            if should_sync_apple:
                 try:
                     # Execute sync
                     self.apple_sync.sync_day(date_str)
@@ -877,6 +903,10 @@ class Logger:
 
 
 class FileUtils:
+    # [NEW] Track the timestamp of the last write operation performed by THIS system
+    # This allows the Manager to distinguish between "User Typing" and "System Formatting"
+    last_system_write_time = 0
+
     @staticmethod
     def read_file(filepath):
         try:
@@ -901,7 +931,6 @@ class FileUtils:
         
         try:
             # 在同一目录中创建临时文件（原子重命名所需）
-            # delete=False 因为我们想要重命名它，而不是在关闭时删除它
             with tempfile.NamedTemporaryFile('w', dir=dir_name, delete=False, encoding='utf-8') as tf:
                 temp_name = tf.name
                 
@@ -918,6 +947,9 @@ class FileUtils:
             
             # 原子交换
             os.replace(temp_name, filepath)
+
+            # [CRITICAL FIX] Update the system write timestamp
+            FileUtils.last_system_write_time = time.time()
             return True
             
         except Exception as e:

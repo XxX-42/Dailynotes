@@ -69,6 +69,10 @@ class Logger:
 
 
 class FileUtils:
+    # [NEW] Track the timestamp of the last write operation performed by THIS system
+    # This allows the Manager to distinguish between "User Typing" and "System Formatting"
+    last_system_write_time = 0
+
     @staticmethod
     def read_file(filepath):
         try:
@@ -93,7 +97,6 @@ class FileUtils:
         
         try:
             # 在同一目录中创建临时文件（原子重命名所需）
-            # delete=False 因为我们想要重命名它，而不是在关闭时删除它
             with tempfile.NamedTemporaryFile('w', dir=dir_name, delete=False, encoding='utf-8') as tf:
                 temp_name = tf.name
                 
@@ -110,6 +113,9 @@ class FileUtils:
             
             # 原子交换
             os.replace(temp_name, filepath)
+
+            # [CRITICAL FIX] Update the system write timestamp
+            FileUtils.last_system_write_time = time.time()
             return True
             
         except Exception as e:

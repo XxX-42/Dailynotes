@@ -8,7 +8,8 @@ Priority Order:
 
 Key Features:
 - Dirty Flag Blocking: If internal modified file, skip external sync for this tick
-- Frequency Layering: Internal 3s tick, External 10s minimum interval
+- Frequency Layering: Internal 3s tick, External 10s minimum interval (Per-Date)
+- [FIX] Self-Awareness: Immune to system-triggered file modifications
 """
 import os
 import time
@@ -20,7 +21,6 @@ from .utils import Logger, FileUtils
 from .format_core import FormatCore
 from .state_manager import StateManager
 from .sync import SyncCore
-# [NEW] Import external sync adapter
 from external.apple_sync_adapter import AppleSyncAdapter
 
 
@@ -44,15 +44,26 @@ class FusionManager:
         # State tracking
         self.last_active_time = time.time()
         
-        # [NEW] Apple Sync frequency limiting
-        self.last_apple_sync_time = 0
-        self.APPLE_SYNC_INTERVAL = 10  # Minimum 10 seconds between external syncs
+        # [FIX] Apple Sync frequency limiting - PER DATE
+        # Changed from scalar to dict to prevent thread starvation
+        self.apple_sync_timers = {} 
+        self.APPLE_SYNC_INTERVAL = 10  # Minimum 10 seconds between external syncs PER FILE
 
     def check_debounce(self, filepath):
-        """Check if file has been idle long enough for processing."""
+        """
+        Check if file has been idle long enough for processing.
+        [FIX] Now implements 'Self-Awareness' - ignores system's own writes.
+        """
         if not os.path.exists(filepath):
             return False
         mtime = FileUtils.get_mtime(filepath)
+        
+        # [CRITICAL FIX] Self-Exemption
+        # If the last modification matches the system's last write time (within 1s margin),
+        # treat the file as STABLE (it was modified by us, not the user).
+        if abs(mtime - FileUtils.last_system_write_time) < 1.0:
+            return True
+            
         idle = time.time() - mtime
         return idle >= Config.TYPING_COOLDOWN_SECONDS
 
@@ -66,7 +77,12 @@ class FusionManager:
 
         if os.path.exists(daily_path):
             mtime = FileUtils.get_mtime(daily_path)
-            # If file was modified in the last 60 seconds, user is in "flow" state
+            
+            # [CRITICAL FIX] Ignore system's own edits for activity detection
+            if abs(mtime - FileUtils.last_system_write_time) < 1.0:
+                return False
+
+            # If file was modified by USER in the last 60 seconds, user is in "flow" state
             if time.time() - mtime < 60:
                 return True
 
@@ -81,6 +97,7 @@ class FusionManager:
         all_dates = {today_str}
 
         # 1. Scan Obsidian internal tasks (SyncCore)
+        # This might return historical dates if tasks were moved/modified
         source_data_by_date = self.sync_core.scan_all_source_tasks()
         all_dates.update(source_data_by_date.keys())
 
@@ -94,11 +111,16 @@ class FusionManager:
 
             # --- [PRIORITY 1] Debounce and existence check ---
             if os.path.exists(daily_path):
-                idle_duration = time.time() - FileUtils.get_mtime(daily_path)
-                wait_time = Config.TYPING_COOLDOWN_SECONDS - idle_duration
-                if wait_time > 0:
-                    # User is typing, skip ALL operations including Apple Sync
-                    continue
+                mtime = FileUtils.get_mtime(daily_path)
+                # Check if this modification was caused by the system
+                is_system_edit = abs(mtime - FileUtils.last_system_write_time) < 1.0
+                
+                if not is_system_edit:
+                    idle_duration = time.time() - mtime
+                    wait_time = Config.TYPING_COOLDOWN_SECONDS - idle_duration
+                    if wait_time > 0:
+                        # User is typing (and it wasn't us), skip ALL operations
+                        continue
 
             internal_modified = False
 
@@ -115,28 +137,37 @@ class FusionManager:
                     if os.path.exists(daily_path):
                         if FormatCore.execute(daily_path):
                             internal_modified = True
-                            Logger.info(f"   ✨ [Internal] 格式化完成，跳过本轮外部同步: {date_str}")
+                            Logger.info(f"   ✨ [Internal] 格式化完成: {date_str}")
 
                 except Exception as e:
                     Logger.error_once(f"sync_fail_{date_str}", f"内部同步异常 [{date_str}]: {e}")
 
             # --- [PRIORITY 3] Apple Calendar Sync (External Logic) ---
-            # Core mechanism: If internal processing modified the file (internal_modified),
-            # the file state is unstable - DO NOT perform external sync!
-            # Wait for next tick until internal processing considers file perfect.
+            # [FIX] Logic Overhaul for Ouroboros Deadlock:
+            # 1. Immediate Push: If internal_modified is True, we MUST sync now. 
+            #    We just changed the file, so we know it's in a valid state. 
+            #    Waiting for next tick risks getting blocked by debounce logic again.
+            # 2. Lazy Pull: If no internal change, we respect the cooldown timer.
             
-            should_sync_apple = (
-                not internal_modified and         # File is stable
-                os.path.exists(daily_path) and    # File exists
-                self.check_debounce(daily_path)   # User is not typing
-            )
+            should_sync_apple = False
+            last_run = self.apple_sync_timers.get(date_str, 0)
+            
+            if internal_modified:
+                # Scenario 1: Push Model (System just edited)
+                should_sync_apple = True
+                Logger.info(f"   ⚡ [Trigger] 内部修改触发立即同步: {date_str}")
+            elif os.path.exists(daily_path) and self.check_debounce(daily_path):
+                # Scenario 2: Pull Model (Check for Apple side changes)
+                if time.time() - last_run > self.APPLE_SYNC_INTERVAL:
+                    should_sync_apple = True
 
-            # Frequency control: Don't run AppleScript every loop, too heavy
-            time_since_last_apple = time.time() - self.last_apple_sync_time
-            if should_sync_apple and time_since_last_apple > self.APPLE_SYNC_INTERVAL:
+            if should_sync_apple:
                 try:
+                    # Execute sync
                     self.apple_sync.sync_day(date_str)
-                    self.last_apple_sync_time = time.time()
+                    
+                    # Update timer ONLY for this date
+                    self.apple_sync_timers[date_str] = time.time()
                 except Exception as e:
                     Logger.error_once(f"apple_exec_fail_{date_str}", f"外部同步异常: {e}")
 
@@ -164,7 +195,7 @@ class FusionManager:
                 # 1. Core tasks
                 FormatCore.fix_broken_tab_bullets_global()
                 self.process_all_dates()
-                FormatCore.fix_broken_tab_bullets_global()
+                # FormatCore.fix_broken_tab_bullets_global() # Reduced redundancy
 
                 # 2. [Perception] Is user still there?
                 if self.is_user_active():

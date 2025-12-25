@@ -42,12 +42,18 @@ def clean_task_text(line, block_id=None, context_name=None):
     # remove emoji date
     clean_text = re.sub(r'📅\s?\[\[\d{4}-\d{2}-\d{2}]]', '', clean_text)
 
-    # 6. If context_name provided, try to remove context tag ONLY if it looks like a tag (e.g. at end or specific format?)
-    # The original sync_core logic didn't aggressively remove context tags here for display, 
-    # but `dispatch_project_tasks` logic usually handles tagging explicitly.
-    # We will leave simple text cleaning here.
-    
-    return clean_text.strip()
+    # 6. [NEW] Remove self-referencing project links if context is known
+    # If we are syncing to "ProjectA.md", remove "[[ProjectA]]" from the text
+    if context_name:
+        # Normalize context name to handle NFC/NFD potential mismatch
+        c_name = unicodedata.normalize('NFC', context_name)
+        # Regex to match [[ContextName]] or [[ContextName|Alias]]
+        # We use re.escape to handle filenames with special regex chars
+        pattern = rf'\[\[{re.escape(c_name)}(?:\|.*?)?\]\]'
+        clean_text = re.sub(pattern, '', clean_text)
+
+    # 7. Final cleanup of extra spaces
+    return re.sub(r'\s+', ' ', clean_text).strip()
 
 def normalize_block_content(block_lines):
     normalized = []

@@ -12,7 +12,7 @@ from dailynotes.utils import ProcessLock, Logger
 if __name__ == "__main__":
     app = FusionManager()
 
-    Logger.info(f"=== Antigravity Sync v1.0 (反重力架构) ===")
+    Logger.info(f"=== Antigravity Sync v1.2 (Tick-Based + Archive Fix) ===")
     Logger.info(f"路径: {Config.ROOT_DIR}")
     Logger.info(f"模式: Obsidian 优先 + Apple Calendar 下游同步")
     Logger.info(f"频率: 内部 {Config.TICK_INTERVAL}s | 外部 10s 最小间隔")

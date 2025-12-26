@@ -2,6 +2,8 @@ import os
 
 
 class Config:
+    VERSION = "v1.2"    # [2025-12-26] Tick-Based + Archive Link Fix + Multi-Main
+    
     # ==========================
     # 1. 基础路径配置 (来自 Dailynotes)
     # ==========================

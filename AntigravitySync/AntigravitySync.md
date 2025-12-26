@@ -634,8 +634,23 @@ class FusionManager:
                     
                     # Update timer ONLY for this date
                     self.apple_sync_timers[date_str] = time.time()
+                    
+                    # [NEW] Log next sync time
+                    next_sync_ts = self.apple_sync_timers[date_str] + self.APPLE_SYNC_INTERVAL
+                    next_sync_time = datetime.datetime.fromtimestamp(next_sync_ts).strftime('%H:%M:%S')
+                    Logger.info(f"   🍏 [Apple] {date_str} 同步完成，下次同步: {next_sync_time}")
                 except Exception as e:
                     Logger.error_once(f"apple_exec_fail_{date_str}", f"外部同步异常: {e}")
+            else:
+                # [NEW] Show countdown for today's date when not syncing
+                if date_str == today_str and os.path.exists(daily_path):
+                    last_run = self.apple_sync_timers.get(date_str, 0)
+                    if last_run > 0:
+                        remaining = max(0, self.APPLE_SYNC_INTERVAL - (time.time() - last_run))
+                        if remaining > 0:
+                            next_sync_ts = last_run + self.APPLE_SYNC_INTERVAL
+                            next_sync_time = datetime.datetime.fromtimestamp(next_sync_ts).strftime('%H:%M:%S')
+                            Logger.debug(f"   ⏳ [Apple] {date_str} 下次同步: {next_sync_time} (剩余 {remaining:.1f}s)")
 
     def run(self):
         """Main event loop with adaptive frequency."""

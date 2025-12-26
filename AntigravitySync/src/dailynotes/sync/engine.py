@@ -177,10 +177,21 @@ class SyncCore:
                             clean_pure = re.sub(r'^[\s>]*-\s*\[.\]\s?', '', raw_first)
                             clean_pure = re.sub(r'^\d{1,2}:\d{2}(?:\s*-\s*\d{1,2}:\d{2})?\s*', '', clean_pure)
                             clean_pure = re.sub(r'\^[a-zA-Z0-9]{6,}\s*$', '', clean_pure)
+
+                            # [FIX] Remove existing return links to prevent duplication
+                            clean_pure = re.sub(r'\[\[[^\]]*?\#\^[a-zA-Z0-9]{6,}\|[⚓\*🔗⮐📅]\]\]', '', clean_pure)
+
                             clean_pure = re.sub(r'\s+', ' ', clean_pure).strip()
                             
+                            # [FIX] Return link target logic
+                            ret_target = target_p_name
+                            # Extract potential file links from the cleaned content
+                            m_links = re.findall(r'\[\[(.*?)(?:[\|#].*)?\]\]', clean_pure)
+                            if m_links:
+                                ret_target = m_links[0]
+                            
                             # Build return link
-                            ret_link = f"[[{target_p_name}#^{bid}|⮐]]"
+                            ret_link = f"[[{ret_target}#^{bid}|⮐]]"
                             
                             # Format final line: time + return link + preserved content + ID
                             final_head_line = f"{indent_str}- [{status}] {time_part}{ret_link} {clean_pure} ^{bid}\n"

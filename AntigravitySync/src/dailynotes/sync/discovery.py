@@ -27,9 +27,19 @@ def scan_projects():
                     main_files.append(f)
 
         # 只要当前目录有 main 文件，就注册为项目（不管父级是否也是项目）
-        if len(main_files) == 1:
-            p_name = unicodedata.normalize('NFC', os.path.splitext(main_files[0])[0])
+        if len(main_files) >= 1:
+            # Sort by mtime DESC, then filename ASC
+            # We want the LATEST modified.
+            def get_sort_key(fname):
+                fpath = os.path.join(root, fname)
+                mtime = os.path.getmtime(fpath)
+                return (-mtime, fname)
+            
+            main_files.sort(key=get_sort_key)
+            selected_main = main_files[0]
+            
+            p_name = unicodedata.normalize('NFC', os.path.splitext(selected_main)[0])
             project_map[root] = p_name
-            project_path_map[p_name] = os.path.join(root, main_files[0])
+            project_path_map[p_name] = os.path.join(root, selected_main)
             
     return project_map, project_path_map, file_path_map

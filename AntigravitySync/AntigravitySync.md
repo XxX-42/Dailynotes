@@ -16,7 +16,6 @@ AntigravitySync/
     │   │   ├── __init__.py
     │   │   ├── discovery.py
     │   │   ├── engine.py
-    │   │   ├── engine.py.baiduyun.uploading.cfg
     │   │   ├── ingestion.py
     │   │   ├── parsing.py
     │   │   └── rendering.py

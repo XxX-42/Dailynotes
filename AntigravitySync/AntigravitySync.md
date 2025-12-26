@@ -228,7 +228,8 @@ class FormatCore:
 
     @staticmethod
     def auto_format_links(content: str) -> str:
-        pattern = r'(?<![[\(\<])(https?://([^/\s\n]+)(?:/[^\s\n]*)?)'
+        # [FIX] Escape brackets properly to avoid "nested set" warning
+        pattern = r'(?<![\[\(\<])(https?://([^/\s\n]+)(?:/[^\s\n]*)?)'
 
         def _replacer(match): return f"[{match.group(2)}]({match.group(1)})"
 
@@ -484,6 +485,7 @@ Key Features:
 - [REFACTORED] Content-Hash Self-Awareness: Uses content identity instead of mtime
 """
 import os
+import sys
 import time
 import datetime
 import signal
@@ -514,10 +516,6 @@ class FusionManager:
         
         # State tracking
         self.last_active_time = time.time()
-        
-        # [FIX] Apple Sync frequency limiting - PER DATE
-        self.apple_sync_timers = {} 
-        self.APPLE_SYNC_INTERVAL = 10  # Minimum 10 seconds between external syncs PER FILE
         
         # [NEW] Tick-based scheduling for full date range scan
         self.tick_counter = 0  # Counts ticks since last full scan
@@ -657,24 +655,20 @@ class FusionManager:
                 Logger.error_once(f"sync_fail_{date_str}", f"内部同步异常 [{date_str}]: {e}")
 
         # --- [PRIORITY 2] Apple Calendar Sync ---
+        # [CHANGE] Strictly use TICK_INTERVAL. No separate timer logic needed if loop is strict.
         should_sync_apple = False
-        last_run = self.apple_sync_timers.get(date_str, 0)
         
         if internal_modified:
             should_sync_apple = True
             Logger.info(f"   ⚡ [Trigger] 内部修改触发立即同步: {date_str}")
         elif os.path.exists(daily_path) and self.check_debounce(daily_path):
-            if time.time() - last_run > self.APPLE_SYNC_INTERVAL:
-                should_sync_apple = True
+            # Always sync if stable and loop interval permits
+            should_sync_apple = True
 
         if should_sync_apple:
             try:
                 self.apple_sync.sync_day(date_str)
-                self.apple_sync_timers[date_str] = time.time()
-                
-                next_sync_ts = self.apple_sync_timers[date_str] + self.APPLE_SYNC_INTERVAL
-                remaining = int(next_sync_ts - time.time())
-                Logger.info(f"   🍏 [Apple] {date_str} 同步完成，下次检测倒计时: {remaining}s")
+                Logger.info(f"   🍏 [Apple] {date_str} 同步成功")
             except Exception as e:
                 Logger.error_once(f"apple_exec_fail_{date_str}", f"外部同步异常: {e}")
 
@@ -728,8 +722,17 @@ class FusionManager:
                             continue  # Already processed
                         self.process_single_date(date_str)
 
-                # --- [SLEEP] ---
-                time.sleep(TICK_INTERVAL)
+                # --- [LIVE COUNTDOWN] ---
+                # Real-time countdown on the same line
+                for i in range(TICK_INTERVAL, 0, -1):
+                    msg = f"\r[Wait] 下次检测倒计时: {i}s   "
+                    sys.stdout.write(msg)
+                    sys.stdout.flush()
+                    time.sleep(1)
+                
+                # Clear line before next log output
+                sys.stdout.write("\r" + " " * 40 + "\r")
+                sys.stdout.flush()
 
         except KeyboardInterrupt:
             raise

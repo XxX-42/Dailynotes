@@ -9,7 +9,7 @@ Priority Order:
 Key Features:
 - Dirty Flag Blocking: If internal modified file, skip external sync for this tick
 - Frequency Layering: Internal 3s tick, External 10s minimum interval (Per-Date)
-- [FIX] Self-Awareness: Immune to system-triggered file modifications
+- [REFACTORED] Content-Hash Self-Awareness: Uses content identity instead of mtime
 """
 import os
 import time
@@ -51,19 +51,26 @@ class FusionManager:
 
     def check_debounce(self, filepath):
         """
-        Check if file has been idle long enough for processing.
-        [FIX] Now implements 'Self-Awareness' - ignores system's own writes.
+        Check if file is stable for processing.
+        [REFACTORED] Uses content-hash to distinguish system writes from user edits.
         """
         if not os.path.exists(filepath):
             return False
-        mtime = FileUtils.get_mtime(filepath)
         
-        # [CRITICAL FIX] Self-Exemption
-        # If the last modification matches the system's last write time (within 1s margin),
-        # treat the file as STABLE (it was modified by us, not the user).
-        if abs(mtime - FileUtils.last_system_write_time) < 1.0:
+        # Read current content and calculate its hash
+        content = FileUtils.read_content(filepath)
+        if content is None:
+            return False
+        
+        content_hash = FileUtils.calculate_hash(content)
+        
+        # If hash matches a system write, file is "self-owned" -> stable
+        # Note: is_system_write() consumes the hash (one-time use)
+        if FileUtils.is_system_write(content_hash):
             return True
-            
+        
+        # Otherwise, check mtime-based cooldown (user is typing)
+        mtime = FileUtils.get_mtime(filepath)
         idle = time.time() - mtime
         return idle >= Config.TYPING_COOLDOWN_SECONDS
 
@@ -71,18 +78,21 @@ class FusionManager:
         """
         [Activity Detection] Check for "hot" files.
         If user is editing today's diary or recently modified any file, consider active.
+        [REFACTORED] Uses content-hash to ignore system edits.
         """
         today_str = datetime.date.today().strftime('%Y-%m-%d')
         daily_path = os.path.join(Config.DAILY_NOTE_DIR, f"{today_str}.md")
 
         if os.path.exists(daily_path):
-            mtime = FileUtils.get_mtime(daily_path)
-            
-            # [CRITICAL FIX] Ignore system's own edits for activity detection
-            if abs(mtime - FileUtils.last_system_write_time) < 1.0:
-                return False
+            # Check if this is a system write (don't consume the hash)
+            content = FileUtils.read_content(daily_path)
+            if content:
+                content_hash = FileUtils.calculate_hash(content)
+                if FileUtils.check_system_write(content_hash):
+                    return False  # System edit, not user activity
 
             # If file was modified by USER in the last 60 seconds, user is in "flow" state
+            mtime = FileUtils.get_mtime(daily_path)
             if time.time() - mtime < 60:
                 return True
 
@@ -110,13 +120,16 @@ class FusionManager:
             daily_path = os.path.join(Config.DAILY_NOTE_DIR, f"{date_str}.md")
 
             # --- [PRIORITY 1] Debounce and existence check ---
+            # [REFACTORED] Use content-hash instead of mtime comparison
             if os.path.exists(daily_path):
-                mtime = FileUtils.get_mtime(daily_path)
-                # Check if this modification was caused by the system
-                is_system_edit = abs(mtime - FileUtils.last_system_write_time) < 1.0
+                content = FileUtils.read_content(daily_path)
+                is_system_edit = False
+                if content:
+                    content_hash = FileUtils.calculate_hash(content)
+                    is_system_edit = FileUtils.check_system_write(content_hash)
                 
                 if not is_system_edit:
-                    idle_duration = time.time() - mtime
+                    idle_duration = time.time() - FileUtils.get_mtime(daily_path)
                     wait_time = Config.TYPING_COOLDOWN_SECONDS - idle_duration
                     if wait_time > 0:
                         # User is typing (and it wasn't us), skip ALL operations
@@ -143,10 +156,9 @@ class FusionManager:
                     Logger.error_once(f"sync_fail_{date_str}", f"内部同步异常 [{date_str}]: {e}")
 
             # --- [PRIORITY 3] Apple Calendar Sync (External Logic) ---
-            # [FIX] Logic Overhaul for Ouroboros Deadlock:
+            # Logic:
             # 1. Immediate Push: If internal_modified is True, we MUST sync now. 
             #    We just changed the file, so we know it's in a valid state. 
-            #    Waiting for next tick risks getting blocked by debounce logic again.
             # 2. Lazy Pull: If no internal change, we respect the cooldown timer.
             
             should_sync_apple = False
@@ -210,7 +222,6 @@ class FusionManager:
                 # 1. Core tasks
                 FormatCore.fix_broken_tab_bullets_global()
                 self.process_all_dates()
-                # FormatCore.fix_broken_tab_bullets_global() # Reduced redundancy
 
                 # 2. [Perception] Is user still there?
                 if self.is_user_active():

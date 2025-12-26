@@ -475,7 +475,7 @@ Priority Order:
 Key Features:
 - Dirty Flag Blocking: If internal modified file, skip external sync for this tick
 - Frequency Layering: Internal 3s tick, External 10s minimum interval (Per-Date)
-- [FIX] Self-Awareness: Immune to system-triggered file modifications
+- [REFACTORED] Content-Hash Self-Awareness: Uses content identity instead of mtime
 """
 import os
 import time
@@ -517,19 +517,26 @@ class FusionManager:
 
     def check_debounce(self, filepath):
         """
-        Check if file has been idle long enough for processing.
-        [FIX] Now implements 'Self-Awareness' - ignores system's own writes.
+        Check if file is stable for processing.
+        [REFACTORED] Uses content-hash to distinguish system writes from user edits.
         """
         if not os.path.exists(filepath):
             return False
-        mtime = FileUtils.get_mtime(filepath)
         
-        # [CRITICAL FIX] Self-Exemption
-        # If the last modification matches the system's last write time (within 1s margin),
-        # treat the file as STABLE (it was modified by us, not the user).
-        if abs(mtime - FileUtils.last_system_write_time) < 1.0:
+        # Read current content and calculate its hash
+        content = FileUtils.read_content(filepath)
+        if content is None:
+            return False
+        
+        content_hash = FileUtils.calculate_hash(content)
+        
+        # If hash matches a system write, file is "self-owned" -> stable
+        # Note: is_system_write() consumes the hash (one-time use)
+        if FileUtils.is_system_write(content_hash):
             return True
-            
+        
+        # Otherwise, check mtime-based cooldown (user is typing)
+        mtime = FileUtils.get_mtime(filepath)
         idle = time.time() - mtime
         return idle >= Config.TYPING_COOLDOWN_SECONDS
 
@@ -537,18 +544,21 @@ class FusionManager:
         """
         [Activity Detection] Check for "hot" files.
         If user is editing today's diary or recently modified any file, consider active.
+        [REFACTORED] Uses content-hash to ignore system edits.
         """
         today_str = datetime.date.today().strftime('%Y-%m-%d')
         daily_path = os.path.join(Config.DAILY_NOTE_DIR, f"{today_str}.md")
 
         if os.path.exists(daily_path):
-            mtime = FileUtils.get_mtime(daily_path)
-            
-            # [CRITICAL FIX] Ignore system's own edits for activity detection
-            if abs(mtime - FileUtils.last_system_write_time) < 1.0:
-                return False
+            # Check if this is a system write (don't consume the hash)
+            content = FileUtils.read_content(daily_path)
+            if content:
+                content_hash = FileUtils.calculate_hash(content)
+                if FileUtils.check_system_write(content_hash):
+                    return False  # System edit, not user activity
 
             # If file was modified by USER in the last 60 seconds, user is in "flow" state
+            mtime = FileUtils.get_mtime(daily_path)
             if time.time() - mtime < 60:
                 return True
 
@@ -576,13 +586,16 @@ class FusionManager:
             daily_path = os.path.join(Config.DAILY_NOTE_DIR, f"{date_str}.md")
 
             # --- [PRIORITY 1] Debounce and existence check ---
+            # [REFACTORED] Use content-hash instead of mtime comparison
             if os.path.exists(daily_path):
-                mtime = FileUtils.get_mtime(daily_path)
-                # Check if this modification was caused by the system
-                is_system_edit = abs(mtime - FileUtils.last_system_write_time) < 1.0
+                content = FileUtils.read_content(daily_path)
+                is_system_edit = False
+                if content:
+                    content_hash = FileUtils.calculate_hash(content)
+                    is_system_edit = FileUtils.check_system_write(content_hash)
                 
                 if not is_system_edit:
-                    idle_duration = time.time() - mtime
+                    idle_duration = time.time() - FileUtils.get_mtime(daily_path)
                     wait_time = Config.TYPING_COOLDOWN_SECONDS - idle_duration
                     if wait_time > 0:
                         # User is typing (and it wasn't us), skip ALL operations
@@ -609,10 +622,9 @@ class FusionManager:
                     Logger.error_once(f"sync_fail_{date_str}", f"内部同步异常 [{date_str}]: {e}")
 
             # --- [PRIORITY 3] Apple Calendar Sync (External Logic) ---
-            # [FIX] Logic Overhaul for Ouroboros Deadlock:
+            # Logic:
             # 1. Immediate Push: If internal_modified is True, we MUST sync now. 
             #    We just changed the file, so we know it's in a valid state. 
-            #    Waiting for next tick risks getting blocked by debounce logic again.
             # 2. Lazy Pull: If no internal change, we respect the cooldown timer.
             
             should_sync_apple = False
@@ -676,7 +688,6 @@ class FusionManager:
                 # 1. Core tasks
                 FormatCore.fix_broken_tab_bullets_global()
                 self.process_all_dates()
-                # FormatCore.fix_broken_tab_bullets_global() # Reduced redundancy
 
                 # 2. [Perception] Is user still there?
                 if self.is_user_active():
@@ -852,6 +863,7 @@ import datetime
 import time
 import tempfile
 import inspect
+import hashlib
 from typing import List, Union
 from config import Config
 
@@ -918,14 +930,41 @@ class Logger:
 
 
 class FileUtils:
-    # [NEW] Track the timestamp of the last write operation performed by THIS system
-    # This allows the Manager to distinguish between "User Typing" and "System Formatting"
-    last_system_write_time = 0
+    # [REFACTORED] Content-hash based self-awareness
+    # Replaces fragile mtime comparison with deterministic content identity
+    _system_write_hashes = set()
+    _MAX_HASH_CACHE = 50  # Prevent memory leak
+
+    @staticmethod
+    def calculate_hash(content: str) -> str:
+        """Fast MD5 hash for content identity."""
+        if content is None:
+            content = ""
+        return hashlib.md5(content.encode('utf-8')).hexdigest()
+
+    @classmethod
+    def is_system_write(cls, content_hash: str) -> bool:
+        """
+        Check if hash matches a system write.
+        If match found, removes it from set (one-time use).
+        """
+        if content_hash in cls._system_write_hashes:
+            cls._system_write_hashes.discard(content_hash)
+            return True
+        return False
+
+    @classmethod
+    def check_system_write(cls, content_hash: str) -> bool:
+        """
+        Check if hash matches a system write WITHOUT removing it.
+        Used for activity detection where we don't want to consume the hash.
+        """
+        return content_hash in cls._system_write_hashes
 
     @staticmethod
     def read_file(filepath):
         try:
-            with open(filepath, 'r', encoding='utf-8') as f:
+            with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
                 return f.readlines()
         except Exception:
             return None
@@ -933,7 +972,7 @@ class FileUtils:
     @staticmethod
     def read_content(filepath):
         try:
-            with open(filepath, 'r', encoding='utf-8') as f:
+            with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
                 return f.read()
         except Exception:
             return None
@@ -944,17 +983,27 @@ class FileUtils:
         dir_name = os.path.dirname(filepath) or '.'
         temp_name = None
         
+        # Normalize content to string for hashing
+        if lines_or_content is None:
+            final_content = ""
+        elif isinstance(lines_or_content, list):
+            final_content = "".join([str(l) for l in lines_or_content if l is not None])
+        else:
+            final_content = str(lines_or_content)
+        
+        # [CRITICAL] Calculate hash BEFORE write and register
+        content_hash = FileUtils.calculate_hash(final_content)
+        
+        # Manage cache size to prevent memory leak
+        if len(FileUtils._system_write_hashes) >= FileUtils._MAX_HASH_CACHE:
+            FileUtils._system_write_hashes.clear()
+        FileUtils._system_write_hashes.add(content_hash)
+        
         try:
             # 在同一目录中创建临时文件（原子重命名所需）
             with tempfile.NamedTemporaryFile('w', dir=dir_name, delete=False, encoding='utf-8') as tf:
                 temp_name = tf.name
-                
-                if lines_or_content is None:
-                    tf.write("")
-                elif isinstance(lines_or_content, list):
-                    tf.writelines([str(l) for l in lines_or_content if l is not None])
-                else:
-                    tf.write(str(lines_or_content))
+                tf.write(final_content)
                 
                 # 刷新并 fsync 以确保数据物理写入
                 tf.flush()
@@ -962,13 +1011,12 @@ class FileUtils:
             
             # 原子交换
             os.replace(temp_name, filepath)
-
-            # [CRITICAL FIX] Update the system write timestamp
-            FileUtils.last_system_write_time = time.time()
             return True
             
         except Exception as e:
             Logger.error_once(f"write_{filepath}", f"写入失败 {filepath}: {e}")
+            # Remove hash on failure (write didn't happen)
+            FileUtils._system_write_hashes.discard(content_hash)
             # 如果临时文件存在，则清理
             if temp_name and os.path.exists(temp_name):
                 try:

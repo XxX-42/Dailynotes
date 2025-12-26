@@ -3,6 +3,7 @@ import datetime
 import time
 import tempfile
 import inspect
+import hashlib
 from typing import List, Union
 from config import Config
 
@@ -69,14 +70,41 @@ class Logger:
 
 
 class FileUtils:
-    # [NEW] Track the timestamp of the last write operation performed by THIS system
-    # This allows the Manager to distinguish between "User Typing" and "System Formatting"
-    last_system_write_time = 0
+    # [REFACTORED] Content-hash based self-awareness
+    # Replaces fragile mtime comparison with deterministic content identity
+    _system_write_hashes = set()
+    _MAX_HASH_CACHE = 50  # Prevent memory leak
+
+    @staticmethod
+    def calculate_hash(content: str) -> str:
+        """Fast MD5 hash for content identity."""
+        if content is None:
+            content = ""
+        return hashlib.md5(content.encode('utf-8')).hexdigest()
+
+    @classmethod
+    def is_system_write(cls, content_hash: str) -> bool:
+        """
+        Check if hash matches a system write.
+        If match found, removes it from set (one-time use).
+        """
+        if content_hash in cls._system_write_hashes:
+            cls._system_write_hashes.discard(content_hash)
+            return True
+        return False
+
+    @classmethod
+    def check_system_write(cls, content_hash: str) -> bool:
+        """
+        Check if hash matches a system write WITHOUT removing it.
+        Used for activity detection where we don't want to consume the hash.
+        """
+        return content_hash in cls._system_write_hashes
 
     @staticmethod
     def read_file(filepath):
         try:
-            with open(filepath, 'r', encoding='utf-8') as f:
+            with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
                 return f.readlines()
         except Exception:
             return None
@@ -84,7 +112,7 @@ class FileUtils:
     @staticmethod
     def read_content(filepath):
         try:
-            with open(filepath, 'r', encoding='utf-8') as f:
+            with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
                 return f.read()
         except Exception:
             return None
@@ -95,17 +123,27 @@ class FileUtils:
         dir_name = os.path.dirname(filepath) or '.'
         temp_name = None
         
+        # Normalize content to string for hashing
+        if lines_or_content is None:
+            final_content = ""
+        elif isinstance(lines_or_content, list):
+            final_content = "".join([str(l) for l in lines_or_content if l is not None])
+        else:
+            final_content = str(lines_or_content)
+        
+        # [CRITICAL] Calculate hash BEFORE write and register
+        content_hash = FileUtils.calculate_hash(final_content)
+        
+        # Manage cache size to prevent memory leak
+        if len(FileUtils._system_write_hashes) >= FileUtils._MAX_HASH_CACHE:
+            FileUtils._system_write_hashes.clear()
+        FileUtils._system_write_hashes.add(content_hash)
+        
         try:
             # 在同一目录中创建临时文件（原子重命名所需）
             with tempfile.NamedTemporaryFile('w', dir=dir_name, delete=False, encoding='utf-8') as tf:
                 temp_name = tf.name
-                
-                if lines_or_content is None:
-                    tf.write("")
-                elif isinstance(lines_or_content, list):
-                    tf.writelines([str(l) for l in lines_or_content if l is not None])
-                else:
-                    tf.write(str(lines_or_content))
+                tf.write(final_content)
                 
                 # 刷新并 fsync 以确保数据物理写入
                 tf.flush()
@@ -113,13 +151,12 @@ class FileUtils:
             
             # 原子交换
             os.replace(temp_name, filepath)
-
-            # [CRITICAL FIX] Update the system write timestamp
-            FileUtils.last_system_write_time = time.time()
             return True
             
         except Exception as e:
             Logger.error_once(f"write_{filepath}", f"写入失败 {filepath}: {e}")
+            # Remove hash on failure (write didn't happen)
+            FileUtils._system_write_hashes.discard(content_hash)
             # 如果临时文件存在，则清理
             if temp_name and os.path.exists(temp_name):
                 try:

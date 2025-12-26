@@ -194,8 +194,11 @@ class FusionManager:
 
         if should_sync_apple:
             try:
-                self.apple_sync.sync_day(date_str)
-                Logger.info(f"   🍏 [Apple] {date_str} 同步成功")
+                obs_mod, apple_mod = self.apple_sync.sync_day(date_str)
+                if obs_mod or apple_mod:
+                    Logger.info(f"   🍏 [Apple] {date_str} 同步成功")
+                else:
+                    Logger.info(f"   🍏 [Apple] {date_str} 未检测到任何改动")
             except Exception as e:
                 Logger.error_once(f"apple_exec_fail_{date_str}", f"外部同步异常: {e}")
 

@@ -208,7 +208,14 @@ class SyncCore:
                                 if link_clean in known_projects and link_clean != target_p_name:
                                     clean_pure = re.sub(rf'\[\[{re.escape(link)}.*?\]\]', '', clean_pure).strip()
 
-                            ret_link = f"[[{target_p_name}#^{bid}|⮐]]"
+                            # [FIX] Return link should point to the original file if possible, not the project main file
+                            ret_target = target_p_name
+                            if raw_link_text:
+                                m = re.match(r'\[\[(.*?)(?:[\|#].*)?\]\]', raw_link_text)
+                                if m:
+                                    ret_target = m.group(1)
+
+                            ret_link = f"[[{ret_target}#^{bid}|⮐]]"
 
                             target_tag = f"[[{target_p_name}]]"
                             if target_tag in clean_pure:

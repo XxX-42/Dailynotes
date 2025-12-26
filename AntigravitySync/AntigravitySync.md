@@ -11,6 +11,7 @@ AntigravitySync/
     │   ├── __init__.py
     │   ├── format_core.py
     │   ├── manager.py
+    │   ├── manager.py.baiduyun.uploading.cfg
     │   ├── state_manager.py
     │   ├── sync
     │   │   ├── __init__.py
@@ -667,8 +668,11 @@ class FusionManager:
 
         if should_sync_apple:
             try:
-                self.apple_sync.sync_day(date_str)
-                Logger.info(f"   🍏 [Apple] {date_str} 同步成功")
+                obs_mod, apple_mod = self.apple_sync.sync_day(date_str)
+                if obs_mod or apple_mod:
+                    Logger.info(f"   🍏 [Apple] {date_str} 同步成功")
+                else:
+                    Logger.info(f"   🍏 [Apple] {date_str} 未检测到任何改动")
             except Exception as e:
                 Logger.error_once(f"apple_exec_fail_{date_str}", f"外部同步异常: {e}")
 
@@ -1385,7 +1389,14 @@ class SyncCore:
                                 if link_clean in known_projects and link_clean != target_p_name:
                                     clean_pure = re.sub(rf'\[\[{re.escape(link)}.*?\]\]', '', clean_pure).strip()
 
-                            ret_link = f"[[{target_p_name}#^{bid}|⮐]]"
+                            # [FIX] Return link should point to the original file if possible, not the project main file
+                            ret_target = target_p_name
+                            if raw_link_text:
+                                m = re.match(r'\[\[(.*?)(?:[\|#].*)?\]\]', raw_link_text)
+                                if m:
+                                    ret_target = m.group(1)
+
+                            ret_link = f"[[{ret_target}#^{bid}|⮐]]"
 
                             target_tag = f"[[{target_p_name}]]"
                             if target_tag in clean_pure:
@@ -2566,10 +2577,9 @@ class AppleSyncAdapter:
         Do not call frequently.
         
         Args:
-            date_str: Date string in YYYY-MM-DD format
-        """
+            date_str: Date string in YYYY-MM-DD format        """
         if not self.enabled:
-            return
+            return False, False
         
         try:
             target_dt = datetime.datetime.strptime(date_str, "%Y-%m-%d")
@@ -2582,10 +2592,11 @@ class AppleSyncAdapter:
             from .task_sync_core.sync_engine import perform_bidirectional_sync
             
             # Call the original TaskSynctoreminder sync logic
-            perform_bidirectional_sync(date_str, daily_path, self.sm, target_dt)
+            return perform_bidirectional_sync(date_str, daily_path, self.sm, target_dt)
             
         except Exception as e:
             Logger.error_once(f"apple_sync_err_{date_str}", f"Apple Sync Error: {e}")
+            return False, False
     
     def is_available(self) -> bool:
         """Check if Apple Sync is available and initialized."""
@@ -3344,6 +3355,9 @@ def perform_bidirectional_sync(date_str, obs_path, state_manager, target_dt):
                 return
 
     state_manager.update_snapshot(date_str, current_obs, current_cal)
+    
+    apple_ops_count = len(batch.creates) + len(batch.updates) + len(batch.deletes)
+    return file_dirty, apple_ops_count > 0
 
 ```
 

@@ -72,10 +72,9 @@ class AppleSyncAdapter:
         Do not call frequently.
         
         Args:
-            date_str: Date string in YYYY-MM-DD format
-        """
+            date_str: Date string in YYYY-MM-DD format        """
         if not self.enabled:
-            return
+            return False, False
         
         try:
             target_dt = datetime.datetime.strptime(date_str, "%Y-%m-%d")
@@ -88,10 +87,11 @@ class AppleSyncAdapter:
             from .task_sync_core.sync_engine import perform_bidirectional_sync
             
             # Call the original TaskSynctoreminder sync logic
-            perform_bidirectional_sync(date_str, daily_path, self.sm, target_dt)
+            return perform_bidirectional_sync(date_str, daily_path, self.sm, target_dt)
             
         except Exception as e:
             Logger.error_once(f"apple_sync_err_{date_str}", f"Apple Sync Error: {e}")
+            return False, False
     
     def is_available(self) -> bool:
         """Check if Apple Sync is available and initialized."""

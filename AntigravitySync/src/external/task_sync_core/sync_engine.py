@@ -270,3 +270,6 @@ def perform_bidirectional_sync(date_str, obs_path, state_manager, target_dt):
                 return
 
     state_manager.update_snapshot(date_str, current_obs, current_cal)
+    
+    apple_ops_count = len(batch.creates) + len(batch.updates) + len(batch.deletes)
+    return file_dirty, apple_ops_count > 0

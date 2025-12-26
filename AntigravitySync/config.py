@@ -34,6 +34,12 @@ class Config:
     TYPING_COOLDOWN_SECONDS = 6
     IMAGE_PARAM_SUFFIX = "|L|200"
     DEBUG_MODE = True
+    
+    # [NEW] Tick-based scheduling parameters
+    DAY_START = -1  # -1 = 昨天
+    DAY_END = 6     # 6 = 未来6天
+    COMPLETE_TASKS_SYNC_INTERVAL = 5  # 每5个tick执行一次全量扫描
+
 
     # 范围限制
     DAILY_NOTE_SECTIONS = ['# Day planner', '# Journey']

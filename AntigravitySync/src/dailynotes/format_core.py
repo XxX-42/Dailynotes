@@ -18,7 +18,8 @@ class FormatCore:
 
     @staticmethod
     def auto_format_links(content: str) -> str:
-        pattern = r'(?<![[\(\<])(https?://([^/\s\n]+)(?:/[^\s\n]*)?)'
+        # [FIX] Escape brackets properly to avoid "nested set" warning
+        pattern = r'(?<![\[\(\<])(https?://([^/\s\n]+)(?:/[^\s\n]*)?)'
 
         def _replacer(match): return f"[{match.group(2)}]({match.group(1)})"
 

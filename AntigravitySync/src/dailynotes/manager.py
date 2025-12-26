@@ -144,8 +144,15 @@ class FusionManager:
     def process_single_date(self, date_str):
         """
         Process a single date: internal sync + formatting + Apple sync.
-        Returns True if any modification was made.
+        Returns detailed result dict.
         """
+        results = {
+            "internal_mod": False,       # SyncCore/FormatCore logic changed Obsidian file
+            "apple_to_obsidian": False,  # Apple sync changed Obsidian file (C->O)
+            "obsidian_to_apple": False,  # Obsidian sync changed Apple Calendar (O->C)
+            "skipped": False
+        }
+
         daily_path = os.path.join(Config.DAILY_NOTE_DIR, f"{date_str}.md")
         
         # Debounce check
@@ -160,9 +167,8 @@ class FusionManager:
                 idle_duration = time.time() - FileUtils.get_mtime(daily_path)
                 if idle_duration < Config.TYPING_COOLDOWN_SECONDS:
                     # User is typing, skip
-                    return False
-
-        internal_modified = False
+                    results["skipped"] = True
+                    return results
 
         # --- [PRIORITY 1] Obsidian Internal Processing ---
         if self.check_debounce(daily_path) or not os.path.exists(daily_path):
@@ -170,31 +176,36 @@ class FusionManager:
                 # A. Task Flow (Projects <-> Daily)
                 source_data_by_date = self.sync_core.scan_all_source_tasks()
                 tasks_for_date = source_data_by_date.get(date_str, {})
+                # Note: SyncCore.process_date currently doesn't return boolean, assuming it might modify tasks
+                # but currently task movement logic is mainly in dispatch_project_tasks which is not called here directly?
+                # Wait, SyncCore.process_date might invoke task movement if implemented.
+                # Assuming scan_all_source_tasks + process_date covers internal logic.
                 self.sync_core.process_date(date_str, tasks_for_date)
 
                 # B. Formatting (FormatCore)
                 if os.path.exists(daily_path):
                     if FormatCore.execute(daily_path):
-                        internal_modified = True
+                        results["internal_mod"] = True
                         Logger.info(f"   ✨ [Internal] 格式化完成: {date_str}")
 
             except Exception as e:
                 Logger.error_once(f"sync_fail_{date_str}", f"内部同步异常 [{date_str}]: {e}")
 
         # --- [PRIORITY 2] Apple Calendar Sync ---
-        # [CHANGE] Strictly use TICK_INTERVAL. No separate timer logic needed if loop is strict.
         should_sync_apple = False
         
-        if internal_modified:
+        if results["internal_mod"]:
             should_sync_apple = True
             Logger.info(f"   ⚡ [Trigger] 内部修改触发立即同步: {date_str}")
         elif os.path.exists(daily_path) and self.check_debounce(daily_path):
-            # Always sync if stable and loop interval permits
             should_sync_apple = True
 
         if should_sync_apple:
             try:
                 obs_mod, apple_mod = self.apple_sync.sync_day(date_str)
+                results["apple_to_obsidian"] = obs_mod
+                results["obsidian_to_apple"] = apple_mod
+                
                 if obs_mod or apple_mod:
                     Logger.info(f"   🍏 [Apple] {date_str} 同步成功")
                 else:
@@ -202,16 +213,11 @@ class FusionManager:
             except Exception as e:
                 Logger.error_once(f"apple_exec_fail_{date_str}", f"外部同步异常: {e}")
 
-        return internal_modified
+        return results
 
     def run(self):
         """
         Main event loop with tick-based scheduling.
-        
-        Scheduling Logic:
-        - Every TICK_INTERVAL: Process today's diary
-        - Every COMPLETE_TASKS_SYNC_INTERVAL * TICK_INTERVAL: Process DAY_START to DAY_END
-        - If today's diary changes: Reset tick counter (trigger full scan sooner)
         """
         def _term_handler(signum, frame):
             raise SystemExit("Received SIGTERM")
@@ -234,11 +240,37 @@ class FusionManager:
                 FormatCore.fix_broken_tab_bullets_global()
 
                 # --- [EVERY TICK] Process today's diary ---
-                self.process_single_date(today_str)
+                res = self.process_single_date(today_str)
 
-                # --- [CHECK] Did today's diary change? ---
+                # --- [CHECK] Change Detection & Reset ---
+                reset_needed = False
+                reset_reasons = []
+
+                if res["internal_mod"]: reset_reasons.append("Obsidian 内部整理")
+                if res["apple_to_obsidian"]: reset_reasons.append("Apple 日历变更")
+                if res["obsidian_to_apple"]: reset_reasons.append("Obsidian 推送变更")
+
+                if len(reset_reasons) > 0:
+                    reset_needed = True
+                    # Update local tracker to match the new state immediately, 
+                    # preventing check_today_changed from flagging system writes as manual edits.
+                    today_path = os.path.join(Config.DAILY_NOTE_DIR, f"{today_str}.md")
+                    if os.path.exists(today_path):
+                        content = FileUtils.read_content(today_path)
+                        if content:
+                            self.today_last_hash = FileUtils.calculate_hash(content)
+
+                # Check for manual edits (User typed something)
+                # check_today_changed will return True if hash is different from self.today_last_hash
                 if self.check_today_changed():
-                    Logger.info(f"   🔄 [Reset] 今日日记变更，重置全量扫描倒计时")
+                    if not reset_needed:
+                        # Only report if it wasn't already covered by system actions
+                        reset_needed = True
+                        reset_reasons.append("今日日记变更(手动)")
+
+                if reset_needed:
+                    reason_str = " + ".join(reset_reasons)
+                    Logger.info(f"   🔄 [Reset] {reason_str}，重置全量扫描倒计时")
                     self.tick_counter = 0
 
                 # --- [FULL SCAN] Every FULL_SCAN_MULTIPLIER ticks ---
@@ -253,14 +285,12 @@ class FusionManager:
                         self.process_single_date(date_str)
 
                 # --- [LIVE COUNTDOWN] ---
-                # Real-time countdown on the same line
                 for i in range(TICK_INTERVAL, 0, -1):
                     msg = f"\r[Wait] 下次检测倒计时: {i}s   "
                     sys.stdout.write(msg)
                     sys.stdout.flush()
                     time.sleep(1)
                 
-                # Clear line before next log output
                 sys.stdout.write("\r" + " " * 40 + "\r")
                 sys.stdout.flush()
 

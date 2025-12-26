@@ -183,8 +183,8 @@ class FusionManager:
                     
                     # [NEW] Log next sync time
                     next_sync_ts = self.apple_sync_timers[date_str] + self.APPLE_SYNC_INTERVAL
-                    next_sync_time = datetime.datetime.fromtimestamp(next_sync_ts).strftime('%H:%M:%S')
-                    Logger.info(f"   🍏 [Apple] {date_str} 同步完成，下次同步: {next_sync_time}")
+                    remaining = int(next_sync_ts - time.time())
+                    Logger.info(f"   🍏 [Apple] {date_str} 同步完成，下次检测倒计时: {remaining}s")
                 except Exception as e:
                     Logger.error_once(f"apple_exec_fail_{date_str}", f"外部同步异常: {e}")
             else:

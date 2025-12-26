@@ -1300,25 +1300,49 @@ class SyncCore:
                         final_head_line = raw_first
                         current_bid = None
 
+                        # === UNIFIED STRATEGY: Always format properly ===
+                        # Extract or generate block ID
+                        bid_m = re.search(r'\^([a-zA-Z0-9]{6,})\s*$', raw_first)
+                        bid = bid_m.group(1) if bid_m else self.generate_block_id().replace('^', '')
+                        current_bid = bid
+
+                        # Extract indentation
+                        indent_len = len(raw_first) - len(raw_first.lstrip())
+                        indent_str = raw_first[:indent_len]
+
+                        # Extract status
+                        st_m = re.search(r'-\s*\[(.)\]', raw_first)
+                        status = st_m.group(1) if st_m else ' '
+
+                        # [FIX] Extract time (critical for preserving Day Planner times)
+                        time_part = ""
+                        body_only = re.sub(r'^\s*-\s*\[.\]\s?', '', raw_first)
+                        tm = re.match(r'^(\d{1,2}:\d{2}(?:\s*-\s*\d{1,2}:\d{2})?)', body_only)
+                        if tm: 
+                            time_part = tm.group(1) + " "
+
                         if has_existing_link:
-                            # === STRATEGY A: Link Preservation ===
-                            # Move as-is. Do NOT clean. Do NOT inject new links.
-                            # We just ensure it ends with newline
-                            final_head_line = raw_first.rstrip() + '\n'
+                            # === STRATEGY A: Link Preservation with proper formatting ===
+                            # Keep existing links but inject return link and ID
                             
-                            # Try to find ID just for tracking, if present
-                            m_bid = re.search(r'\^([a-zA-Z0-9]{6,})\s*$', raw_first)
-                            if m_bid: current_bid = m_bid.group(1)
+                            # Clean the text but preserve existing links
+                            # Remove: status, indent, time (will re-add), ID (will re-add)
+                            clean_pure = re.sub(r'^[\s>]*-\s*\[.\]\s?', '', raw_first)
+                            clean_pure = re.sub(r'^\d{1,2}:\d{2}(?:\s*-\s*\d{1,2}:\d{2})?\s*', '', clean_pure)
+                            clean_pure = re.sub(r'\^[a-zA-Z0-9]{6,}\s*$', '', clean_pure)
+                            clean_pure = re.sub(r'\s+', ' ', clean_pure).strip()
                             
-                            Logger.info(f"   🚚 搬运任务 (保留原链接): {current_bid or 'no-id'}")
+                            # Build return link
+                            ret_link = f"[[{target_p_name}#^{bid}|⮐]]"
+                            
+                            # Format final line: time + return link + preserved content + ID
+                            final_head_line = f"{indent_str}- [{status}] {time_part}{ret_link} {clean_pure} ^{bid}\n"
+                            
+                            Logger.info(f"   🚚 搬运任务 (保留原链接+时间): {bid}")
                             
                         else:
                             # === STRATEGY B: Clean & Generate === (Original Logic)
-                            bid_m = re.search(r'\^([a-zA-Z0-9]{6,})\s*$', raw_first)
-                            bid = bid_m.group(1) if bid_m else self.generate_block_id().replace('^', '')
-                            current_bid = bid
-
-                            # Clean Text
+                            # Clean Text (removes time, which is already extracted)
                             clean_pure = clean_task_text(raw_first, bid, target_p_name)
                             
                             # Dynamic Stale Link Removal
@@ -1336,17 +1360,6 @@ class SyncCore:
                                 link_clean = link.split('|')[0].split('#')[0] 
                                 if link_clean in known_projects and link_clean != target_p_name:
                                     clean_pure = re.sub(rf'\[\[{re.escape(link)}.*?\]\]', '', clean_pure).strip()
-                            
-                            indent_len = len(raw_first) - len(raw_first.lstrip())
-                            indent_str = raw_first[:indent_len]
-
-                            st_m = re.search(r'-\s*\[(.)\]', raw_first)
-                            status = st_m.group(1) if st_m else ' '
-
-                            time_part = ""
-                            body_only = re.sub(r'^\s*-\s*\[.\]\s?', '', raw_first)
-                            tm = re.match(r'^(\d{1,2}:\d{2}(?:\s*-\s*\d{1,2}:\d{2})?)', body_only)
-                            if tm: time_part = tm.group(1) + " "
 
                             ret_link = f"[[{target_p_name}#^{bid}|⮐]]"
 

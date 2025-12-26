@@ -121,7 +121,8 @@ def perform_bidirectional_sync(date_str, obs_path, state_manager, target_dt):
                         o_is_completed = (o_data['status'] == 'x')
                         batch.add_update(c_data['id'], c_data['current_calendar'], o_data['name'], o_data['start_time'],
                                          c_data['duration'], o_is_completed)
-                        handled_obs_keys.add(o_key)
+                        handled_obs_keys.add(o_key)      # Current key (prevent duplicate create)
+                        handled_obs_keys.add(old_key)    # Old key (prevent delete)
                         handled_cal_keys.add(old_key)
                         break
 

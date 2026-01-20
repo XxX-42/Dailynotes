@@ -2,7 +2,7 @@ import os
 
 
 class Config:
-    VERSION = "v1.2"    # [2025-12-26] Tick-Based + Archive Link Fix + Multi-Main
+    VERSION = "v1.3"    # [2026-01-21] Stability & Anti-Loop Fixes
     
     # ==========================
     # 1. 基础路径配置 (来自 Dailynotes)
@@ -38,9 +38,9 @@ class Config:
     DEBUG_MODE = True
     
     # [NEW] Tick-based scheduling parameters
-    DAY_START = -1  # -1 = 昨天
-    DAY_END = 90     # 6 = 未来6天
-    COMPLETE_TASKS_SYNC_INTERVAL = 10  # 全量扫描的Tick倍率
+    DAY_START = -1   # -1 = 昨天
+    DAY_END = 30     # [v1.3] 从 90 调整为 30，聚焦未来一个月
+    COMPLETE_TASKS_SYNC_INTERVAL = 60  # [v1.3] 从 10 调整为 60，全量扫描从每 30 秒降为每 3 分钟
 
 
     # 范围限制

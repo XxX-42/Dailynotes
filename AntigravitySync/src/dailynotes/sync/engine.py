@@ -461,7 +461,11 @@ class SyncCore:
         src_deletes = {}
 
         for bid in all_ids:
-            in_s = bid in src_tasks;
+            # [v1.3 FIX] 激活死循环拦截器，阻断同步震荡
+            if not self._check_sync_loop(bid):
+                continue
+                
+            in_s = bid in src_tasks
             in_d = bid in dn_tasks
             last_hash = self.sm.get_task_hash(bid);
             last_date = self.sm.get_task_date(bid)

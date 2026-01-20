@@ -39,7 +39,7 @@ class Config:
     
     # [NEW] Tick-based scheduling parameters
     DAY_START = -1   # -1 = 昨天
-    DAY_END = 30     # [v1.3] 从 90 调整为 30，聚焦未来一个月
+    DAY_END = 90     # [v1.5.1] 释放野兽：指数算法完全可以支撑这个范围
     COMPLETE_TASKS_SYNC_INTERVAL = 60  # [v1.3] 全量扫描从每 30 秒降为每 3 分钟
     
     # [v1.4] 事件驱动模式参数

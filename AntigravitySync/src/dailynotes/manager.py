@@ -367,6 +367,12 @@ class FusionManager:
         now = time.time()
         date_range = self.get_date_range()
         
+        # [v1.5.1] 清理过期记录，防止内存缓慢泄漏
+        active_dates = set(date_range)
+        for recorded_date in list(self._last_full_sync_registry.keys()):
+            if recorded_date not in active_dates:
+                del self._last_full_sync_registry[recorded_date]
+        
         for date_str in date_range:
             last_sync = self._last_full_sync_registry.get(date_str, 0)
             interval = self._calculate_dynamic_interval(date_str)

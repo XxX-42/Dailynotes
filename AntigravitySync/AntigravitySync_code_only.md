@@ -1,8 +1,9 @@
 # Project Architecture: AntigravitySync
 
-## Directory Tree
+## Directory Tree (Filtered)
 ```text
 AntigravitySync/
+├── AntigravitySync_code_only.md
 ├── aggregate.py
 ├── config.py
 ├── main.py
@@ -40,7 +41,7 @@ import os
 
 
 class Config:
-    VERSION = "v1.2"    # [2025-12-26] Tick-Based + Archive Link Fix + Multi-Main
+    VERSION = "v1.5"    # [2026-01-21] Exponential Dynamic Scheduling
     
     # ==========================
     # 1. 基础路径配置 (来自 Dailynotes)
@@ -70,15 +71,26 @@ class Config:
 
     # 运行参数
     SYNC_START_DATE = "2025-12-08"
-    TICK_INTERVAL = 2
+    TICK_INTERVAL = 3
     TYPING_COOLDOWN_SECONDS = 6
     IMAGE_PARAM_SUFFIX = "|L|200"
     DEBUG_MODE = True
     
     # [NEW] Tick-based scheduling parameters
-    DAY_START = -1  # -1 = 昨天
-    DAY_END = 6     # 6 = 未来6天
-    COMPLETE_TASKS_SYNC_INTERVAL = 5  # 每5个tick执行一次全量扫描
+    DAY_START = -1   # -1 = 昨天
+    DAY_END = 90     # [v1.5.1] 释放野兽：指数算法完全可以支撑这个范围
+    COMPLETE_TASKS_SYNC_INTERVAL = 60  # [v1.3] 全量扫描从每 30 秒降为每 3 分钟
+    
+    # [v1.4] 事件驱动模式参数
+    EVENT_DEBOUNCE_SECONDS = 0.5   # 事件触发防抖时间（秒）
+    
+    # [v1.5] 指数动态调度参数
+    # 公式: I(d) = EXP_BASE * exp(EXP_COEFF * d) + EXP_OFFSET
+    # d=0 时约 300 秒 (5分钟), d=30 时约 348 秒 (5.8分钟)
+    DYNAMIC_SYNC_MAX_INTERVAL = 3600  # 强制上限 1 小时
+    EXP_BASE = 240      # 基础系数
+    EXP_COEFF = 0.0068  # 指数系数
+    EXP_OFFSET = 60     # 偏移量
 
 
     # 范围限制
@@ -139,10 +151,17 @@ from dailynotes.utils import ProcessLock, Logger
 if __name__ == "__main__":
     app = FusionManager()
 
-    Logger.info(f"=== Antigravity Sync v1.2 (Tick-Based + Archive Fix) ===")
+    Logger.info(f"=== Antigravity Sync {Config.VERSION} (Exponential Dynamic Scheduling) ===")
     Logger.info(f"路径: {Config.ROOT_DIR}")
-    Logger.info(f"模式: Obsidian 优先 + Apple Calendar 下游同步")
-    Logger.info(f"频率: 内部 {Config.TICK_INTERVAL}s | 外部 10s 最小间隔")
+    Logger.info(f"模式: watchdog 事件驱动 + 指数动态调度")
+    Logger.info(f"调度公式: I(d) = {Config.EXP_BASE} * exp({Config.EXP_COEFF} * d) + {Config.EXP_OFFSET}")
+    
+    # [P2 FIX] Validate template file at startup
+    if os.path.exists(Config.TEMPLATE_FILE):
+        Logger.info(f"模板: ✅ {Config.REL_TEMPLATE_FILE}")
+    else:
+        Logger.info(f"⚠️ 模板文件不存在: {Config.REL_TEMPLATE_FILE} (将使用基础骨架)")
+    
     Logger.info("=" * 50)
 
     # 第一次尝试获取锁
@@ -197,7 +216,7 @@ if __name__ == "__main__":
 ```
 
 ---
-## File: src\dailynotes\__init__.py
+## File: src/dailynotes/__init__.py
 ```py
 import sys
 import os
@@ -208,7 +227,7 @@ import os
 ```
 
 ---
-## File: src\dailynotes\format_core.py
+## File: src/dailynotes/format_core.py
 ```py
 import re
 import os
@@ -471,32 +490,95 @@ class FormatCore:
 ```
 
 ---
-## File: src\dailynotes\manager.py
+## File: src/dailynotes/manager.py
 ```py
 """
-Fusion Manager - Antigravity Architecture
-Unified single-threaded pipeline with priority-based execution.
-
-Priority Order:
-1. Internal (Dailynotes): Obsidian formatting, task sync - HIGH PRIORITY
-2. External (Apple Sync): Apple Calendar sync - LOW PRIORITY, only when stable
+Fusion Manager - Antigravity Architecture v1.5
+Event-Driven Sync Engine with Exponential Dynamic Scheduling.
 
 Key Features:
-- Dirty Flag Blocking: If internal modified file, skip external sync for this tick
-- Tick-Based Scheduling: Fast for today, slow for historical/future dates
-- [REFACTORED] Content-Hash Self-Awareness: Uses content identity instead of mtime
+- [v1.4] Event-Driven: Uses watchdog to monitor file changes
+- [v1.4] Self-Write Detection: Ignores events triggered by script's own writes
+- [v1.5] Exponential Scheduling: I(d) = 240 * exp(0.0068 * d) + 60
+- Content-Hash Self-Awareness: Uses content identity instead of mtime
 """
 import os
 import sys
+import re
+import math
 import time
 import datetime
 import signal
+import threading
 from config import Config
 from .utils import Logger, FileUtils
 from .format_core import FormatCore
 from .state_manager import StateManager
 from .sync import SyncCore
 from external.apple_sync_adapter import AppleSyncAdapter
+
+# watchdog 导入（带降级处理）
+try:
+    from watchdog.observers import Observer
+    from watchdog.events import FileSystemEventHandler
+    WATCHDOG_AVAILABLE = True
+except ImportError:
+    WATCHDOG_AVAILABLE = False
+    Logger.error_once("watchdog_import", "⚠️ watchdog 库未安装，将使用轮询模式")
+
+
+class ObsidianEventHandler(FileSystemEventHandler):
+    """
+    [v1.4] 文件变更事件处理器
+    监听 Obsidian Vault 中的 .md 文件变动，触发同步逻辑。
+    """
+    
+    def __init__(self, manager):
+        super().__init__()
+        self.manager = manager
+        self._last_event_time = {}  # 防抖追踪: {filepath: timestamp}
+    
+    def on_modified(self, event):
+        """处理文件修改事件"""
+        if event.is_directory:
+            return
+        
+        filepath = event.src_path
+        
+        # 仅处理 .md 文件
+        if not filepath.endswith('.md'):
+            return
+        
+        # 排除目录检查
+        if FileUtils.is_excluded(filepath):
+            return
+        
+        # [关键] 防抖检查：避免短时间内重复触发
+        now = time.time()
+        last_time = self._last_event_time.get(filepath, 0)
+        if now - last_time < Config.EVENT_DEBOUNCE_SECONDS:
+            return
+        self._last_event_time[filepath] = now
+        
+        # [关键] 自写入检测：读取内容哈希并检查是否为系统写入
+        try:
+            content = FileUtils.read_content(filepath)
+            if content is None:
+                return
+            
+            content_hash = FileUtils.calculate_hash(content)
+            
+            # 如果这是脚本自己的写入，立即丢弃事件
+            if FileUtils.is_system_write(content_hash):
+                Logger.debug(f"[Event] 忽略自写入事件: {os.path.basename(filepath)}")
+                return
+            
+            # 用户编辑事件，触发同步
+            Logger.info(f"📝 [Event] 检测到变更: {os.path.basename(filepath)}")
+            self.manager.on_file_changed(filepath)
+            
+        except Exception as e:
+            Logger.error_once(f"event_err_{filepath}", f"事件处理异常: {e}")
 
 
 class FusionManager:
@@ -506,7 +588,8 @@ class FusionManager:
     Core Logic:
     - 主权在内 (Sovereignty Inside): Dailynotes runs first
     - 脏标志阻断 (Dirty Flag): If internal modified, skip external
-    - Tick分频调度 (Tick-Based Frequency): Today fast, others slow
+    - [v1.4] 事件驱动 (Event-Driven): watchdog 监听文件变更
+    - [v1.5] 指数动态调度 (Exponential Scheduling): 非线性日期冷却
     """
     
     def __init__(self):
@@ -522,6 +605,16 @@ class FusionManager:
         # [NEW] Tick-based scheduling for full date range scan
         self.tick_counter = 0  # Counts ticks since last full scan
         self.today_last_hash = None  # Track today's diary hash for change detection
+        
+        # [NEW] Track the date when tomorrow's note was last created (to avoid duplicates)
+        self._tomorrow_note_created_date = None
+        
+        # [v1.4] Observer 实例
+        self._observer = None
+        self._running = False
+        
+        # [v1.5] 动态调度状态：记录每个日期的上次同步时间戳
+        self._last_full_sync_registry = {}  # {date_str: timestamp}
 
     def check_debounce(self, filepath):
         """
@@ -551,21 +644,17 @@ class FusionManager:
     def is_user_active(self):
         """
         [Activity Detection] Check for "hot" files.
-        If user is editing today's diary or recently modified any file, consider active.
-        [REFACTORED] Uses content-hash to ignore system edits.
         """
         today_str = datetime.date.today().strftime('%Y-%m-%d')
         daily_path = os.path.join(Config.DAILY_NOTE_DIR, f"{today_str}.md")
 
         if os.path.exists(daily_path):
-            # Check if this is a system write (don't consume the hash)
             content = FileUtils.read_content(daily_path)
             if content:
                 content_hash = FileUtils.calculate_hash(content)
                 if FileUtils.check_system_write(content_hash):
-                    return False  # System edit, not user activity
+                    return False
 
-            # If file was modified by USER in the last 60 seconds, user is in "flow" state
             mtime = FileUtils.get_mtime(daily_path)
             if time.time() - mtime < 60:
                 return True
@@ -575,7 +664,6 @@ class FusionManager:
     def check_today_changed(self) -> bool:
         """
         Check if today's diary content has changed since last check.
-        Used to reset the tick counter for full date range scans.
         """
         today_str = datetime.date.today().strftime('%Y-%m-%d')
         daily_path = os.path.join(Config.DAILY_NOTE_DIR, f"{today_str}.md")
@@ -590,7 +678,6 @@ class FusionManager:
         current_hash = FileUtils.calculate_hash(content)
         
         if self.today_last_hash is None:
-            # First check, initialize
             self.today_last_hash = current_hash
             return False
         
@@ -600,18 +687,52 @@ class FusionManager:
         
         return False
 
+    def _maybe_create_tomorrow_note(self):
+        """
+        [NEW] Auto-create tomorrow's diary at 23:30.
+        """
+        now = datetime.datetime.now()
+        today_str = now.strftime('%Y-%m-%d')
+        
+        if self._tomorrow_note_created_date == today_str:
+            return
+        
+        if now.hour != 23 or now.minute < 30:
+            return
+        
+        tomorrow = now.date() + datetime.timedelta(days=1)
+        tomorrow_str = tomorrow.strftime('%Y-%m-%d')
+        tomorrow_path = os.path.join(Config.DAILY_NOTE_DIR, f"{tomorrow_str}.md")
+        
+        if os.path.exists(tomorrow_path):
+            Logger.info(f"📅 [预创建] 明天的日记已存在，跳过: {tomorrow_str}.md")
+            self._tomorrow_note_created_date = today_str
+            return
+        
+        if os.path.exists(Config.TEMPLATE_FILE):
+            try:
+                tmpl_lines = FileUtils.read_file(Config.TEMPLATE_FILE)
+                if tmpl_lines:
+                    Logger.info(f"📅 [预创建] 23:30 定时任务 - 从模板创建明天的日记: {tomorrow_str}.md")
+                    FileUtils.write_file(tomorrow_path, tmpl_lines)
+                    self._tomorrow_note_created_date = today_str
+            except Exception as e:
+                Logger.error_once(f"pre_create_fail_{tomorrow_str}", f"预创建明天日记失败: {e}")
+        else:
+            Logger.info(f"📅 [预创建] 未找到模版，创建基础骨架: {tomorrow_str}.md")
+            base_scaffold = ["# Day planner\n", "\n", "# Journey\n", "\n"]
+            FileUtils.write_file(tomorrow_path, base_scaffold)
+            self._tomorrow_note_created_date = today_str
+
     def get_date_range(self) -> list:
         """
         Generate date strings from DAY_START to DAY_END relative to today.
-        DAY_START = -1 means yesterday
-        DAY_END = 6 means 6 days in the future
         """
         today = datetime.date.today()
         dates = []
         for delta in range(Config.DAY_START, Config.DAY_END + 1):
             target_date = today + datetime.timedelta(days=delta)
             date_str = target_date.strftime('%Y-%m-%d')
-            # Skip dates before sync start date
             if date_str >= Config.SYNC_START_DATE:
                 dates.append(date_str)
         return dates
@@ -622,9 +743,9 @@ class FusionManager:
         Returns detailed result dict.
         """
         results = {
-            "internal_mod": False,       # SyncCore/FormatCore logic changed Obsidian file
-            "apple_to_obsidian": False,  # Apple sync changed Obsidian file (C->O)
-            "obsidian_to_apple": False,  # Obsidian sync changed Apple Calendar (O->C)
+            "internal_mod": False,
+            "apple_to_obsidian": False,
+            "obsidian_to_apple": False,
             "skipped": False
         }
 
@@ -641,23 +762,16 @@ class FusionManager:
             if not is_system_edit:
                 idle_duration = time.time() - FileUtils.get_mtime(daily_path)
                 if idle_duration < Config.TYPING_COOLDOWN_SECONDS:
-                    # User is typing, skip
                     results["skipped"] = True
                     return results
 
         # --- [PRIORITY 1] Obsidian Internal Processing ---
         if self.check_debounce(daily_path) or not os.path.exists(daily_path):
             try:
-                # A. Task Flow (Projects <-> Daily)
                 source_data_by_date = self.sync_core.scan_all_source_tasks()
                 tasks_for_date = source_data_by_date.get(date_str, {})
-                # Note: SyncCore.process_date currently doesn't return boolean, assuming it might modify tasks
-                # but currently task movement logic is mainly in dispatch_project_tasks which is not called here directly?
-                # Wait, SyncCore.process_date might invoke task movement if implemented.
-                # Assuming scan_all_source_tasks + process_date covers internal logic.
                 self.sync_core.process_date(date_str, tasks_for_date)
 
-                # B. Formatting (FormatCore)
                 if os.path.exists(daily_path):
                     if FormatCore.execute(daily_path):
                         results["internal_mod"] = True
@@ -683,101 +797,147 @@ class FusionManager:
                 
                 if obs_mod or apple_mod:
                     Logger.info(f"   🍏 [Apple] {date_str} 同步成功")
-                else:
-                    Logger.info(f"   🍏 [Apple] {date_str} 未检测到任何改动")
             except Exception as e:
                 Logger.error_once(f"apple_exec_fail_{date_str}", f"外部同步异常: {e}")
 
         return results
 
+    def on_file_changed(self, filepath):
+        """
+        [v1.4] 事件驱动入口：文件变更时调用
+        从文件路径提取日期并触发同步
+        """
+        filename = os.path.basename(filepath)
+        
+        # 尝试从文件名提取日期 (格式: YYYY-MM-DD.md)
+        date_match = re.match(r'^(\d{4}-\d{2}-\d{2})\.md$', filename)
+        
+        if date_match:
+            # 这是一个日记文件
+            date_str = date_match.group(1)
+            Logger.info(f"   🔄 [Sync] 触发日期同步: {date_str}")
+            self.process_single_date(date_str)
+        else:
+            # 这是一个项目文件，触发今日同步
+            today_str = datetime.date.today().strftime('%Y-%m-%d')
+            Logger.info(f"   🔄 [Sync] 项目文件变更，触发今日同步")
+            self.process_single_date(today_str)
+
+    def _calculate_dynamic_interval(self, date_str) -> float:
+        """
+        [v1.5] 计算指定日期的动态同步间隔
+        公式: I(d) = EXP_BASE * exp(EXP_COEFF * d) + EXP_OFFSET
+        
+        Args:
+            date_str: 日期字符串 (YYYY-MM-DD)
+        Returns:
+            同步间隔（秒）
+        """
+        try:
+            target_date = datetime.datetime.strptime(date_str, '%Y-%m-%d').date()
+            today = datetime.date.today()
+            d = abs((target_date - today).days)  # 距离今天的天数
+            
+            # 指数拟合公式
+            interval = Config.EXP_BASE * math.exp(Config.EXP_COEFF * d) + Config.EXP_OFFSET
+            
+            # 限制在最大值以内
+            return min(interval, Config.DYNAMIC_SYNC_MAX_INTERVAL)
+        except Exception:
+            return Config.EXP_BASE + Config.EXP_OFFSET  # 默认 300 秒
+
+    def _do_smart_cleanup(self):
+        """
+        [v1.5] 智能巡检：根据日期距离动态调度同步
+        近距离日期高频扫描，远距离日期低频扫描
+        """
+        # 修复全局格式问题（每次巡检都执行，轻量级操作）
+        FormatCore.fix_broken_tab_bullets_global()
+        
+        # 检查是否需要预创建明天的日记
+        self._maybe_create_tomorrow_note()
+        
+        # 遍历日期范围，根据冷却时间决定是否同步
+        now = time.time()
+        date_range = self.get_date_range()
+        
+        # [v1.5.1] 清理过期记录，防止内存缓慢泄漏
+        active_dates = set(date_range)
+        for recorded_date in list(self._last_full_sync_registry.keys()):
+            if recorded_date not in active_dates:
+                del self._last_full_sync_registry[recorded_date]
+        
+        for date_str in date_range:
+            last_sync = self._last_full_sync_registry.get(date_str, 0)
+            interval = self._calculate_dynamic_interval(date_str)
+            
+            if now - last_sync >= interval:
+                # 冷却时间已到，执行同步
+                self.process_single_date(date_str)
+                self._last_full_sync_registry[date_str] = now
+
     def run(self):
         """
-        Main event loop with tick-based scheduling.
+        [v1.5] 事件驱动主循环
+        混合动力模式：watchdog 事件 + 指数动态调度
         """
         def _term_handler(signum, frame):
+            self._running = False
             raise SystemExit("Received SIGTERM")
 
         signal.signal(signal.SIGTERM, _term_handler)
+        self._running = True
 
-        TICK_INTERVAL = Config.TICK_INTERVAL
-        FULL_SCAN_MULTIPLIER = Config.COMPLETE_TASKS_SYNC_INTERVAL
-
-        Logger.info(f"🚀 融合引擎启动: Obsidian (Priority High) + Apple Calendar (Priority Low)")
-        Logger.info(f"   Tick间隔: {TICK_INTERVAL}s | 全量扫描倍率: {FULL_SCAN_MULTIPLIER}x")
+        Logger.info(f"🚀 事件驱动引擎启动: watchdog + 指数动态调度")
+        Logger.info(f"   调度公式: I(d) = {Config.EXP_BASE} * exp({Config.EXP_COEFF} * d) + {Config.EXP_OFFSET}")
+        Logger.info(f"   冷却上限: {Config.DYNAMIC_SYNC_MAX_INTERVAL}s | 事件防抖: {Config.EVENT_DEBOUNCE_SECONDS}s")
         Logger.info(f"   日期范围: DAY_START={Config.DAY_START} ~ DAY_END={Config.DAY_END}")
 
-        try:
-            while True:
-                self.tick_counter += 1
-                today_str = datetime.date.today().strftime('%Y-%m-%d')
-
-                # --- [EVERY TICK] Fix global formatting issues ---
-                FormatCore.fix_broken_tab_bullets_global()
-
-                # --- [EVERY TICK] Process today's diary ---
-                res = self.process_single_date(today_str)
-
-                # --- [CHECK] Change Detection & Reset ---
-                reset_needed = False
-                reset_reasons = []
-
-                if res["internal_mod"]: reset_reasons.append("Obsidian 内部整理")
-                if res["apple_to_obsidian"]: reset_reasons.append("Apple 日历变更")
-                if res["obsidian_to_apple"]: reset_reasons.append("Obsidian 推送变更")
-
-                if len(reset_reasons) > 0:
-                    reset_needed = True
-                    # Update local tracker to match the new state immediately, 
-                    # preventing check_today_changed from flagging system writes as manual edits.
-                    today_path = os.path.join(Config.DAILY_NOTE_DIR, f"{today_str}.md")
-                    if os.path.exists(today_path):
-                        content = FileUtils.read_content(today_path)
-                        if content:
-                            self.today_last_hash = FileUtils.calculate_hash(content)
-
-                # Check for manual edits (User typed something)
-                # check_today_changed will return True if hash is different from self.today_last_hash
-                if self.check_today_changed():
-                    if not reset_needed:
-                        # Only report if it wasn't already covered by system actions
-                        reset_needed = True
-                        reset_reasons.append("今日日记变更(手动)")
-
-                if reset_needed:
-                    reason_str = " + ".join(reset_reasons)
-                    Logger.info(f"   🔄 [Reset] {reason_str}，重置全量扫描倒计时")
-                    self.tick_counter = 0
-
-                # --- [FULL SCAN] Every FULL_SCAN_MULTIPLIER ticks ---
-                if self.tick_counter >= FULL_SCAN_MULTIPLIER:
-                    self.tick_counter = 0
-                    Logger.info(f"   📅 [Full Scan] 执行全量日期范围扫描...")
-                    
-                    date_range = self.get_date_range()
-                    for date_str in date_range:
-                        if date_str == today_str:
-                            continue  # Already processed
-                        self.process_single_date(date_str)
-
-                # --- [LIVE COUNTDOWN] ---
-                for i in range(TICK_INTERVAL, 0, -1):
-                    msg = f"\r[Wait] 下次检测倒计时: {i}s   "
-                    sys.stdout.write(msg)
-                    sys.stdout.flush()
-                    time.sleep(1)
+        # 初始化 watchdog Observer
+        if WATCHDOG_AVAILABLE:
+            try:
+                self._observer = Observer()
+                event_handler = ObsidianEventHandler(self)
                 
-                sys.stdout.write("\r" + " " * 40 + "\r")
-                sys.stdout.flush()
+                # 监听 Vault 根目录
+                self._observer.schedule(event_handler, Config.VAULT_ROOT, recursive=True)
+                self._observer.start()
+                Logger.info(f"👁️ [Watchdog] 开始监听: {Config.VAULT_ROOT}")
+            except Exception as e:
+                Logger.error_once("observer_init", f"Watchdog 初始化失败: {e}")
+                self._observer = None
+        else:
+            Logger.info("⚠️ [Watchdog] 不可用，使用纯轮询模式")
 
+        # 启动时执行一次智能巡检
+        self._do_smart_cleanup()
+
+        # 主循环
+        try:
+            while self._running:
+                # 让出 CPU 资源
+                time.sleep(1)
+                
+                # 每秒执行智能巡检（轻量级时间戳比对）
+                self._do_smart_cleanup()
+                
         except KeyboardInterrupt:
-            raise
+            Logger.info("\n⏹️ 收到中断信号...")
         finally:
+            # 优雅停止 Observer
+            if self._observer:
+                Logger.info("🛑 [Watchdog] 停止监听...")
+                self._observer.stop()
+                self._observer.join(timeout=3)
+            
             self.sm.save()
+            Logger.info("✅ 状态已保存，引擎已停止")
+
 
 ```
 
 ---
-## File: src\dailynotes\state_manager.py
+## File: src/dailynotes/state_manager.py
 ```py
 import os
 import json
@@ -825,16 +985,37 @@ class StateManager:
 
     def save(self):
         try:
-            # 1. 先创建备份（安全保障）
-            if os.path.exists(Config.STATE_FILE):
+            import tempfile
+            dir_name = os.path.dirname(Config.STATE_FILE) or '.'
+            
+            # 1. 原子写入：先写临时文件，再替换
+            temp_fd = None
+            temp_name = None
+            try:
+                temp_fd, temp_name = tempfile.mkstemp(dir=dir_name, suffix='.tmp')
+                with os.fdopen(temp_fd, 'w', encoding='utf-8') as tf:
+                    json.dump(self.state, tf, ensure_ascii=False, indent=2)
+                    tf.flush()
+                    os.fsync(tf.fileno())
+                
+                # 原子替换
+                os.replace(temp_name, Config.STATE_FILE)
+                temp_name = None  # 标记已成功
+                
+                # 2. 成功后才备份（备份的是新文件）
                 try:
                     shutil.copy2(Config.STATE_FILE, Config.STATE_FILE + ".bak")
                 except OSError:
                     pass
-
-            # 2. 写入新状态
-            with open(Config.STATE_FILE, 'w', encoding='utf-8') as f:
-                json.dump(self.state, f, ensure_ascii=False, indent=2)
+                    
+            finally:
+                # 清理失败的临时文件
+                if temp_name and os.path.exists(temp_name):
+                    try:
+                        os.remove(temp_name)
+                    except OSError:
+                        pass
+                        
         except Exception as e:
             Logger.error_once("state_save", f"状态保存失败: {e}")
 
@@ -915,7 +1096,7 @@ class StateManager:
 ```
 
 ---
-## File: src\dailynotes\utils.py
+## File: src/dailynotes/utils.py
 ```py
 import os
 import datetime
@@ -1160,14 +1341,14 @@ class ProcessLock:
 ```
 
 ---
-## File: src\dailynotes\sync\__init__.py
+## File: src/dailynotes/sync/__init__.py
 ```py
 from .engine import SyncCore
 
 ```
 
 ---
-## File: src\dailynotes\sync\discovery.py
+## File: src/dailynotes/sync/discovery.py
 ```py
 import os
 import unicodedata
@@ -1218,7 +1399,7 @@ def scan_projects():
 ```
 
 ---
-## File: src\dailynotes\sync\engine.py
+## File: src/dailynotes/sync/engine.py
 ```py
 import os
 import re
@@ -1256,6 +1437,12 @@ class SyncCore:
         self.project_map = {}
         self.project_path_map = {}
         self.file_path_map = {}
+        
+        # [P1 FIX] Anti-infinite-loop: track sync frequency per task
+        self._sync_counter = {}  # {bid: count}
+        self._sync_counter_reset_time = time.time()
+        self._SYNC_THRESHOLD = 5  # Max syncs per task per reset period
+        self._RESET_INTERVAL = 60  # Reset counters every 60 seconds
 
     def trigger_delayed_verification(self, filepath, delay=10):
         def _job():
@@ -1265,6 +1452,27 @@ class SyncCore:
 
         t = threading.Thread(target=_job, daemon=True)
         t.start()
+
+    def _check_sync_loop(self, bid: str) -> bool:
+        """
+        [P1 FIX] Check if a task is being synced too frequently (possible infinite loop).
+        Returns True if sync should proceed, False if it should be skipped.
+        """
+        now = time.time()
+        
+        # Reset counters periodically
+        if now - self._sync_counter_reset_time > self._RESET_INTERVAL:
+            self._sync_counter.clear()
+            self._sync_counter_reset_time = now
+        
+        # Increment counter
+        self._sync_counter[bid] = self._sync_counter.get(bid, 0) + 1
+        
+        if self._sync_counter[bid] > self._SYNC_THRESHOLD:
+            Logger.error_once(f"loop_detect_{bid}", 
+                f"⚠️ [LOOP DETECT] 任务 {bid} 同步次数过多 ({self._sync_counter[bid]}x/分钟)，已暂停同步")
+            return False
+        return True
 
     def generate_block_id(self):
         return '^' + ''.join(random.choices(string.ascii_lowercase + string.digits, k=6))
@@ -1656,7 +1864,11 @@ class SyncCore:
         src_deletes = {}
 
         for bid in all_ids:
-            in_s = bid in src_tasks;
+            # [v1.3 FIX] 激活死循环拦截器，阻断同步震荡
+            if not self._check_sync_loop(bid):
+                continue
+                
+            in_s = bid in src_tasks
             in_d = bid in dn_tasks
             last_hash = self.sm.get_task_hash(bid);
             last_date = self.sm.get_task_date(bid)
@@ -1845,7 +2057,7 @@ class SyncCore:
 ```
 
 ---
-## File: src\dailynotes\sync\ingestion.py
+## File: src/dailynotes/sync/ingestion.py
 ```py
 import os
 import re
@@ -1995,13 +2207,26 @@ def scan_all_source_tasks(project_map, sm) -> Dict[str, Dict]:
 ```
 
 ---
-## File: src\dailynotes\sync\parsing.py
+## File: src/dailynotes/sync/parsing.py
 ```py
 import re
 import unicodedata
 
+# [P3 FIX] Pre-compiled regex patterns for performance
+_RE_QUOTE_PREFIX = re.compile(r'^>\s?')
+_RE_STATUS_INDENT = re.compile(r'^[\s>]*-\s*\[.\]')
+_RE_TIME_RANGE = re.compile(r'\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}')
+_RE_TIME_SINGLE = re.compile(r'\d{1,2}:\d{2}')
+_RE_BLOCK_ID = re.compile(r'\^[a-zA-Z0-9]{6,}\s*$')
+_RE_RETURN_LINK = re.compile(r'\[\[[^\]]*?\#\^[a-zA-Z0-9]{6,}\|[⚓\*🔗⮐📅]\]\]')
+_RE_DATE_LINK = re.compile(r'\[\[\d{4}-\d{2}-\d{2}]]')
+_RE_EMOJI_DATE = re.compile(r'📅\s?\[\[\d{4}-\d{2}-\d{2}]]')
+_RE_MULTI_SPACE = re.compile(r'\s+')
+_RE_WIKI_LINK = re.compile(r'\[\[(.*?)\]\]')
+_RE_MAIN_TAG = re.compile(r'\bmain\b')
+
 def _get_indent_depth(line):
-    no_quote = re.sub(r'^>\s?', '', line)
+    no_quote = _RE_QUOTE_PREFIX.sub('', line)
     expanded = no_quote.expandtabs(4)
     return len(expanded) - len(expanded.lstrip())
 
@@ -2067,12 +2292,22 @@ def capture_block(lines, start_idx):
     block = [lines[start_idx]]
     consumed = 1
     
+    # [P2 FIX] Track consecutive empty lines to prevent infinite block extension
+    consecutive_empty = 0
+    MAX_CONSECUTIVE_EMPTY = 2
+    
     for i in range(start_idx + 1, len(lines)):
         line = lines[i]
-        if not line.strip(): # Empty line, include it but...
-             block.append(line)
-             consumed += 1
-             continue
+        if not line.strip():  # Empty line
+            consecutive_empty += 1
+            if consecutive_empty > MAX_CONSECUTIVE_EMPTY:
+                break  # Too many empty lines, end block
+            block.append(line)
+            consumed += 1
+            continue
+        
+        # Reset counter on non-empty line
+        consecutive_empty = 0
              
         curr_indent = _get_indent_depth(line)
         if curr_indent > parent_indent:
@@ -2114,7 +2349,7 @@ def extract_routing_target(line, file_path_map):
 ```
 
 ---
-## File: src\dailynotes\sync\rendering.py
+## File: src/dailynotes/sync/rendering.py
 ```py
 import re
 import random
@@ -2546,14 +2781,14 @@ def cleanup_empty_headers(lines, date_tag):
 ```
 
 ---
-## File: src\external\__init__.py
+## File: src/external/__init__.py
 ```py
 # External sync modules
 
 ```
 
 ---
-## File: src\external\apple_sync_adapter.py
+## File: src/external/apple_sync_adapter.py
 ```py
 """
 Apple Sync Adapter for Antigravity Architecture.
@@ -2638,7 +2873,7 @@ class AppleSyncAdapter:
             daily_path = os.path.join(Config.DAILY_NOTE_DIR, f"{date_str}.md")
             
             if not os.path.exists(daily_path):
-                return
+                return False, False
             
             # Import and call the core sync logic
             from .task_sync_core.sync_engine import perform_bidirectional_sync
@@ -2657,14 +2892,14 @@ class AppleSyncAdapter:
 ```
 
 ---
-## File: src\external\task_sync_core\__init__.py
+## File: src/external/task_sync_core/__init__.py
 ```py
 # TaskSynctoreminder core modules
 
 ```
 
 ---
-## File: src\external\task_sync_core\apple_state_manager.py
+## File: src/external/task_sync_core/apple_state_manager.py
 ```py
 """
 Apple Sync State Manager - Manages sync state for Apple Calendar integration.
@@ -2742,7 +2977,7 @@ class StateManager:
 ```
 
 ---
-## File: src\external\task_sync_core\calendar_service.py
+## File: src/external/task_sync_core/calendar_service.py
 ```py
 """
 Apple Calendar Service - Adapted for unified config.
@@ -2996,7 +3231,7 @@ class BatchExecutor:
 ```
 
 ---
-## File: src\external\task_sync_core\obsidian_service.py
+## File: src/external/task_sync_core/obsidian_service.py
 ```py
 """
 Obsidian Service - Adapted for unified config.
@@ -3133,7 +3368,7 @@ def get_obsidian_state(file_path):
 ```
 
 ---
-## File: src\external\task_sync_core\sync_engine.py
+## File: src/external/task_sync_core/sync_engine.py
 ```py
 """
 Bidirectional Sync Engine - Adapted for unified config.
@@ -3415,7 +3650,7 @@ def perform_bidirectional_sync(date_str, obs_path, state_manager, target_dt):
 ```
 
 ---
-## File: src\external\task_sync_core\utils.py
+## File: src/external/task_sync_core/utils.py
 ```py
 """
 TaskSynctoreminder utilities adapted for unified config.

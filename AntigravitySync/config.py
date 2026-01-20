@@ -2,7 +2,7 @@ import os
 
 
 class Config:
-    VERSION = "v1.3"    # [2026-01-21] Stability & Anti-Loop Fixes
+    VERSION = "v1.4"    # [2026-01-21] Event-Driven Sync Engine
     
     # ==========================
     # 1. 基础路径配置 (来自 Dailynotes)
@@ -40,7 +40,11 @@ class Config:
     # [NEW] Tick-based scheduling parameters
     DAY_START = -1   # -1 = 昨天
     DAY_END = 30     # [v1.3] 从 90 调整为 30，聚焦未来一个月
-    COMPLETE_TASKS_SYNC_INTERVAL = 60  # [v1.3] 从 10 调整为 60，全量扫描从每 30 秒降为每 3 分钟
+    COMPLETE_TASKS_SYNC_INTERVAL = 60  # [v1.3] 全量扫描从每 30 秒降为每 3 分钟
+    
+    # [v1.4] 事件驱动模式参数
+    GLOBAL_CLEANUP_INTERVAL = 600  # 全量巡检间隔（秒），每 10 分钟执行一次
+    EVENT_DEBOUNCE_SECONDS = 0.5   # 事件触发防抖时间（秒）
 
 
     # 范围限制

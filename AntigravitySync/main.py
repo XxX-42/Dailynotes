@@ -12,10 +12,10 @@ from dailynotes.utils import ProcessLock, Logger
 if __name__ == "__main__":
     app = FusionManager()
 
-    Logger.info(f"=== Antigravity Sync v1.3 (Stability & Anti-Loop Fixes) ===")
+    Logger.info(f"=== Antigravity Sync {Config.VERSION} (Event-Driven Sync Engine) ===")
     Logger.info(f"路径: {Config.ROOT_DIR}")
-    Logger.info(f"模式: Obsidian 优先 + Apple Calendar 下游同步")
-    Logger.info(f"频率: 内部 {Config.TICK_INTERVAL}s | 外部 10s 最小间隔")
+    Logger.info(f"模式: watchdog 事件驱动 + 低频全量扫描兜底")
+    Logger.info(f"全量扫描: 每 {Config.GLOBAL_CLEANUP_INTERVAL}s | 事件防抖: {Config.EVENT_DEBOUNCE_SECONDS}s")
     
     # [P2 FIX] Validate template file at startup
     if os.path.exists(Config.TEMPLATE_FILE):

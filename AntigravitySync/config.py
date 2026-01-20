@@ -32,15 +32,15 @@ class Config:
 
     # 运行参数
     SYNC_START_DATE = "2025-12-08"
-    TICK_INTERVAL = 2
+    TICK_INTERVAL = 3
     TYPING_COOLDOWN_SECONDS = 6
     IMAGE_PARAM_SUFFIX = "|L|200"
     DEBUG_MODE = True
     
     # [NEW] Tick-based scheduling parameters
     DAY_START = -1  # -1 = 昨天
-    DAY_END = 6     # 6 = 未来6天
-    COMPLETE_TASKS_SYNC_INTERVAL = 5  # 每5个tick执行一次全量扫描
+    DAY_END = 90     # 6 = 未来6天
+    COMPLETE_TASKS_SYNC_INTERVAL = 10  # 全量扫描的Tick倍率
 
 
     # 范围限制

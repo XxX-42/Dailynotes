@@ -47,6 +47,9 @@ class FusionManager:
         # [NEW] Tick-based scheduling for full date range scan
         self.tick_counter = 0  # Counts ticks since last full scan
         self.today_last_hash = None  # Track today's diary hash for change detection
+        
+        # [NEW] Track the date when tomorrow's note was last created (to avoid duplicates)
+        self._tomorrow_note_created_date = None
 
     def check_debounce(self, filepath):
         """
@@ -124,6 +127,52 @@ class FusionManager:
             return True
         
         return False
+
+    def _maybe_create_tomorrow_note(self):
+        """
+        [NEW] Auto-create tomorrow's diary at 23:30.
+        Only creates if:
+        1. Current time is 23:30 or later (before midnight)
+        2. Tomorrow's diary does not already exist
+        3. Haven't already created it today (prevents duplicate creation in same day)
+        """
+        now = datetime.datetime.now()
+        today_str = now.strftime('%Y-%m-%d')
+        
+        # Check if we've already created tomorrow's note today
+        if self._tomorrow_note_created_date == today_str:
+            return  # Already created today, skip
+        
+        # Only trigger at 23:30 or later (hour=23, minute>=30)
+        if now.hour != 23 or now.minute < 30:
+            return  # Not yet 23:30
+        
+        # Calculate tomorrow's date
+        tomorrow = now.date() + datetime.timedelta(days=1)
+        tomorrow_str = tomorrow.strftime('%Y-%m-%d')
+        tomorrow_path = os.path.join(Config.DAILY_NOTE_DIR, f"{tomorrow_str}.md")
+        
+        # Skip if tomorrow's diary already exists
+        if os.path.exists(tomorrow_path):
+            Logger.info(f"📅 [预创建] 明天的日记已存在，跳过: {tomorrow_str}.md")
+            self._tomorrow_note_created_date = today_str
+            return
+        
+        # Create from template or basic scaffold
+        if os.path.exists(Config.TEMPLATE_FILE):
+            try:
+                tmpl_lines = FileUtils.read_file(Config.TEMPLATE_FILE)
+                if tmpl_lines:
+                    Logger.info(f"📅 [预创建] 23:30 定时任务 - 从模板创建明天的日记: {tomorrow_str}.md")
+                    FileUtils.write_file(tomorrow_path, tmpl_lines)
+                    self._tomorrow_note_created_date = today_str
+            except Exception as e:
+                Logger.error_once(f"pre_create_fail_{tomorrow_str}", f"预创建明天日记失败: {e}")
+        else:
+            Logger.info(f"📅 [预创建] 未找到模版，创建基础骨架: {tomorrow_str}.md")
+            base_scaffold = ["# Day planner\n", "\n", "# Journey\n", "\n"]
+            FileUtils.write_file(tomorrow_path, base_scaffold)
+            self._tomorrow_note_created_date = today_str
 
     def get_date_range(self) -> list:
         """
@@ -238,6 +287,9 @@ class FusionManager:
 
                 # --- [EVERY TICK] Fix global formatting issues ---
                 FormatCore.fix_broken_tab_bullets_global()
+                
+                # --- [EVERY TICK] Check if it's 23:30 to pre-create tomorrow's diary ---
+                self._maybe_create_tomorrow_note()
 
                 # --- [EVERY TICK] Process today's diary ---
                 res = self.process_single_date(today_str)

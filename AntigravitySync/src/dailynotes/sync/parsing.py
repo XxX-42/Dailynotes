@@ -1,8 +1,21 @@
 import re
 import unicodedata
 
+# [P3 FIX] Pre-compiled regex patterns for performance
+_RE_QUOTE_PREFIX = re.compile(r'^>\s?')
+_RE_STATUS_INDENT = re.compile(r'^[\s>]*-\s*\[.\]')
+_RE_TIME_RANGE = re.compile(r'\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}')
+_RE_TIME_SINGLE = re.compile(r'\d{1,2}:\d{2}')
+_RE_BLOCK_ID = re.compile(r'\^[a-zA-Z0-9]{6,}\s*$')
+_RE_RETURN_LINK = re.compile(r'\[\[[^\]]*?\#\^[a-zA-Z0-9]{6,}\|[⚓\*🔗⮐📅]\]\]')
+_RE_DATE_LINK = re.compile(r'\[\[\d{4}-\d{2}-\d{2}]]')
+_RE_EMOJI_DATE = re.compile(r'📅\s?\[\[\d{4}-\d{2}-\d{2}]]')
+_RE_MULTI_SPACE = re.compile(r'\s+')
+_RE_WIKI_LINK = re.compile(r'\[\[(.*?)\]\]')
+_RE_MAIN_TAG = re.compile(r'\bmain\b')
+
 def _get_indent_depth(line):
-    no_quote = re.sub(r'^>\s?', '', line)
+    no_quote = _RE_QUOTE_PREFIX.sub('', line)
     expanded = no_quote.expandtabs(4)
     return len(expanded) - len(expanded.lstrip())
 
@@ -68,12 +81,22 @@ def capture_block(lines, start_idx):
     block = [lines[start_idx]]
     consumed = 1
     
+    # [P2 FIX] Track consecutive empty lines to prevent infinite block extension
+    consecutive_empty = 0
+    MAX_CONSECUTIVE_EMPTY = 2
+    
     for i in range(start_idx + 1, len(lines)):
         line = lines[i]
-        if not line.strip(): # Empty line, include it but...
-             block.append(line)
-             consumed += 1
-             continue
+        if not line.strip():  # Empty line
+            consecutive_empty += 1
+            if consecutive_empty > MAX_CONSECUTIVE_EMPTY:
+                break  # Too many empty lines, end block
+            block.append(line)
+            consumed += 1
+            continue
+        
+        # Reset counter on non-empty line
+        consecutive_empty = 0
              
         curr_indent = _get_indent_depth(line)
         if curr_indent > parent_indent:

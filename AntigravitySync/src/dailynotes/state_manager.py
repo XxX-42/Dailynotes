@@ -44,16 +44,37 @@ class StateManager:
 
     def save(self):
         try:
-            # 1. 先创建备份（安全保障）
-            if os.path.exists(Config.STATE_FILE):
+            import tempfile
+            dir_name = os.path.dirname(Config.STATE_FILE) or '.'
+            
+            # 1. 原子写入：先写临时文件，再替换
+            temp_fd = None
+            temp_name = None
+            try:
+                temp_fd, temp_name = tempfile.mkstemp(dir=dir_name, suffix='.tmp')
+                with os.fdopen(temp_fd, 'w', encoding='utf-8') as tf:
+                    json.dump(self.state, tf, ensure_ascii=False, indent=2)
+                    tf.flush()
+                    os.fsync(tf.fileno())
+                
+                # 原子替换
+                os.replace(temp_name, Config.STATE_FILE)
+                temp_name = None  # 标记已成功
+                
+                # 2. 成功后才备份（备份的是新文件）
                 try:
                     shutil.copy2(Config.STATE_FILE, Config.STATE_FILE + ".bak")
                 except OSError:
                     pass
-
-            # 2. 写入新状态
-            with open(Config.STATE_FILE, 'w', encoding='utf-8') as f:
-                json.dump(self.state, f, ensure_ascii=False, indent=2)
+                    
+            finally:
+                # 清理失败的临时文件
+                if temp_name and os.path.exists(temp_name):
+                    try:
+                        os.remove(temp_name)
+                    except OSError:
+                        pass
+                        
         except Exception as e:
             Logger.error_once("state_save", f"状态保存失败: {e}")
 

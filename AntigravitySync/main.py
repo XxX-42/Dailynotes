@@ -12,10 +12,17 @@ from dailynotes.utils import ProcessLock, Logger
 if __name__ == "__main__":
     app = FusionManager()
 
-    Logger.info(f"=== Antigravity Sync v1.2 (Tick-Based + Archive Fix) ===")
+    Logger.info(f"=== Antigravity Sync v1.3 (P0-P3 Robustness Fixes) ===")
     Logger.info(f"路径: {Config.ROOT_DIR}")
     Logger.info(f"模式: Obsidian 优先 + Apple Calendar 下游同步")
     Logger.info(f"频率: 内部 {Config.TICK_INTERVAL}s | 外部 10s 最小间隔")
+    
+    # [P2 FIX] Validate template file at startup
+    if os.path.exists(Config.TEMPLATE_FILE):
+        Logger.info(f"模板: ✅ {Config.REL_TEMPLATE_FILE}")
+    else:
+        Logger.info(f"⚠️ 模板文件不存在: {Config.REL_TEMPLATE_FILE} (将使用基础骨架)")
+    
     Logger.info("=" * 50)
 
     # 第一次尝试获取锁

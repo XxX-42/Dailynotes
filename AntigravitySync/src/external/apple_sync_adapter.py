@@ -81,7 +81,7 @@ class AppleSyncAdapter:
             daily_path = os.path.join(Config.DAILY_NOTE_DIR, f"{date_str}.md")
             
             if not os.path.exists(daily_path):
-                return
+                return False, False
             
             # Import and call the core sync logic
             from .task_sync_core.sync_engine import perform_bidirectional_sync

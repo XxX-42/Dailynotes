@@ -34,6 +34,12 @@ class SyncCore:
         self.project_map = {}
         self.project_path_map = {}
         self.file_path_map = {}
+        
+        # [P1 FIX] Anti-infinite-loop: track sync frequency per task
+        self._sync_counter = {}  # {bid: count}
+        self._sync_counter_reset_time = time.time()
+        self._SYNC_THRESHOLD = 5  # Max syncs per task per reset period
+        self._RESET_INTERVAL = 60  # Reset counters every 60 seconds
 
     def trigger_delayed_verification(self, filepath, delay=10):
         def _job():
@@ -43,6 +49,27 @@ class SyncCore:
 
         t = threading.Thread(target=_job, daemon=True)
         t.start()
+
+    def _check_sync_loop(self, bid: str) -> bool:
+        """
+        [P1 FIX] Check if a task is being synced too frequently (possible infinite loop).
+        Returns True if sync should proceed, False if it should be skipped.
+        """
+        now = time.time()
+        
+        # Reset counters periodically
+        if now - self._sync_counter_reset_time > self._RESET_INTERVAL:
+            self._sync_counter.clear()
+            self._sync_counter_reset_time = now
+        
+        # Increment counter
+        self._sync_counter[bid] = self._sync_counter.get(bid, 0) + 1
+        
+        if self._sync_counter[bid] > self._SYNC_THRESHOLD:
+            Logger.error_once(f"loop_detect_{bid}", 
+                f"⚠️ [LOOP DETECT] 任务 {bid} 同步次数过多 ({self._sync_counter[bid]}x/分钟)，已暂停同步")
+            return False
+        return True
 
     def generate_block_id(self):
         return '^' + ''.join(random.choices(string.ascii_lowercase + string.digits, k=6))

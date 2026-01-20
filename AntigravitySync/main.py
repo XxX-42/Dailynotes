@@ -12,10 +12,10 @@ from dailynotes.utils import ProcessLock, Logger
 if __name__ == "__main__":
     app = FusionManager()
 
-    Logger.info(f"=== Antigravity Sync {Config.VERSION} (Event-Driven Sync Engine) ===")
+    Logger.info(f"=== Antigravity Sync {Config.VERSION} (Exponential Dynamic Scheduling) ===")
     Logger.info(f"路径: {Config.ROOT_DIR}")
-    Logger.info(f"模式: watchdog 事件驱动 + 低频全量扫描兜底")
-    Logger.info(f"全量扫描: 每 {Config.GLOBAL_CLEANUP_INTERVAL}s | 事件防抖: {Config.EVENT_DEBOUNCE_SECONDS}s")
+    Logger.info(f"模式: watchdog 事件驱动 + 指数动态调度")
+    Logger.info(f"调度公式: I(d) = {Config.EXP_BASE} * exp({Config.EXP_COEFF} * d) + {Config.EXP_OFFSET}")
     
     # [P2 FIX] Validate template file at startup
     if os.path.exists(Config.TEMPLATE_FILE):

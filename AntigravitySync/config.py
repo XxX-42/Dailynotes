@@ -2,7 +2,7 @@ import os
 
 
 class Config:
-    VERSION = "v1.4"    # [2026-01-21] Event-Driven Sync Engine
+    VERSION = "v1.5"    # [2026-01-21] Exponential Dynamic Scheduling
     
     # ==========================
     # 1. 基础路径配置 (来自 Dailynotes)
@@ -43,8 +43,15 @@ class Config:
     COMPLETE_TASKS_SYNC_INTERVAL = 60  # [v1.3] 全量扫描从每 30 秒降为每 3 分钟
     
     # [v1.4] 事件驱动模式参数
-    GLOBAL_CLEANUP_INTERVAL = 600  # 全量巡检间隔（秒），每 10 分钟执行一次
     EVENT_DEBOUNCE_SECONDS = 0.5   # 事件触发防抖时间（秒）
+    
+    # [v1.5] 指数动态调度参数
+    # 公式: I(d) = EXP_BASE * exp(EXP_COEFF * d) + EXP_OFFSET
+    # d=0 时约 300 秒 (5分钟), d=30 时约 348 秒 (5.8分钟)
+    DYNAMIC_SYNC_MAX_INTERVAL = 3600  # 强制上限 1 小时
+    EXP_BASE = 240      # 基础系数
+    EXP_COEFF = 0.0068  # 指数系数
+    EXP_OFFSET = 60     # 偏移量
 
 
     # 范围限制

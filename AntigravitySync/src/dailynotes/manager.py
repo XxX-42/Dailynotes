@@ -1,16 +1,17 @@
 """
-Fusion Manager - Antigravity Architecture v1.4
-Event-Driven Sync Engine with Hybrid Polling Fallback.
+Fusion Manager - Antigravity Architecture v1.5
+Event-Driven Sync Engine with Exponential Dynamic Scheduling.
 
 Key Features:
 - [v1.4] Event-Driven: Uses watchdog to monitor file changes
 - [v1.4] Self-Write Detection: Ignores events triggered by script's own writes
-- [v1.4] Hybrid Mode: Low-frequency full scans as robustness fallback
+- [v1.5] Exponential Scheduling: I(d) = 240 * exp(0.0068 * d) + 60
 - Content-Hash Self-Awareness: Uses content identity instead of mtime
 """
 import os
 import sys
 import re
+import math
 import time
 import datetime
 import signal
@@ -94,6 +95,7 @@ class FusionManager:
     - 主权在内 (Sovereignty Inside): Dailynotes runs first
     - 脏标志阻断 (Dirty Flag): If internal modified, skip external
     - [v1.4] 事件驱动 (Event-Driven): watchdog 监听文件变更
+    - [v1.5] 指数动态调度 (Exponential Scheduling): 非线性日期冷却
     """
     
     def __init__(self):
@@ -116,6 +118,9 @@ class FusionManager:
         # [v1.4] Observer 实例
         self._observer = None
         self._running = False
+        
+        # [v1.5] 动态调度状态：记录每个日期的上次同步时间戳
+        self._last_full_sync_registry = {}  # {date_str: timestamp}
 
     def check_debounce(self, filepath):
         """
@@ -324,30 +329,57 @@ class FusionManager:
             Logger.info(f"   🔄 [Sync] 项目文件变更，触发今日同步")
             self.process_single_date(today_str)
 
-    def _do_full_scan(self):
+    def _calculate_dynamic_interval(self, date_str) -> float:
         """
-        [v1.4] 执行全量日期范围扫描
-        作为事件驱动的鲁棒性兜底
-        """
-        Logger.info(f"📅 [Full Scan] 执行全量日期范围扫描...")
+        [v1.5] 计算指定日期的动态同步间隔
+        公式: I(d) = EXP_BASE * exp(EXP_COEFF * d) + EXP_OFFSET
         
-        # 修复全局格式问题
+        Args:
+            date_str: 日期字符串 (YYYY-MM-DD)
+        Returns:
+            同步间隔（秒）
+        """
+        try:
+            target_date = datetime.datetime.strptime(date_str, '%Y-%m-%d').date()
+            today = datetime.date.today()
+            d = abs((target_date - today).days)  # 距离今天的天数
+            
+            # 指数拟合公式
+            interval = Config.EXP_BASE * math.exp(Config.EXP_COEFF * d) + Config.EXP_OFFSET
+            
+            # 限制在最大值以内
+            return min(interval, Config.DYNAMIC_SYNC_MAX_INTERVAL)
+        except Exception:
+            return Config.EXP_BASE + Config.EXP_OFFSET  # 默认 300 秒
+
+    def _do_smart_cleanup(self):
+        """
+        [v1.5] 智能巡检：根据日期距离动态调度同步
+        近距离日期高频扫描，远距离日期低频扫描
+        """
+        # 修复全局格式问题（每次巡检都执行，轻量级操作）
         FormatCore.fix_broken_tab_bullets_global()
         
         # 检查是否需要预创建明天的日记
         self._maybe_create_tomorrow_note()
         
-        # 扫描日期范围
-        today_str = datetime.date.today().strftime('%Y-%m-%d')
+        # 遍历日期范围，根据冷却时间决定是否同步
+        now = time.time()
         date_range = self.get_date_range()
         
         for date_str in date_range:
-            self.process_single_date(date_str)
+            last_sync = self._last_full_sync_registry.get(date_str, 0)
+            interval = self._calculate_dynamic_interval(date_str)
+            
+            if now - last_sync >= interval:
+                # 冷却时间已到，执行同步
+                self.process_single_date(date_str)
+                self._last_full_sync_registry[date_str] = now
 
     def run(self):
         """
-        [v1.4] 事件驱动主循环
-        混合动力模式：watchdog 事件 + 低频全量扫描
+        [v1.5] 事件驱动主循环
+        混合动力模式：watchdog 事件 + 指数动态调度
         """
         def _term_handler(signum, frame):
             self._running = False
@@ -356,9 +388,9 @@ class FusionManager:
         signal.signal(signal.SIGTERM, _term_handler)
         self._running = True
 
-        Logger.info(f"🚀 事件驱动引擎启动: watchdog + 低频全量扫描")
-        Logger.info(f"   全量扫描间隔: {Config.GLOBAL_CLEANUP_INTERVAL}s")
-        Logger.info(f"   事件防抖: {Config.EVENT_DEBOUNCE_SECONDS}s")
+        Logger.info(f"🚀 事件驱动引擎启动: watchdog + 指数动态调度")
+        Logger.info(f"   调度公式: I(d) = {Config.EXP_BASE} * exp({Config.EXP_COEFF} * d) + {Config.EXP_OFFSET}")
+        Logger.info(f"   冷却上限: {Config.DYNAMIC_SYNC_MAX_INTERVAL}s | 事件防抖: {Config.EVENT_DEBOUNCE_SECONDS}s")
         Logger.info(f"   日期范围: DAY_START={Config.DAY_START} ~ DAY_END={Config.DAY_END}")
 
         # 初始化 watchdog Observer
@@ -377,25 +409,17 @@ class FusionManager:
         else:
             Logger.info("⚠️ [Watchdog] 不可用，使用纯轮询模式")
 
-        # 启动时执行一次全量扫描
-        self._do_full_scan()
+        # 启动时执行一次智能巡检
+        self._do_smart_cleanup()
 
         # 主循环
-        last_full_scan = time.time()
-        
         try:
             while self._running:
                 # 让出 CPU 资源
                 time.sleep(1)
                 
-                # 检查是否需要预创建明天的日记
-                self._maybe_create_tomorrow_note()
-                
-                # 全量扫描计时
-                now = time.time()
-                if now - last_full_scan >= Config.GLOBAL_CLEANUP_INTERVAL:
-                    self._do_full_scan()
-                    last_full_scan = now
+                # 每秒执行智能巡检（轻量级时间戳比对）
+                self._do_smart_cleanup()
                 
         except KeyboardInterrupt:
             Logger.info("\n⏹️ 收到中断信号...")
@@ -408,3 +432,4 @@ class FusionManager:
             
             self.sm.save()
             Logger.info("✅ 状态已保存，引擎已停止")
+

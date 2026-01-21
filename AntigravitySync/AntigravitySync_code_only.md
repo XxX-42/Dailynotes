@@ -48,7 +48,7 @@ import os
 
 
 class Config:
-    VERSION = "v2.0.0 (EventKit Instant Sync)"    # [2026-01-22] Major re-arch for instant sync
+    VERSION = "v2.0.1 (Unique ID + Self-Healing)"    # [2026-01-22] EventKit unique ID, caffeinate, self-healing
     
     # ==========================
     # 1. 基础路径配置 (来自 Dailynotes)
@@ -99,11 +99,9 @@ class Config:
     EXP_COEFF = 0.0068  # 指数系数
     EXP_OFFSET = 60     # 偏移量
     
-    # [v1.7] 日历数据库监听参数 (macOS)
-    CALENDAR_WATCH_PATH = os.path.expanduser("~/Library/Calendars")
-    CALENDAR_DEBOUNCE_SECONDS = 2.0  # 日历写入非常频繁，需要较大防抖
-
-
+    
+    # [v2.0] EventKit Sync
+    # No file watching required for calendar
     # 范围限制
     DAILY_NOTE_SECTIONS = ['# Day planner', '# Journey']
     SOURCE_FILE_CALLOUTS = ['> [!note] Tasks', '> [!note]- Tasks', '> [!note]+ Tasks']
@@ -152,6 +150,8 @@ import time
 import signal
 import os
 import sys
+import subprocess
+import atexit
 
 # Add src to sys.path to allow importing dailynotes package
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
@@ -159,22 +159,95 @@ from dailynotes.manager import FusionManager
 from config import Config
 from dailynotes.utils import ProcessLock, Logger
 
+# [v2.0.1] Caffeinate 进程句柄（防休眠）
+_caffeinate_proc = None
+
+def start_caffeinate():
+    """
+    [v2.0.1] 启动 caffeinate 防休眠进程
+    使用 -i 参数阻止系统进入 idle sleep
+    """
+    global _caffeinate_proc
+    try:
+        _caffeinate_proc = subprocess.Popen(
+            ['caffeinate', '-i', '-w', str(os.getpid())],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        Logger.info(f"☕ [Caffeinate] 防休眠已启用 (PID: {_caffeinate_proc.pid})")
+    except FileNotFoundError:
+        Logger.info("⚠️ [Caffeinate] caffeinate 命令不可用（非 macOS?），跳过防休眠")
+    except Exception as e:
+        Logger.info(f"⚠️ [Caffeinate] 启动失败: {e}")
+
+def stop_caffeinate():
+    """
+    [v2.0.1] 停止 caffeinate 进程
+    """
+    global _caffeinate_proc
+    if _caffeinate_proc:
+        try:
+            _caffeinate_proc.terminate()
+            _caffeinate_proc.wait(timeout=2)
+            Logger.info("☕ [Caffeinate] 防休眠已停止")
+        except Exception:
+            pass
+        _caffeinate_proc = None
+
+def run_with_self_healing():
+    """
+    [v2.0.1] 带错误自愈的主循环
+    如果 FusionManager 崩溃，自动重启
+    """
+    max_restarts = 5
+    restart_count = 0
+    restart_cooldown = 30  # 重启冷却时间（秒）
+    
+    while restart_count < max_restarts:
+        try:
+            app = FusionManager()
+            Logger.info(f"=== Antigravity Sync {Config.VERSION} (Exponential Dynamic Scheduling) ===")
+            Logger.info(f"路径: {Config.ROOT_DIR}")
+            Logger.info(f"模式: Watchdog (Vault & Calendar) + 指数动态调度")
+            Logger.info(f"调度公式: I(d) = {Config.EXP_BASE} * exp({Config.EXP_COEFF} * d) + {Config.EXP_OFFSET}")
+            
+            # [P2 FIX] Validate template file at startup
+            if os.path.exists(Config.TEMPLATE_FILE):
+                Logger.info(f"模板: ✅ {Config.REL_TEMPLATE_FILE}")
+            else:
+                Logger.info(f"⚠️ 模板文件不存在: {Config.REL_TEMPLATE_FILE} (将使用基础骨架)")
+            
+            if restart_count > 0:
+                Logger.info(f"🔄 [Self-Healing] 自动重启成功 (第 {restart_count} 次)")
+            
+            Logger.info("=" * 50)
+            
+            app.run()
+            break  # 正常退出
+            
+        except KeyboardInterrupt:
+            Logger.info("\n停止服务...")
+            break
+        except SystemExit:
+            Logger.info("收到退出信号...")
+            break
+        except Exception as e:
+            restart_count += 1
+            Logger.error_once(f"main_crash_{restart_count}", f"❌ [Self-Healing] 主循环异常: {e}")
+            
+            if restart_count < max_restarts:
+                Logger.info(f"⏳ [Self-Healing] {restart_cooldown}秒后尝试重启 ({restart_count}/{max_restarts})...")
+                time.sleep(restart_cooldown)
+            else:
+                Logger.error_once("max_restarts", f"❌ [Self-Healing] 达到最大重启次数 ({max_restarts})，退出")
+
 if __name__ == "__main__":
-    app = FusionManager()
-
-    Logger.info(f"=== Antigravity Sync {Config.VERSION} (Exponential Dynamic Scheduling) ===")
-    Logger.info(f"路径: {Config.ROOT_DIR}")
-    Logger.info(f"模式: Watchdog (Vault & Calendar) + 指数动态调度")
-    Logger.info(f"调度公式: I(d) = {Config.EXP_BASE} * exp({Config.EXP_COEFF} * d) + {Config.EXP_OFFSET}")
+    # [v2.0.1] 注册退出时清理 caffeinate
+    atexit.register(stop_caffeinate)
     
-    # [P2 FIX] Validate template file at startup
-    if os.path.exists(Config.TEMPLATE_FILE):
-        Logger.info(f"模板: ✅ {Config.REL_TEMPLATE_FILE}")
-    else:
-        Logger.info(f"⚠️ 模板文件不存在: {Config.REL_TEMPLATE_FILE} (将使用基础骨架)")
+    # [v2.0.1] 启动防休眠
+    start_caffeinate()
     
-    Logger.info("=" * 50)
-
     # 第一次尝试获取锁
     if not ProcessLock.acquire():
         Logger.info(f"⚠️  检测到锁文件 ({Config.LOCK_FILE})")
@@ -218,10 +291,9 @@ if __name__ == "__main__":
             Logger.info("✅ 成功接管锁，服务已启动。")
 
     try:
-        app.run()
-    except KeyboardInterrupt:
-        Logger.info("\n停止服务...")
+        run_with_self_healing()
     finally:
+        stop_caffeinate()
         ProcessLock.release()
 
 ```
@@ -5331,19 +5403,25 @@ class EventKitClient:
                 duration_seconds = event.endDate().timeIntervalSinceDate_(event.startDate())
                 duration_minutes = int(duration_seconds / 60)
                 
-                # [NEW] 4. 生成 Key: {clean_name}_{start_time}
-                # 注意：如果有重名且同时发生的事件，这会覆盖，但符合用户当前要求
-                key = f"{clean_name}_{start_time_str}"
+                # [v2.0.1] 生成唯一 Key: {clean_name}_{start_time}_{id_tail}
+                # id_tail 取 eventIdentifier 的后 6 位，确保即使有同名同时间的事件也不会覆盖
+                event_id = event.eventIdentifier() or ""
+                id_tail = event_id[-6:] if len(event_id) >= 6 else event_id
+                key = f"{clean_name}_{start_time_str}_{id_tail}"
                 
-                # [NEW] 5. 构造完整字典
+                # [v2.0.1] 同时生成语义 Key (用于与 Obsidian 模糊匹配)
+                semantic_key = f"{clean_name}_{start_time_str}"
+                
+                # [v2.0.1] 构造完整字典
                 result[key] = {
                     'name': clean_name,
-                    'id': event.eventIdentifier(),
+                    'id': event_id,
                     'is_completed': is_completed,
                     'raw_name': title,
                     'current_calendar': cal_title,
                     'start_time': start_time_str,
-                    'duration': duration_minutes
+                    'duration': duration_minutes,
+                    'semantic_key': semantic_key  # 供 sync_engine 进行模糊匹配
                 }
             except Exception as e:
                 print(f"⚠️ 处理事件失败: {e}")
@@ -5847,6 +5925,17 @@ def perform_bidirectional_sync(date_str, obs_path, state_manager, target_dt):
     current_cal = get_all_calendars_state(target_dt)
     last_obs, last_cal = state_manager.get_snapshot(date_str)
 
+    # [v2.0.1] 构建 semantic_key -> [calendar_keys] 的映射
+    # 用于处理 Obsidian (Name+Time) 与 Calendar (Name+Time+ID) 的模糊匹配
+    cal_semantic_map = {}  # {semantic_key: [cal_key1, cal_key2, ...]}
+    cal_id_map = {}        # {event_id: cal_key}
+    for c_key, c_data in current_cal.items():
+        sem_key = c_data.get('semantic_key', c_key)  # 兼容旧格式
+        if sem_key not in cal_semantic_map:
+            cal_semantic_map[sem_key] = []
+        cal_semantic_map[sem_key].append(c_key)
+        cal_id_map[c_data['id']] = c_key
+
     # Batch executor
     batch = BatchExecutor(target_dt)
 
@@ -5859,6 +5948,7 @@ def perform_bidirectional_sync(date_str, obs_path, state_manager, target_dt):
     handled_cal_keys = set()
 
     # Phase 0: Drift Detection
+    # [v2.0.1] 使用 semantic_key 进行匹配，因为 Obsidian key 不包含 ID
     obs_name_map = {}
     for key, val in current_obs.items():
         if val['name'] not in obs_name_map:
@@ -5866,10 +5956,13 @@ def perform_bidirectional_sync(date_str, obs_path, state_manager, target_dt):
         obs_name_map[val['name']].append(key)
 
     for c_key, c_data in current_cal.items():
-        if c_key not in current_obs and c_key not in last_cal:
+        sem_key = c_data.get('semantic_key', c_key)
+        # [v2.0.1] 检查 semantic_key 是否在 Obsidian 中，而不是 c_key
+        if sem_key not in current_obs and c_key not in last_cal:
             possible_obs_keys = obs_name_map.get(c_data['name'], [])
             for old_o_key in possible_obs_keys:
-                if old_o_key not in current_cal:
+                # [v2.0.1] 检查 old_o_key 是否映射到任何当前日历事件
+                if old_o_key not in cal_semantic_map:
                     print(f"🕵️ [Drift] 时间修改: {c_data['name']} ({current_obs[old_o_key]['start_time']} -> {c_data['start_time']})")
                     line_idx = current_obs[old_o_key]['line_index']
                     tag_suffix = CAL_TO_TAG.get(c_data['current_calendar'], "")
@@ -6022,8 +6115,12 @@ def perform_bidirectional_sync(date_str, obs_path, state_manager, target_dt):
         if is_new or is_modified:
             o_is_completed = (o_data['status'] == 'x')
             dur = calculate_duration_minutes(o_data['start_time'], o_data['end_time'])
-            if key in current_cal:
-                c_data = current_cal[key]
+            # [v2.0.1] 使用 semantic_map 查找日历事件
+            cal_keys = cal_semantic_map.get(key, [])
+            if cal_keys:
+                # 有匹配的日历事件，取第一个进行更新
+                c_key = cal_keys[0]
+                c_data = current_cal[c_key]
                 if is_modified:
                     if o_data['target_calendar'] != c_data['current_calendar']:
                         # Cross-calendar: delete old + create new
@@ -6038,19 +6135,24 @@ def perform_bidirectional_sync(date_str, obs_path, state_manager, target_dt):
                 # Create new
                 batch.add_create(o_data['name'], o_data['start_time'], dur, o_data['target_calendar'], o_is_completed)
 
+    # [v2.0.1] 删除检测：使用 semantic_map
     for key in last_obs:
         if key not in current_obs and key not in handled_obs_keys:
-            if key in current_cal:
-                c_data = current_cal[key]
+            cal_keys = cal_semantic_map.get(key, [])
+            if cal_keys:
+                c_key = cal_keys[0]
+                c_data = current_cal[c_key]
                 print(f"🗑️ [O->C] 触发日历删除: {key}")
                 batch.add_delete(c_data['id'], c_data['current_calendar'])
-                handled_cal_keys.add(key)
+                handled_cal_keys.add(c_key)
 
     # Phase B: C -> O
-    for key, c_data in current_cal.items():
-        if key in handled_cal_keys:
+    for c_key, c_data in current_cal.items():
+        if c_key in handled_cal_keys:
             continue
-        if key not in last_cal and key not in current_obs:
+        sem_key = c_data.get('semantic_key', c_key)
+        # [v2.0.1] 使用 semantic_key 判断是否已存在于 Obsidian
+        if c_key not in last_cal and sem_key not in current_obs:
             print(f"📝 [C->O] 写入笔记: {c_data['name']}")
             tag_suffix = CAL_TO_TAG.get(c_data['current_calendar'], "")
             if tag_suffix == "#D":
@@ -6065,10 +6167,8 @@ def perform_bidirectional_sync(date_str, obs_path, state_manager, target_dt):
             lines_to_append.append(new_line)
             file_dirty = True
             
-            # [v1.7.2] Snapshot Consistency: Add to current_obs so snapshot saves it
-            new_key = key # key is already name_time
-            # Construct minimal data for snapshot
-            current_obs[new_key] = {
+            # [v2.0.1] Snapshot Consistency: 使用 semantic_key 作为 Obsidian 端的 key
+            current_obs[sem_key] = {
                 'name': c_data['name'],
                 'start_time': c_data['start_time'],
                 'end_time': end_t.strftime('%H:%M') if c_data['duration'] != 30 else None,
@@ -6078,8 +6178,8 @@ def perform_bidirectional_sync(date_str, obs_path, state_manager, target_dt):
                 'line_index': -1 # Placeholder, won't be used next run (re-parsed)
             }
 
-        elif key in last_cal and key in current_obs:
-            last_c_data = last_cal[key]
+        elif c_key in last_cal and sem_key in current_obs:
+            last_c_data = last_cal[c_key]
             is_cal_modified = False
             if c_data['current_calendar'] != last_c_data['current_calendar']:
                 is_cal_modified = True
@@ -6090,7 +6190,7 @@ def perform_bidirectional_sync(date_str, obs_path, state_manager, target_dt):
 
             if is_cal_modified:
                 print(f"🔄 [C->O] 日历属性变更: {c_data['name']}")
-                line_idx = current_obs[key]['line_index']
+                line_idx = current_obs[sem_key]['line_index']
                 tag_suffix = CAL_TO_TAG.get(c_data['current_calendar'], "")
                 if tag_suffix == "#D":
                     tag_suffix = ""
@@ -6104,22 +6204,30 @@ def perform_bidirectional_sync(date_str, obs_path, state_manager, target_dt):
                 lines_to_modify[line_idx] = new_line
                 file_dirty = True
                 
-                # [v1.7.2] Snapshot Consistency: Update current_obs
-                current_obs[key]['target_calendar'] = c_data['current_calendar']
-                current_obs[key]['tag'] = tag_suffix
-                current_obs[key]['status'] = status_char
-                current_obs[key]['end_time'] = end_t.strftime('%H:%M') if c_data['duration'] != 30 else None
+                # [v2.0.1] Snapshot Consistency: Update current_obs
+                current_obs[sem_key]['target_calendar'] = c_data['current_calendar']
+                current_obs[sem_key]['tag'] = tag_suffix
+                current_obs[sem_key]['status'] = status_char
+                current_obs[sem_key]['end_time'] = end_t.strftime('%H:%M') if c_data['duration'] != 30 else None
 
-    for key in last_cal:
-        if key not in current_cal and key not in handled_obs_keys:
-            if key in current_obs:
-                line_idx = current_obs[key]['line_index']
-                print(f"✂️ [C->O] 检测到日历端删除 (同步删除本地): {current_obs[key]['name']}")
+    # [v2.0.1] 日历端删除检测：last_cal 的 key 格式可能是新的带 ID 格式
+    for old_c_key in last_cal:
+        # 检查是否仍存在于当前日历
+        old_c_data = last_cal[old_c_key]
+        old_id = old_c_data.get('id', '')
+        still_exists = old_id in cal_id_map
+        
+        if not still_exists and old_c_key not in handled_obs_keys:
+            # 从 last_cal 获取 semantic_key
+            old_sem_key = old_c_data.get('semantic_key', old_c_key)
+            if old_sem_key in current_obs:
+                line_idx = current_obs[old_sem_key]['line_index']
+                print(f"✂️ [C->O] 检测到日历端删除 (同步删除本地): {current_obs[old_sem_key]['name']}")
                 lines_to_delete_indices.append(line_idx)
                 file_dirty = True
                 
-                # [v1.7.2] Snapshot Consistency: Remove from current_obs
-                del current_obs[key]
+                # [v2.0.1] Snapshot Consistency: Remove from current_obs
+                del current_obs[old_sem_key]
 
     # 4. Execute AppleScript batch
     batch.execute()

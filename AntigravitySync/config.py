@@ -2,7 +2,7 @@ import os
 
 
 class Config:
-    VERSION = "v2.0.1 (Unique ID + Self-Healing)"    # [2026-01-22] EventKit unique ID, caffeinate, self-healing
+    VERSION = "v2.0.2 (Stable)"    # [2026-01-22] Stable release after major refactor
     
     # ==========================
     # 1. 基础路径配置 (来自 Dailynotes)

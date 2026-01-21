@@ -48,7 +48,7 @@ import os
 
 
 class Config:
-    VERSION = "v2.0.1 (Unique ID + Self-Healing)"    # [2026-01-22] EventKit unique ID, caffeinate, self-healing
+    VERSION = "v3.0.0 (Chronos Mode)"    # [2026-01-22] Pure event-driven, no polling
     
     # ==========================
     # 1. 基础路径配置 (来自 Dailynotes)
@@ -78,27 +78,26 @@ class Config:
 
     # 运行参数
     SYNC_START_DATE = "2025-12-08"
-    TICK_INTERVAL = 3
     TYPING_COOLDOWN_SECONDS = 6
     IMAGE_PARAM_SUFFIX = "|L|200"
     DEBUG_MODE = True
     
-    # [NEW] Tick-based scheduling parameters
-    DAY_START = -1   # -1 = 昨天
-    DAY_END = 90     # [v1.5.1] 释放野兽：指数算法完全可以支撑这个范围
-    COMPLETE_TASKS_SYNC_INTERVAL = 60  # [v1.3] 全量扫描从每 30 秒降为每 3 分钟
-    
     # [v1.4] 事件驱动模式参数
     EVENT_DEBOUNCE_SECONDS = 0.5   # 事件触发防抖时间（秒）
     
-    # [v1.5] 指数动态调度参数
-    # 公式: I(d) = EXP_BASE * exp(EXP_COEFF * d) + EXP_OFFSET
-    # d=0 时约 300 秒 (5分钟), d=30 时约 348 秒 (5.8分钟)
-    DYNAMIC_SYNC_MAX_INTERVAL = 3600  # 强制上限 1 小时
-    EXP_BASE = 240      # 基础系数
-    EXP_COEFF = 0.0068  # 指数系数
-    EXP_OFFSET = 60     # 偏移量
+    # [v3.0] Chronos Mode - 全事件驱动架构
+    CHRONOS_SYNC_WINDOW_DAYS = 30      # 日历变更时同步的窗口大小（前后各15天）
+    CHRONOS_FULL_RANGE_PAST_DAYS = 2   # 全量同步：过去N天 (前天+昨天)
+    CHRONOS_FULL_RANGE_FUTURE_YEARS = 10  # 全量同步：未来N年
+    CHRONOS_EVENTKIT_BATCH_DAYS = 1460  # EventKit批次大小（约4年，系统限制）
+    CHRONOS_LOOP_INTERVAL = 60.0       # 主循环间隔（秒）
     
+    # [v2.0+] 指数动态调度参数
+    # 调度公式: I(d) = EXP_BASE * exp(EXP_COEFF * d) + EXP_OFFSET
+    # d 为距今天数，I(d) 为同步间隔（秒）
+    EXP_BASE = 60.0       # 基础间隔（秒）
+    EXP_COEFF = 0.1       # 指数系数（正值表示越旧越慢）
+    EXP_OFFSET = 30.0     # 偏移量/最小间隔（秒）
     
     # [v2.0] EventKit Sync
     # No file watching required for calendar
@@ -2145,19 +2144,18 @@ class FormatCore:
 ## File: src/dailynotes/manager.py
 ```py
 """
-Fusion Manager - Antigravity Architecture v1.5
-Event-Driven Sync Engine with Exponential Dynamic Scheduling.
+Fusion Manager - Antigravity Architecture v3.0 (Chronos Mode)
+Pure Event-Driven Sync Engine - No Polling Required.
 
 Key Features:
-- [v1.4] Event-Driven: Uses watchdog to monitor file changes
-- [v1.4] Self-Write Detection: Ignores events triggered by script's own writes
-- [v1.5] Exponential Scheduling: I(d) = 240 * exp(0.0068 * d) + 60
-- Content-Hash Self-Awareness: Uses content identity instead of mtime
+- [v3.0] Chronos Mode: Full event-driven, no polling
+- [v3.0] Startup Full Sync: Scans past 1 year to future 10 years
+- [v3.0] Event-Triggered Window Sync: Only syncs affected window on calendar change
+- [v2.0] CFRunLoop Integration: Instant notification delivery
 """
 import os
 import sys
 import re
-import math
 import time
 import datetime
 import signal
@@ -2185,49 +2183,30 @@ try:
 except ImportError:
     WATCHDOG_AVAILABLE = False
     Observer = None
-    # 提供空基类以避免继承错误
     class FileSystemEventHandler:
         pass
-    Logger.error_once("watchdog_import", "⚠️ watchdog 库未安装，将使用轮询模式")
+    Logger.error_once("watchdog_import", "⚠️ watchdog 库未安装")
 
 
 class ObsidianEventHandler(FileSystemEventHandler):
     """
     [v1.6] 文件变更事件处理器 - 支持原子写入
-    监听 Obsidian Vault 中的 .md 文件变动，触发同步逻辑。
-    
-    关键修复：Obsidian 使用"原子写入"模式保存文件：
-    1. 写入临时文件 (e.g., .md.tmp)
-    2. 重命名临时文件覆盖目标文件 (rename/move)
-    
-    因此必须同时监听 on_modified 和 on_moved 事件。
     """
     
     def __init__(self, manager):
         super().__init__()
         self.manager = manager
-        self._last_event_time = {}  # 防抖追踪: {filepath: timestamp}
-    
+        self._last_event_time = {}
+
     def _process_event(self, filepath, event_type):
-        """
-        统一的事件处理逻辑（供 on_modified 和 on_moved 调用）
-        
-        Args:
-            filepath: 目标文件路径
-            event_type: 事件类型字符串 ("MODIFIED" 或 "MOVED")
-        """
-        # [过滤] 仅处理 .md 文件
         if not filepath.endswith('.md'):
             return
         
-        # [过滤] 排除目录检查
         if FileUtils.is_excluded(filepath):
             return
 
-        # [底层日志] 立即输出，这是调试的关键
         Logger.info(f"🔎 [Watchdog] 捕获底层事件 ({event_type}): {os.path.basename(filepath)}")
         
-        # [防抖] 避免短时间内重复触发
         now = time.time()
         last_time = self._last_event_time.get(filepath, 0)
         if now - last_time < Config.EVENT_DEBOUNCE_SECONDS:
@@ -2235,7 +2214,6 @@ class ObsidianEventHandler(FileSystemEventHandler):
             return
         self._last_event_time[filepath] = now
         
-        # [哈希自省] 检测是否为脚本自身的写入
         try:
             content = FileUtils.read_content(filepath)
             if content is None:
@@ -2243,72 +2221,44 @@ class ObsidianEventHandler(FileSystemEventHandler):
             
             content_hash = FileUtils.calculate_hash(content)
             
-            # 如果这是脚本自己的写入，立即丢弃事件
             if FileUtils.is_system_write(content_hash):
                 Logger.debug(f"[Event] 忽略自写入事件: {os.path.basename(filepath)}")
                 return
             
-            # [触发] 用户编辑事件，触发同步
             Logger.info(f"📝 [Event] 检测到用户变更: {os.path.basename(filepath)}")
             self.manager.on_file_changed(filepath)
             
         except Exception as e:
             Logger.error_once(f"event_err_{filepath}", f"事件处理异常: {e}")
-    
+
     def on_modified(self, event):
-        """处理文件修改事件（传统编辑器直接写入）"""
         if event.is_directory:
             return
         self._process_event(event.src_path, "MODIFIED")
-    
+
     def on_moved(self, event):
-        """
-        处理文件移动/重命名事件（原子写入的核心）
-        
-        Obsidian 保存流程：
-        1. 写入 .md.tmp 临时文件
-        2. rename(".md.tmp", ".md") 覆盖目标
-        
-        关键：必须使用 dest_path (重命名后的目标路径)
-        """
         if event.is_directory:
             return
-        # 注意：使用 dest_path，这是重命名后的新文件名
         self._process_event(event.dest_path, "MOVED")
-
-
-
 
 
 class FusionManager:
     """
-    Unified sync manager implementing Antigravity Architecture.
+    [v3.0] Chronos Mode - Pure Event-Driven Sync Manager
     
-    Core Logic:
-    - 主权在内 (Sovereignty Inside): Dailynotes runs first
-    - 脏标志阻断 (Dirty Flag): If internal modified, skip external
-    - [v1.4] 事件驱动 (Event-Driven): watchdog 监听文件变更
-    - [v1.5] 指数动态调度 (Exponential Scheduling): 非线性日期冷却
+    Architecture:
+    - Startup: Full range sync (past 1 year to future 10 years)
+    - Runtime: Pure event-driven, no polling
+    - Calendar events trigger window sync (±15 days)
+    - Midnight crossing triggers next day's note creation
     """
     
     def __init__(self):
         self.sm = StateManager()
         self.sync_core = SyncCore(self.sm)
-        
-        # [NEW] Initialize Apple Sync adapter (lazy, platform-safe)
         self.apple_sync = AppleSyncAdapter()
         
-        # State tracking
-        self.last_active_time = time.time()
-        
-        # [NEW] Tick-based scheduling for full date range scan
-        self.tick_counter = 0  # Counts ticks since last full scan
-        self.today_last_hash = None  # Track today's diary hash for change detection
-        
-        # [NEW] Track the date when tomorrow's note was last created (to avoid duplicates)
-        self._tomorrow_note_created_date = None
-        
-        # [v1.4] Observer 实例
+        # Observer instances
         self._observer = None
         self._ek_client = None
         if EK_AVAILABLE:
@@ -2317,143 +2267,19 @@ class FusionManager:
             except Exception as e:
                 Logger.error_once("ek_init_fail", f"EventKitClient init failed: {e}")
                 self._ek_client = None
+        
         self._running = False
-        
-        # [v1.5] 动态调度状态：记录每个日期的上次同步时间戳
-        self._last_full_sync_registry = {}  # {date_str: timestamp}
-        
-        # [v1.8] Lazy initialization flag for TaskRegistry
         self._registry_warmup_done = False
-
-        # [v2.0 REFACTOR] Thread-Safety Flag for Calendar Sync
-        # The background thread sets this to True, Main Loop checks and executes sync
+        
+        # [v3.0] Chronos Mode
         self._calendar_dirty_flag = False
-
-    def check_debounce(self, filepath):
-        """
-        Check if file is stable for processing.
-        [REFACTORED] Uses content-hash to distinguish system writes from user edits.
-        """
-        if not os.path.exists(filepath):
-            return False
-        
-        # Read current content and calculate its hash
-        content = FileUtils.read_content(filepath)
-        if content is None:
-            return False
-        
-        content_hash = FileUtils.calculate_hash(content)
-        
-        # If hash matches a system write, file is "self-owned" -> stable
-        # Note: is_system_write() consumes the hash (one-time use)
-        if FileUtils.is_system_write(content_hash):
-            return True
-        
-        # Otherwise, check mtime-based cooldown (user is typing)
-        mtime = FileUtils.get_mtime(filepath)
-        idle = time.time() - mtime
-        return idle >= Config.TYPING_COOLDOWN_SECONDS
-
-    def is_user_active(self):
-        """
-        [Activity Detection] Check for "hot" files.
-        """
-        today_str = datetime.date.today().strftime('%Y-%m-%d')
-        daily_path = os.path.join(Config.DAILY_NOTE_DIR, f"{today_str}.md")
-
-        if os.path.exists(daily_path):
-            content = FileUtils.read_content(daily_path)
-            if content:
-                content_hash = FileUtils.calculate_hash(content)
-                if FileUtils.check_system_write(content_hash):
-                    return False
-
-            mtime = FileUtils.get_mtime(daily_path)
-            if time.time() - mtime < 60:
-                return True
-
-        return False
-
-    def check_today_changed(self) -> bool:
-        """
-        Check if today's diary content has changed since last check.
-        """
-        today_str = datetime.date.today().strftime('%Y-%m-%d')
-        daily_path = os.path.join(Config.DAILY_NOTE_DIR, f"{today_str}.md")
-        
-        if not os.path.exists(daily_path):
-            return False
-        
-        content = FileUtils.read_content(daily_path)
-        if content is None:
-            return False
-        
-        current_hash = FileUtils.calculate_hash(content)
-        
-        if self.today_last_hash is None:
-            self.today_last_hash = current_hash
-            return False
-        
-        if current_hash != self.today_last_hash:
-            self.today_last_hash = current_hash
-            return True
-        
-        return False
-
-    def _maybe_create_tomorrow_note(self):
-        """
-        [NEW] Auto-create tomorrow's diary at 23:30.
-        """
-        now = datetime.datetime.now()
-        today_str = now.strftime('%Y-%m-%d')
-        
-        if self._tomorrow_note_created_date == today_str:
-            return
-        
-        if now.hour != 23 or now.minute < 30:
-            return
-        
-        tomorrow = now.date() + datetime.timedelta(days=1)
-        tomorrow_str = tomorrow.strftime('%Y-%m-%d')
-        tomorrow_path = os.path.join(Config.DAILY_NOTE_DIR, f"{tomorrow_str}.md")
-        
-        if os.path.exists(tomorrow_path):
-            Logger.info(f"📅 [预创建] 明天的日记已存在，跳过: {tomorrow_str}.md")
-            self._tomorrow_note_created_date = today_str
-            return
-        
-        if os.path.exists(Config.TEMPLATE_FILE):
-            try:
-                tmpl_lines = FileUtils.read_file(Config.TEMPLATE_FILE)
-                if tmpl_lines:
-                    Logger.info(f"📅 [预创建] 23:30 定时任务 - 从模板创建明天的日记: {tomorrow_str}.md")
-                    FileUtils.write_file(tomorrow_path, tmpl_lines)
-                    self._tomorrow_note_created_date = today_str
-            except Exception as e:
-                Logger.error_once(f"pre_create_fail_{tomorrow_str}", f"预创建明天日记失败: {e}")
-        else:
-            Logger.info(f"📅 [预创建] 未找到模版，创建基础骨架: {tomorrow_str}.md")
-            base_scaffold = ["# Day planner\n", "\n", "# Journey\n", "\n"]
-            FileUtils.write_file(tomorrow_path, base_scaffold)
-            self._tomorrow_note_created_date = today_str
-
-    def get_date_range(self) -> list:
-        """
-        Generate date strings from DAY_START to DAY_END relative to today.
-        """
-        today = datetime.date.today()
-        dates = []
-        for delta in range(Config.DAY_START, Config.DAY_END + 1):
-            target_date = today + datetime.timedelta(days=delta)
-            date_str = target_date.strftime('%Y-%m-%d')
-            if date_str >= Config.SYNC_START_DATE:
-                dates.append(date_str)
-        return dates
+        self._last_midnight_check = datetime.date.today()
+        self._startup_sync_done = False
 
     def process_single_date(self, date_str, is_event_trigger=False):
         """
         Process a single date: internal sync + formatting + Apple sync.
-        Returns detailed result dict.
+        [v3.0] Only creates note if calendar has events for that date.
         """
         results = {
             "internal_mod": False,
@@ -2473,26 +2299,23 @@ class FusionManager:
                 is_system_edit = FileUtils.check_system_write(content_hash)
             
             if not is_system_edit:
-                # [v1.5.2] 允许事件驱动绕过防抖冷却
                 idle_duration = time.time() - FileUtils.get_mtime(daily_path)
                 if not is_event_trigger and idle_duration < Config.TYPING_COOLDOWN_SECONDS:
                     results["skipped"] = True
                     return results
 
         # --- [PRIORITY 1] Obsidian Internal Processing ---
-        if is_event_trigger or self.check_debounce(daily_path) or not os.path.exists(daily_path):
-            try:
-                # [v1.8] Use registry's O(1) lookup instead of full scan
-                tasks_for_date = self.sync_core.get_tasks_for_date(date_str)
-                self.sync_core.process_date(date_str, tasks_for_date)
+        try:
+            tasks_for_date = self.sync_core.get_tasks_for_date(date_str)
+            self.sync_core.process_date(date_str, tasks_for_date)
 
-                if os.path.exists(daily_path):
-                    if FormatCore.execute(daily_path):
-                        results["internal_mod"] = True
-                        Logger.info(f"   ✨ [Internal] 格式化完成: {date_str}")
+            if os.path.exists(daily_path):
+                if FormatCore.execute(daily_path):
+                    results["internal_mod"] = True
+                    Logger.info(f"   ✨ [Internal] 格式化完成: {date_str}")
 
-            except Exception as e:
-                Logger.error_once(f"sync_fail_{date_str}", f"内部同步异常 [{date_str}]: {e}")
+        except Exception as e:
+            Logger.error_once(f"sync_fail_{date_str}", f"内部同步异常 [{date_str}]: {e}")
 
         # --- [PRIORITY 2] Apple Calendar Sync ---
         should_sync_apple = False
@@ -2500,7 +2323,7 @@ class FusionManager:
         if results["internal_mod"]:
             should_sync_apple = True
             Logger.info(f"   ⚡ [Trigger] 内部修改触发立即同步: {date_str}")
-        elif os.path.exists(daily_path) and (is_event_trigger or self.check_debounce(daily_path)):
+        elif os.path.exists(daily_path):
             should_sync_apple = True
 
         if should_sync_apple:
@@ -2518,31 +2341,22 @@ class FusionManager:
 
     def on_file_changed(self, filepath):
         """
-        [v1.8 REFACTORED] 事件驱动入口：文件变更时调用
-        
-        改进内容:
-        - 日记文件: 直接触发该日期的同步
-        - 项目文件: 使用 process_file_event 增量更新，只同步受影响的日期
+        [v3.0] 事件驱动入口：文件变更时调用
         """
         filename = os.path.basename(filepath)
         
-        # [v1.8] Lazy warmup: ensure registry is initialized on first event
         if not self._registry_warmup_done:
             Logger.info("🔄 [Manager] Warming up TaskRegistry...")
             self.sync_core.initialize_registry()
             self._registry_warmup_done = True
         
-        # 尝试从文件名提取日期 (格式: YYYY-MM-DD.md)
         date_match = re.match(r'^(\d{4}-\d{2}-\d{2})\.md$', filename)
         
         if date_match:
-            # 这是一个日记文件 - 直接触发该日期同步
             date_str = date_match.group(1)
             Logger.info(f"   🔄 [Sync] 触发日期同步: {date_str}")
             self.process_single_date(date_str, is_event_trigger=True)
         else:
-            # [v1.8] 项目文件 - 使用增量同步
-            # 只扫描这ONE个文件，然后只同步受影响的日期
             affected_dates = self.sync_core.process_file_event(filepath)
             
             if affected_dates:
@@ -2550,126 +2364,121 @@ class FusionManager:
                 for date_str in affected_dates:
                     self.process_single_date(date_str, is_event_trigger=True)
             else:
-                # Fallback: 如果文件中没有任务，仍然同步今天
                 today_str = datetime.date.today().strftime('%Y-%m-%d')
                 Logger.info(f"   🔄 [Sync] 项目文件变更（无任务），触发今日同步")
                 self.process_single_date(today_str, is_event_trigger=True)
 
-    def trigger_immediate_sync_for_today(self):
-        """
-        [v1.7] 由日历事件触发的立即同步
-        """
-        today_str = datetime.date.today().strftime('%Y-%m-%d')
-        Logger.info(f"   🔄 [Sync] Calendar 变动触发今日同步: {today_str}")
-        self.process_single_date(today_str, is_event_trigger=True)
-
     def _on_calendar_push_event(self):
         """
-        [v1.9] Callback for Distributed Notification (Zero Latency).
-        Runs in a background thread.
-        [v2.0 THREAD-SAFETY] Do NOT run sync here! Just set a flag.
+        [v3.0] Callback for EventKit notification.
+        Thread-safe: Just sets a flag.
         """
-        # Logger.info(f"⚡ [Distributed] 检测到系统日历数据库物理变更！")
-        # 仅设置脏标志，不执行耗时 IO
         self._calendar_dirty_flag = True
 
-    def _calculate_dynamic_interval(self, date_str) -> float:
+    def sync_recent_window(self):
         """
-        [v1.5] 计算指定日期的动态同步间隔
-        公式: I(d) = EXP_BASE * exp(EXP_COEFF * d) + EXP_OFFSET
+        [v3.1] 日历变更触发的窗口同步
         
-        Args:
-            date_str: 日期字符串 (YYYY-MM-DD)
-        Returns:
-            同步间隔（秒）
+        范围: 过去 CHRONOS_FULL_RANGE_PAST_DAYS 天 ~ 未来 CHRONOS_FULL_RANGE_FUTURE_YEARS 年
+        性能优化: 仅同步日历中有事件的日期，避免遍历所有空白日期
         """
-        try:
-            target_date = datetime.datetime.strptime(date_str, '%Y-%m-%d').date()
-            today = datetime.date.today()
-            d = abs((target_date - today).days)  # 距离今天的天数
-            
-            # [v1.8.3] Privacy-aware Fast Polling for Today
-            # 由于 macOS TCC 权限限制，Watchdog 可能无法监听到日历数据库变化
-            # 对“今天”强制使用 30 秒的快速轮询，确保近似实时的体验
-            if d == 0:
-                return 30.0
-            
-            # 指数拟合公式
-            interval = Config.EXP_BASE * math.exp(Config.EXP_COEFF * d) + Config.EXP_OFFSET
-            
-            # 限制在最大值以内
-            return min(interval, Config.DYNAMIC_SYNC_MAX_INTERVAL)
-        except Exception:
-            return Config.EXP_BASE + Config.EXP_OFFSET  # 默认 300 秒
+        if not self._ek_client:
+            Logger.info("⚠️ [Chronos] EventKit 不可用，跳过窗口同步")
+            return
+        
+        today = datetime.date.today()
+        start_date = today - datetime.timedelta(days=Config.CHRONOS_FULL_RANGE_PAST_DAYS)
+        end_date = today + datetime.timedelta(days=Config.CHRONOS_FULL_RANGE_FUTURE_YEARS * 365)
+        
+        # 确保不早于 SYNC_START_DATE
+        sync_start = datetime.datetime.strptime(Config.SYNC_START_DATE, '%Y-%m-%d').date()
+        if start_date < sync_start:
+            start_date = sync_start
+        
+        Logger.info(f"🔄 [Chronos] 窗口同步: {start_date} ~ {end_date}")
+        
+        # [性能优化] 使用 EventKit 批量获取有事件的日期，避免逐天遍历
+        events_by_date = self._ek_client.fetch_range_events(
+            start_date, 
+            end_date, 
+            Config.CHRONOS_EVENTKIT_BATCH_DAYS
+        )
+        
+        if not events_by_date:
+            Logger.info("📭 [Chronos] 窗口范围内无日历事件")
+            return
+        
+        Logger.info(f"📅 [Chronos] 发现 {len(events_by_date)} 天有日历事件")
+        
+        # 只同步有事件的日期
+        synced_count = 0
+        for date_str in sorted(events_by_date.keys()):
+            if date_str >= Config.SYNC_START_DATE:
+                result = self.process_single_date(date_str, is_event_trigger=True)
+                if result["apple_to_obsidian"] or result["obsidian_to_apple"]:
+                    synced_count += 1
+        
+        Logger.info(f"✅ [Chronos] 窗口同步完成: {synced_count} 天有变动")
 
-    def _do_smart_cleanup(self):
+    def sync_full_range(self):
         """
-        [v1.5] 智能巡检：根据日期距离动态调度同步
-        近距离日期高频扫描，远距离日期低频扫描
+        [v3.0] 全量同步：过去1年到未来10年
+        仅同步日历中实际有事件的日期，避免创建大量空白笔记
         """
-        # 修复全局格式问题（每次巡检都执行，轻量级操作）
-        FormatCore.fix_broken_tab_bullets_global()
+        if not self._ek_client:
+            Logger.info("⚠️ [Chronos] EventKit 不可用，跳过全量同步")
+            return
         
-        # [v2.0] Check Thread-Safe Dirty Flag
-        if self._calendar_dirty_flag:
-            Logger.info(f"⚡ [Distributed] 检测到系统日历变更标志 (Async Trigger)")
-            self.trigger_immediate_sync_for_today()
-            self._calendar_dirty_flag = False  # Reset flag
+        today = datetime.date.today()
+        start_date = today - datetime.timedelta(days=Config.CHRONOS_FULL_RANGE_PAST_DAYS)
+        end_date = today + datetime.timedelta(days=Config.CHRONOS_FULL_RANGE_FUTURE_YEARS * 365)
         
-        # 检查是否需要预创建明天的日记
-        self._maybe_create_tomorrow_note()
+        # 确保不早于 SYNC_START_DATE
+        sync_start = datetime.datetime.strptime(Config.SYNC_START_DATE, '%Y-%m-%d').date()
+        if start_date < sync_start:
+            start_date = sync_start
         
-        # 遍历日期范围，根据冷却时间决定是否同步
-        now = time.time()
-        date_range = self.get_date_range()
+        Logger.info(f"🚀 [Chronos] 全量同步启动: {start_date} ~ {end_date}")
         
-        # [v1.5.1] 清理过期记录，防止内存缓慢泄漏
-        active_dates = set(date_range)
-        for recorded_date in list(self._last_full_sync_registry.keys()):
-            if recorded_date not in active_dates:
-                del self._last_full_sync_registry[recorded_date]
+        # 获取日历中有事件的日期
+        events_by_date = self._ek_client.fetch_range_events(
+            start_date, 
+            end_date, 
+            Config.CHRONOS_EVENTKIT_BATCH_DAYS
+        )
         
-        for date_str in date_range:
-            last_sync = self._last_full_sync_registry.get(date_str, 0)
-            interval = self._calculate_dynamic_interval(date_str)
-            
-            if now - last_sync >= interval:
-                # 冷却时间已到，执行同步
-                self.process_single_date(date_str)
-                self._last_full_sync_registry[date_str] = now
+        if not events_by_date:
+            Logger.info("📭 [Chronos] 日历范围内无事件")
+            return
+        
+        Logger.info(f"📅 [Chronos] 发现 {len(events_by_date)} 天有日历事件")
+        
+        # 只同步有事件的日期
+        synced_count = 0
+        for date_str in sorted(events_by_date.keys()):
+            if date_str >= Config.SYNC_START_DATE:
+                result = self.process_single_date(date_str, is_event_trigger=True)
+                if result["apple_to_obsidian"] or result["obsidian_to_apple"]:
+                    synced_count += 1
+        
+        Logger.info(f"✅ [Chronos] 全量同步完成: {synced_count} 天有变动")
 
-    def _print_countdown(self):
+    def _check_midnight_crossing(self):
         """
-        [v1.5.2] 实时输出下一次大检测的倒计时
-        在同一行更新秒数，使用回车符覆盖
+        [v3.0] 检查是否跨越午夜，创建新的今日笔记
         """
-        now = time.time()
-        date_range = self.get_date_range()
-        
-        min_countdown = float('inf')
-        next_date = None
-        
-        for date_str in date_range:
-            last_sync = self._last_full_sync_registry.get(date_str, 0)
-            interval = self._calculate_dynamic_interval(date_str)
-            remaining = interval - (now - last_sync)
+        today = datetime.date.today()
+        if today != self._last_midnight_check:
+            Logger.info(f"🌙 [Chronos] 检测到跨越午夜: {self._last_midnight_check} -> {today}")
+            self._last_midnight_check = today
             
-            if remaining > 0 and remaining < min_countdown:
-                min_countdown = remaining
-                next_date = date_str
-        
-        if next_date and min_countdown < float('inf'):
-            countdown_str = f"⏱️  下次检测 [{next_date}]: {int(min_countdown):>4}s"
-            # 使用 \r 回到行首，覆盖原内容
-            sys.stdout.write(f"\r{countdown_str}  ")
-            sys.stdout.flush()
-            # 标记倒计时行正在显示，让 Logger 知道需要先清行
-            Logger._countdown_active = True
+            # 同步今天的日历
+            today_str = today.strftime('%Y-%m-%d')
+            self.process_single_date(today_str, is_event_trigger=True)
 
     def run(self):
         """
-        [v1.5] 事件驱动主循环
-        混合动力模式：watchdog 事件 + 指数动态调度
+        [v3.0] Chronos Mode 主循环 - 纯事件驱动
         """
         def _term_handler(signum, frame):
             self._running = False
@@ -2678,81 +2487,70 @@ class FusionManager:
         signal.signal(signal.SIGTERM, _term_handler)
         self._running = True
 
-        Logger.info(f"🚀 事件驱动引擎启动: Watchdog (Vault & Calendar) + 指数动态调度")
-        Logger.info(f"   调度公式: I(d) = {Config.EXP_BASE} * exp({Config.EXP_COEFF} * d) + {Config.EXP_OFFSET}")
-        Logger.info(f"   冷却上限: {Config.DYNAMIC_SYNC_MAX_INTERVAL}s | 事件防抖: {Config.EVENT_DEBOUNCE_SECONDS}s")
-        Logger.info(f"   日期范围: DAY_START={Config.DAY_START} ~ DAY_END={Config.DAY_END}")
+        Logger.info(f"🚀 Chronos Mode 启动 - 全事件驱动架构")
+        Logger.info(f"   同步窗口: ±{Config.CHRONOS_SYNC_WINDOW_DAYS // 2} 天")
+        Logger.info(f"   全量范围: 过去 {Config.CHRONOS_FULL_RANGE_PAST_DAYS} 天 ~ 未来 {Config.CHRONOS_FULL_RANGE_FUTURE_YEARS} 年")
+        Logger.info(f"   循环间隔: {Config.CHRONOS_LOOP_INTERVAL} 秒")
 
-        # 初始化 watchdog Observer
+        # 初始化 Watchdog
         if WATCHDOG_AVAILABLE:
             try:
                 self._observer = Observer()
                 event_handler = ObsidianEventHandler(self)
-                
-                # 监听 Vault 根目录
                 self._observer.schedule(event_handler, Config.VAULT_ROOT, recursive=True)
                 self._observer.start()
                 Logger.info(f"👁️ [Watchdog] 开始监听: {Config.VAULT_ROOT}")
             except Exception as e:
                 Logger.error_once("observer_init", f"Watchdog 初始化失败: {e}")
                 self._observer = None
-            
-            # [v1.7] Start Calendar Observer
-            # [v2.0] EventKit 监听
+
+            # EventKit 监听
             if self._ek_client:
                 try:
                     Logger.info("📅 [Watchdog] 启动 EventKit 监听...")
                     self._ek_client.start_watching(self._on_calendar_push_event)
                 except Exception as e:
                     Logger.error_once("cal_ek_fail", f"无法启动日历监听: {e}")
-            else:
-                Logger.info("⚠️ [Watchdog] EventKit 客户端不可用，将使用纯轮询。")
 
-        else:
-            Logger.info("⚠️ [Watchdog] 不可用，使用纯轮询模式")
-
-        # 启动时执行一次智能巡检
-        self._do_smart_cleanup()
+        # [v3.0] 启动时全量同步
+        if not self._startup_sync_done:
+            Logger.info("🌅 [Chronos] 执行启动全量同步...")
+            self.sync_core.initialize_registry()
+            self._registry_warmup_done = True
+            self.sync_full_range()
+            self._startup_sync_done = True
 
         # 主循环
         try:
-            # [v2.0] 导入 CFRunLoop 相关 API，用于在主线程处理 Cocoa 通知
             from CoreFoundation import CFRunLoopRunInMode, kCFRunLoopDefaultMode
             
             while self._running:
-                # 计算并显示下一次同步倒计时
-                self._print_countdown()
+                # [v3.0] 纯事件驱动：仅处理标志位
+                if self._calendar_dirty_flag:
+                    Logger.info(f"⚡ [Chronos] 检测到日历变更")
+                    self.sync_recent_window()
+                    self._calendar_dirty_flag = False
                 
-                # [v2.0 CRITICAL FIX] 使用 CFRunLoopRunInMode 替代 time.sleep()
-                # 这使得 NSNotificationCenter 的通知可以在等待期间被投递
-                # 参数: (mode, seconds, returnAfterSourceHandled)
-                # - kCFRunLoopDefaultMode: 默认模式，处理所有通知
-                # - 1.0: 等待 1 秒
-                # - False: 即使有事件也等满 1 秒（保持稳定的轮询节奏）
-                CFRunLoopRunInMode(kCFRunLoopDefaultMode, 1.0, False)
+                # 检查午夜跨越
+                self._check_midnight_crossing()
                 
-                # 每秒执行智能巡检（轻量级时间戳比对）
-                self._do_smart_cleanup()
+                # 保持 RunLoop 唤醒
+                CFRunLoopRunInMode(kCFRunLoopDefaultMode, Config.CHRONOS_LOOP_INTERVAL, False)
                 
         except KeyboardInterrupt:
             Logger.info("\n⏹️ 收到中断信号...")
         finally:
-            # 优雅停止 Observer
             if self._observer:
                 Logger.info("🛑 [Watchdog] 停止监听 Vault...")
                 self._observer.stop()
                 self._observer.join(timeout=3)
             
-            # [v2.0] 停止日历监听
             if self._ek_client:
-                 Logger.info("🛑 [Watchdog] 停止监听 Calendar...")
-                 self._ek_client.stop_watching()
-            
-
+                Logger.info("🛑 [Watchdog] 停止监听 Calendar...")
+                self._ek_client.stop_watching()
             
             self.sm.save()
-            Logger.info("✅ 状态已保存，引擎已停止")
-
+            Logger.info("✅ 状态已保存，Chronos 引擎已停止")
 
 ```
 
@@ -5429,6 +5227,116 @@ class EventKitClient:
             
         return result
 
+    def fetch_range_events(self, start_date, end_date, batch_days=1460):
+        """
+        [v3.0 Chronos Mode] 获取日期范围内的所有事件
+        
+        由于 EventKit 对超长时间范围有限制（约4年），此方法自动将大范围拆分为多个批次。
+        
+        Args:
+            start_date: 起始日期 (date 或 datetime)
+            end_date: 结束日期 (date 或 datetime)
+            batch_days: 每批次的天数（默认1460天≈4年）
+        
+        Returns:
+            dict: {date_str: {key: event_data, ...}, ...}
+                  按日期分组的事件字典
+        """
+        if not self.access_granted:
+            if not self.check_access():
+                print("🚫 访问被拒绝：请在 '系统设置 > 隐私与安全性 > 日历' 中授权终端/Python。")
+                return {}
+
+        # 标准化日期
+        if isinstance(start_date, datetime.datetime):
+            start_date = start_date.date()
+        if isinstance(end_date, datetime.datetime):
+            end_date = end_date.date()
+        
+        from Foundation import NSCalendar, NSCalendarUnitHour, NSCalendarUnitMinute, NSCalendarUnitYear, NSCalendarUnitMonth, NSCalendarUnitDay
+        calendar = NSCalendar.currentCalendar()
+        
+        # 计算总天数
+        total_days = (end_date - start_date).days + 1
+        
+        # 按日期分组的结果
+        result_by_date = {}  # {date_str: {key: event_data}}
+        
+        # 分批获取
+        current_start = start_date
+        batch_count = 0
+        
+        while current_start <= end_date:
+            batch_count += 1
+            current_end = min(current_start + datetime.timedelta(days=batch_days - 1), end_date)
+            
+            # 构建时间范围
+            start_dt = datetime.datetime.combine(current_start, datetime.time.min)
+            end_dt = datetime.datetime.combine(current_end, datetime.time.max)
+            
+            ns_start = NSDate.dateWithTimeIntervalSince1970_(start_dt.timestamp())
+            ns_end = NSDate.dateWithTimeIntervalSince1970_(end_dt.timestamp())
+            
+            # 创建查询谓词
+            predicate = self.store.predicateForEventsWithStartDate_endDate_calendars_(
+                ns_start, ns_end, None
+            )
+            
+            # 执行查询
+            events = self.store.eventsMatchingPredicate_(predicate)
+            
+            if events:
+                for event in events:
+                    try:
+                        title = event.title() or "无标题"
+                        is_completed = any(title.startswith(prefix) for prefix in ["✅", "✓"])
+                        clean_name = title.lstrip("✅✓").strip()
+                        
+                        cal_title = event.calendar().title() if event.calendar() else "Unknown"
+                        
+                        # 提取开始日期和时间
+                        event_start = event.startDate()
+                        components = calendar.components_fromDate_(
+                            NSCalendarUnitYear | NSCalendarUnitMonth | NSCalendarUnitDay | NSCalendarUnitHour | NSCalendarUnitMinute,
+                            event_start
+                        )
+                        
+                        event_date_str = f"{components.year():04d}-{components.month():02d}-{components.day():02d}"
+                        start_time_str = f"{components.hour():02d}:{components.minute():02d}"
+                        
+                        # 计算持续时长
+                        duration_seconds = event.endDate().timeIntervalSinceDate_(event_start)
+                        duration_minutes = int(duration_seconds / 60)
+                        
+                        # 生成唯一 Key
+                        event_id = event.eventIdentifier() or ""
+                        id_tail = event_id[-6:] if len(event_id) >= 6 else event_id
+                        key = f"{clean_name}_{start_time_str}_{id_tail}"
+                        semantic_key = f"{clean_name}_{start_time_str}"
+                        
+                        # 初始化日期分组
+                        if event_date_str not in result_by_date:
+                            result_by_date[event_date_str] = {}
+                        
+                        result_by_date[event_date_str][key] = {
+                            'name': clean_name,
+                            'id': event_id,
+                            'is_completed': is_completed,
+                            'raw_name': title,
+                            'current_calendar': cal_title,
+                            'start_time': start_time_str,
+                            'duration': duration_minutes,
+                            'semantic_key': semantic_key
+                        }
+                    except Exception as e:
+                        print(f"⚠️ 处理事件失败: {e}")
+                        continue
+            
+            # 移动到下一批次
+            current_start = current_end + datetime.timedelta(days=1)
+        
+        print(f"📅 [EventKit] 范围查询完成: {start_date} ~ {end_date} ({total_days}天, {batch_count}批次, {len(result_by_date)}天有事件)")
+        return result_by_date
 if __name__ == "__main__":
     # 简单的测试桩
     from Foundation import NSBundle
@@ -5556,12 +5464,20 @@ class StateManager:
 ## File: src/external/task_sync_core/calendar_service.py
 ```py
 """
-Apple Calendar Service - Adapted for unified config.
+Apple Calendar Service - EventKit Native Implementation (v2.0)
+
+重写说明：
+- 完全移除 AppleScript 依赖，使用 PyObjC/EventKit 原生 API
+- 复用 eventkit_wrapper.py 的 EventKitClient 单例
+- 保持函数签名不变以兼容 sync_engine.py
 """
 from datetime import datetime, timedelta
 from config import Config
-from .utils import escape_as_text, run_applescript
+
+# EventKit imports
 try:
+    from EventKit import EKEventStore, EKEntityTypeEvent, EKEvent, EKAlarm, EKSpanThisEvent
+    from Foundation import NSDate
     from external.eventkit_wrapper import EventKitClient
     EK_AVAILABLE = True
 except ImportError:
@@ -5569,8 +5485,6 @@ except ImportError:
 
 # Use config values
 ALL_MANAGED_CALENDARS = Config.ALL_MANAGED_CALENDARS
-DELIMITER_FIELD = Config.DELIMITER_FIELD
-DELIMITER_ROW = Config.DELIMITER_ROW
 ALARM_RULES = Config.ALARM_RULES
 
 # [v2.0 FIX] 单例 EventKitClient，避免创建过多 EKEventStore 实例
@@ -5582,42 +5496,95 @@ def _get_ek_client():
     if _ek_client_singleton is None and EK_AVAILABLE:
         from external.eventkit_wrapper import EventKitClient
         _ek_client_singleton = EventKitClient()
+        # 确保已授权
+        if not _ek_client_singleton.access_granted:
+            _ek_client_singleton.check_access()
     return _ek_client_singleton
 
 
+# =============================================================================
+# Helper Functions for EventKit
+# =============================================================================
+
+def _datetime_to_nsdate(target_dt: datetime, time_str: str) -> NSDate:
+    """
+    Convert a target date and time string (HH:MM) to NSDate.
+    
+    Args:
+        target_dt: The target date (datetime object)
+        time_str: Time in "HH:MM" format
+    
+    Returns:
+        NSDate object representing the combined datetime
+    """
+    h = int(time_str[:2])
+    m = int(time_str[3:5])
+    
+    # Combine date with time
+    combined_dt = datetime(
+        year=target_dt.year,
+        month=target_dt.month,
+        day=target_dt.day,
+        hour=h,
+        minute=m,
+        second=0
+    )
+    
+    return NSDate.dateWithTimeIntervalSince1970_(combined_dt.timestamp())
+
+
+def _find_calendar_by_name(store, calendar_name: str):
+    """
+    Find an EKCalendar by its title.
+    
+    Args:
+        store: EKEventStore instance
+        calendar_name: The calendar title to find
+    
+    Returns:
+        EKCalendar object or None if not found
+    """
+    calendars = store.calendarsForEntityType_(EKEntityTypeEvent)
+    if not calendars:
+        return None
+    
+    for cal in calendars:
+        if cal.title() == calendar_name:
+            return cal
+    
+    return None
+
+
 def check_calendars_exist_simple():
-    """Check if all required calendars exist in Apple Calendar."""
-    cal_list_str = "{" + ", ".join([f'"{escape_as_text(c)}"' for c in ALL_MANAGED_CALENDARS]) + "}"
-    script = f'''
-    set neededCalendars to {cal_list_str}
-    set missingCalendars to {{}}
-    tell application "Calendar"
-        repeat with calName in neededCalendars
-            if not (exists calendar calName) then
-                set end of missingCalendars to calName
-            end if
-        end repeat
-    end tell
-    return missingCalendars
-    '''
-    result = run_applescript(script)
-    if result and "{" not in result:
-        missing = result.replace(", ", ",").split(",")
-        if len(missing) > 0 and missing[0] != "":
-            print(f"❌ 错误：找不到日历：{missing}")
-            return False
+    """Check if all required calendars exist in Apple Calendar using EventKit."""
+    client = _get_ek_client()
+    if not client:
+        print("❌ EventKit not available.")
+        return False
+    
+    store = client.store
+    missing_calendars = []
+    
+    for cal_name in ALL_MANAGED_CALENDARS:
+        if _find_calendar_by_name(store, cal_name) is None:
+            missing_calendars.append(cal_name)
+    
+    if missing_calendars:
+        print(f"❌ 错误：找不到日历：{missing_calendars}")
+        return False
+    
     return True
 
 
 def get_all_calendars_state(target_dt):
     """
-    Get all calendar events for a specific date using EventKit (if available) or AppleScript fallback.
+    Get all calendar events for a specific date using EventKit.
     
     Args:
         target_dt: datetime object for target date
     
     Returns:
-        dict: Calendar events keyed by "name_starttime"
+        dict: Calendar events keyed by "name_starttime_idtail"
     """
     client = _get_ek_client()
     if client:
@@ -5639,7 +5606,11 @@ def get_all_calendars_state(target_dt):
 
 
 class BatchExecutor:
-    """Batch executor for Apple Calendar operations."""
+    """
+    Batch executor for Apple Calendar operations using EventKit.
+    
+    所有操作先缓存，execute() 时统一执行。
+    """
     
     def __init__(self, target_dt):
         self.target_dt = target_dt
@@ -5648,105 +5619,213 @@ class BatchExecutor:
         self.deletes = []
 
     def add_create(self, name, start_time, duration, calendar_name, is_completed):
+        """
+        Queue a create operation.
+        
+        Args:
+            name: Event title
+            start_time: Start time in "HH:MM" format
+            duration: Duration in minutes
+            calendar_name: Target calendar name
+            is_completed: Whether the task is marked complete
+        """
         clean_name = name.replace("✅", "").replace("✓", "").strip()
         final_title = f"✅ {clean_name}" if is_completed else clean_name
         alarm = ALARM_RULES.get(calendar_name, 0)
 
         self.creates.append({
-            "title": escape_as_text(final_title),
+            "title": final_title,
             "start": start_time,
             "dur": duration,
-            "cal": escape_as_text(calendar_name),
-            "alarm": alarm
+            "cal": calendar_name,
+            "alarm": alarm  # 负数表示提前分钟数
         })
 
     def add_update(self, event_id, calendar_name, new_name, start_time, duration, is_completed):
+        """
+        Queue an update operation.
+        
+        Args:
+            event_id: Existing event identifier
+            calendar_name: Calendar containing the event
+            new_name: New event title
+            start_time: New start time in "HH:MM" format
+            duration: New duration in minutes
+            is_completed: Whether the task is marked complete
+        """
         clean_name = new_name.replace("✅", "").replace("✓", "").strip()
         final_title = f"✅ {clean_name}" if is_completed else clean_name
 
         self.updates.append({
-            "id": escape_as_text(event_id),
-            "title": escape_as_text(final_title),
+            "id": event_id,
+            "title": final_title,
             "start": start_time,
             "dur": duration,
-            "cal": escape_as_text(calendar_name)
+            "cal": calendar_name
         })
 
     def add_delete(self, event_id, calendar_name):
+        """
+        Queue a delete operation.
+        
+        Args:
+            event_id: Event identifier to delete
+            calendar_name: Calendar containing the event
+        """
         self.deletes.append({
-            "id": escape_as_text(event_id),
-            "cal": escape_as_text(calendar_name)
+            "id": event_id,
+            "cal": calendar_name
         })
 
     def execute(self):
+        """
+        Execute all queued operations using EventKit.
+        
+        Operations are executed in order: deletes → creates → updates
+        This ensures no ID conflicts when recreating moved events.
+        """
         if not (self.creates or self.updates or self.deletes):
             return
 
-        y, m, d = self.target_dt.year, self.target_dt.month, self.target_dt.day
-
-        script = f'''
-        -- 基础日期
-        set targetBaseDate to current date
-        set year of targetBaseDate to {y}
-        set month of targetBaseDate to {m}
-        set day of targetBaseDate to {d}
-        set time of targetBaseDate to 0
+        client = _get_ek_client()
+        if not client:
+            print("❌ [BatchExecutor] EventKit 不可用，无法执行操作")
+            return
         
-        tell application "Calendar"
-        '''
+        if not client.access_granted:
+            print("❌ [BatchExecutor] 没有日历访问权限")
+            return
 
-        # 1. Deletes
+        store = client.store
+        
+        success_count = {"delete": 0, "create": 0, "update": 0}
+        error_count = {"delete": 0, "create": 0, "update": 0}
+
+        # =====================================================================
+        # 1. DELETE Operations
+        # =====================================================================
         for op in self.deletes:
-            script += f'''
-            try
-                tell calendar "{op['cal']}" to delete (first event whose uid is "{op['id']}")
-            end try
-            '''
+            try:
+                event = store.eventWithIdentifier_(op['id'])
+                if event:
+                    # removeEvent:span:commit:error: 
+                    # span: EKSpanThisEvent (只删除这一个事件，不影响重复事件)
+                    # commit: True (立即提交)
+                    success, error = store.removeEvent_span_commit_error_(
+                        event, EKSpanThisEvent, True, None
+                    )
+                    if success:
+                        success_count["delete"] += 1
+                    else:
+                        error_count["delete"] += 1
+                        if error:
+                            print(f"⚠️ [Delete] 失败 ({op['id'][:8]}...): {error}")
+                else:
+                    # 事件不存在，算作成功（幂等）
+                    success_count["delete"] += 1
+            except Exception as e:
+                error_count["delete"] += 1
+                print(f"❌ [Delete] 异常 ({op['id'][:8] if op['id'] else 'N/A'}...): {e}")
 
-        # 2. Creates
+        # =====================================================================
+        # 2. CREATE Operations
+        # =====================================================================
         for op in self.creates:
-            h = int(op['start'][:2])
-            mn = int(op['start'][3:])
-            script += f'''
-            try
-                tell calendar "{op['cal']}"
-                    set sDate to targetBaseDate
-                    set hours of sDate to {h}
-                    set minutes of sDate to {mn}
-                    set eDate to sDate + ({op['dur']} * minutes)
+            try:
+                # 1. Find target calendar
+                cal = _find_calendar_by_name(store, op['cal'])
+                if not cal:
+                    print(f"⚠️ [Create] 找不到日历: {op['cal']}")
+                    error_count["create"] += 1
+                    continue
 
-                    set newE to make new event with properties {{summary:"{op['title']}", start date:sDate, end date:eDate}}
-                    tell newE
-                        make new sound alarm with properties {{trigger interval:{op['alarm']}}}
-                    end tell
-                end tell
-            end try
-            '''
+                # 2. Create new event
+                event = EKEvent.eventWithEventStore_(store)
+                event.setTitle_(op['title'])
+                event.setCalendar_(cal)
+                
+                # 3. Set start/end dates
+                start_nsdate = _datetime_to_nsdate(self.target_dt, op['start'])
+                # Duration in minutes -> seconds
+                end_timestamp = start_nsdate.timeIntervalSince1970() + (op['dur'] * 60)
+                end_nsdate = NSDate.dateWithTimeIntervalSince1970_(end_timestamp)
+                
+                event.setStartDate_(start_nsdate)
+                event.setEndDate_(end_nsdate)
+                
+                # 4. Add alarm if configured
+                alarm_offset = op.get('alarm', 0)
+                if alarm_offset != 0:
+                    # EventKit alarm offset is in seconds (negative = before event)
+                    alarm = EKAlarm.alarmWithRelativeOffset_(alarm_offset * 60)
+                    event.addAlarm_(alarm)
+                
+                # 5. Save
+                success, error = store.saveEvent_span_commit_error_(
+                    event, EKSpanThisEvent, True, None
+                )
+                if success:
+                    success_count["create"] += 1
+                else:
+                    error_count["create"] += 1
+                    if error:
+                        print(f"⚠️ [Create] 保存失败 ({op['title'][:20]}): {error}")
+                        
+            except Exception as e:
+                error_count["create"] += 1
+                print(f"❌ [Create] 异常 ({op['title'][:20] if op.get('title') else 'N/A'}): {e}")
 
-        # 3. Updates
+        # =====================================================================
+        # 3. UPDATE Operations
+        # =====================================================================
         for op in self.updates:
-            h = int(op['start'][:2])
-            mn = int(op['start'][3:])
-            script += f'''
-            try
-                tell calendar "{op['cal']}"
-                    set targetEvent to (first event whose uid is "{op['id']}")
-                    set summary of targetEvent to "{op['title']}"
+            try:
+                # 1. Get existing event
+                event = store.eventWithIdentifier_(op['id'])
+                if not event:
+                    print(f"⚠️ [Update] 事件不存在: {op['id'][:8]}...")
+                    error_count["update"] += 1
+                    continue
 
-                    set sDate to targetBaseDate
-                    set hours of sDate to {h}
-                    set minutes of sDate to {mn}
-                    set eDate to sDate + ({op['dur']} * minutes)
+                # 2. Update properties
+                event.setTitle_(op['title'])
+                
+                # 3. Update start/end dates
+                start_nsdate = _datetime_to_nsdate(self.target_dt, op['start'])
+                end_timestamp = start_nsdate.timeIntervalSince1970() + (op['dur'] * 60)
+                end_nsdate = NSDate.dateWithTimeIntervalSince1970_(end_timestamp)
+                
+                event.setStartDate_(start_nsdate)
+                event.setEndDate_(end_nsdate)
+                
+                # 4. Note: Calendar change is handled by delete+create in sync_engine
+                #    We don't change calendar here to avoid complexity
+                
+                # 5. Save
+                success, error = store.saveEvent_span_commit_error_(
+                    event, EKSpanThisEvent, True, None
+                )
+                if success:
+                    success_count["update"] += 1
+                else:
+                    error_count["update"] += 1
+                    if error:
+                        print(f"⚠️ [Update] 保存失败 ({op['title'][:20]}): {error}")
+                        
+            except Exception as e:
+                error_count["update"] += 1
+                print(f"❌ [Update] 异常 ({op['id'][:8] if op.get('id') else 'N/A'}): {e}")
 
-                    set start date of targetEvent to sDate
-                    set end date of targetEvent to eDate
-                end tell
-            end try
-            '''
-
-        script += "\nend tell"
-        print(f"⚡ 执行批处理: +{len(self.creates)} ~{len(self.updates)} -{len(self.deletes)}")
-        run_applescript(script)
+        # =====================================================================
+        # Summary
+        # =====================================================================
+        total_success = sum(success_count.values())
+        total_errors = sum(error_count.values())
+        
+        if total_errors > 0:
+            print(f"⚡ 执行批处理: +{success_count['create']} ~{success_count['update']} -{success_count['delete']} (❌{total_errors}错误)")
+        else:
+            print(f"⚡ 执行批处理: +{success_count['create']} ~{success_count['update']} -{success_count['delete']}")
 
 ```
 

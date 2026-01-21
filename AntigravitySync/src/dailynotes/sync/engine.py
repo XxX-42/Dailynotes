@@ -722,9 +722,10 @@ class SyncCore:
                     orig_content = "".join(sl)
                     new_content = "".join(out)
                     if orig_content != new_content:
-                        # === 🎯 第二次日志修改 (Delete) ===
                         Logger.info(f"   💾 [WRITE] 写入源文件 (Delete) (from {target_date}): {os.path.basename(path)}")
-                        FileUtils.write_file(path, out)
+                        if FileUtils.write_file(path, out):
+                            # [关键修复]：写入成功后，立即强制更新注册表缓存
+                            self._task_registry.update_file(path, self.sm)
 
         if src_updates:
             for path, ups in src_updates.items():
@@ -758,10 +759,12 @@ class SyncCore:
                     new_content = "".join(out)
 
                     if orig_content != new_content:
-                        # === 🎯 第三次日志修改 (Update/Insert) - 你的主要需求 ===
                         Logger.info(
                             f"   💾 [WRITE] 写入源文件 (Update/Insert) (from {target_date}): {os.path.basename(path)}")
-                        FileUtils.write_file(path, out)
+                        if FileUtils.write_file(path, out):
+                            # [关键修复]：写入成功后，立即强制更新注册表缓存
+                            # 不等 Watchdog，现在就更新"大脑"，消除"执行"与"感知"之间的时差
+                            self._task_registry.update_file(path, self.sm)
                         self.trigger_delayed_verification(path)
 
         self.sm.save()

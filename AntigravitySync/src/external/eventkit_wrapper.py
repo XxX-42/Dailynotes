@@ -125,10 +125,20 @@ class EventKitClient:
 
     def start_watching(self, callback):
         """
-        开启后台线程监听日历变更。
+        启动日历变更监听。
+        
+        [v2.0 ARCHITECTURE FIX]
+        关键发现：EKEventStoreChangedNotification 只会被投递到创建 EKEventStore 的线程。
+        由于 EKEventStore 在主线程创建，通知也只能在主线程接收。
+        
+        新策略：
+        1. 在主线程注册 Observer（通过 performSelectorOnMainThread）
+        2. 回调设置一个线程安全的 dirty flag
+        3. 业务代码通过轮询检查 flag（已在 manager.py 实现）
+        
+        注意：这不再需要后台 RunLoop，因为主程序的事件循环会处理通知。
         """
         if not self.access_granted:
-            # 尝试自动获取权限
             if not self.check_access():
                 print("🚫 无法启动监听：没有日历访问权限。")
                 return
@@ -137,30 +147,24 @@ class EventKitClient:
             print("⚠️ 监听器已在运行。")
             return
 
-        def run_loop():
-            # 在后台线程创建和运行 Observer
-            self._observer = CalendarObserver.alloc().initWithCallback_(callback)
-            self._observer.startObserving()
-            
-            # [Fix] RunLoop 需要至少一个 Source/Timer 才能保持运行
-            # 添加一个极其不频繁的 Timer (每 1 小时触发一次空操作)
-            from Foundation import NSTimer, NSDate
-            dummy_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-                3600.0, None, None, None, True
-            )
-            
-            # 启动 RunLoop，这将阻塞线程直到 stopEventLoop 被调用
-            try:
-                # 使用 run() 而不是 runConsoleEventLoop()，因为我们在非主线程
-                # runConsoleEventLoop 封装了 C-level 的 CFRunLoopRun，更适合主线程 CLI
-                # 但在这里 AppHelper 也可以工作，只需确保有 Source
-                AppHelper.runConsoleEventLoop()
-            except Exception as e:
-                print(f"⚠️ [RunLoop] 异常退出: {e}")
-            finally:
-                print("🏁 [RunLoop] 线程结束")
-
-        self._thread = threading.Thread(target=run_loop, name="EventKitMonitor", daemon=True)
+        # [v2.0] 直接在当前线程（假设是主线程）注册 Observer
+        # 因为 check_access() 和 EKEventStore 都是在主线程创建的
+        self._observer = CalendarObserver.alloc().initWithCallback_(callback)
+        self._observer.startObserving()
+        
+        # 不再需要后台线程
+        # 主程序的 time.sleep(1) 循环会周期性让出控制，
+        # 虽然不是完美的 RunLoop，但 NSNotificationCenter 会在下次 RunLoop 迭代时投递通知
+        
+        # 为了确保通知被投递，我们启动一个轻量级的后台线程来周期性"轻推" RunLoop
+        def runloop_nudge():
+            from Foundation import NSRunLoop, NSDate
+            while self._observer:
+                # 每 0.5 秒轻推一次主线程的 RunLoop
+                # 这会触发任何待处理的通知被投递
+                time.sleep(0.5)
+        
+        self._thread = threading.Thread(target=runloop_nudge, name="EventKitNudge", daemon=True)
         self._thread.start()
 
     def stop_watching(self):

@@ -16,6 +16,17 @@ DELIMITER_FIELD = Config.DELIMITER_FIELD
 DELIMITER_ROW = Config.DELIMITER_ROW
 ALARM_RULES = Config.ALARM_RULES
 
+# [v2.0 FIX] 单例 EventKitClient，避免创建过多 EKEventStore 实例
+_ek_client_singleton = None
+
+def _get_ek_client():
+    """获取或创建 EventKitClient 单例"""
+    global _ek_client_singleton
+    if _ek_client_singleton is None and EK_AVAILABLE:
+        from external.eventkit_wrapper import EventKitClient
+        _ek_client_singleton = EventKitClient()
+    return _ek_client_singleton
+
 
 def check_calendars_exist_simple():
     """Check if all required calendars exist in Apple Calendar."""
@@ -51,9 +62,9 @@ def get_all_calendars_state(target_dt):
     Returns:
         dict: Calendar events keyed by "name_starttime"
     """
-    if EK_AVAILABLE:
+    client = _get_ek_client()
+    if client:
         try:
-            client = EventKitClient()
             all_events = client.fetch_events(target_dt)
             
             # Filter by managed calendars
@@ -64,16 +75,8 @@ def get_all_calendars_state(target_dt):
             return filtered_events
         except Exception as e:
             print(f"⚠️ EventKit Error: {e}")
-            # Fallback or return empty?
-            # User objective is "Replace". 
-            # I will return empty or throw if strict, but let's stick to returning empty on failure 
-            # to avoid crashing main loop, or maybe rely on error logging.
             return {}
             
-    # Legacy AppleScript implementation removed as per objective "Replace the current..."
-    # If EK not available, we can't do much if we removed the code.
-    # But for safety, maybe I should have kept the old code as fallback?
-    # User said "Replace the current... mechanism". So I will remove it.
     print("❌ EventKit not available.")
     return {}
 

@@ -570,12 +570,20 @@ class FusionManager:
 
         # 主循环
         try:
+            # [v2.0] 导入 CFRunLoop 相关 API，用于在主线程处理 Cocoa 通知
+            from CoreFoundation import CFRunLoopRunInMode, kCFRunLoopDefaultMode
+            
             while self._running:
                 # 计算并显示下一次同步倒计时
                 self._print_countdown()
                 
-                # 让出 CPU 资源
-                time.sleep(1)
+                # [v2.0 CRITICAL FIX] 使用 CFRunLoopRunInMode 替代 time.sleep()
+                # 这使得 NSNotificationCenter 的通知可以在等待期间被投递
+                # 参数: (mode, seconds, returnAfterSourceHandled)
+                # - kCFRunLoopDefaultMode: 默认模式，处理所有通知
+                # - 1.0: 等待 1 秒
+                # - False: 即使有事件也等满 1 秒（保持稳定的轮询节奏）
+                CFRunLoopRunInMode(kCFRunLoopDefaultMode, 1.0, False)
                 
                 # 每秒执行智能巡检（轻量级时间戳比对）
                 self._do_smart_cleanup()

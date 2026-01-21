@@ -2,7 +2,7 @@ import os
 
 
 class Config:
-    VERSION = "v1.8.2 (Clean Architecture)"    # [2026-01-21] Removed ingestion.py redundancy
+    VERSION = "v2.0.0 (EventKit Instant Sync)"    # [2026-01-22] Major re-arch for instant sync
     
     # ==========================
     # 1. 基础路径配置 (来自 Dailynotes)

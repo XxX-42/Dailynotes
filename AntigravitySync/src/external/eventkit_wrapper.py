@@ -246,19 +246,25 @@ class EventKitClient:
                 duration_seconds = event.endDate().timeIntervalSinceDate_(event.startDate())
                 duration_minutes = int(duration_seconds / 60)
                 
-                # [NEW] 4. 生成 Key: {clean_name}_{start_time}
-                # 注意：如果有重名且同时发生的事件，这会覆盖，但符合用户当前要求
-                key = f"{clean_name}_{start_time_str}"
+                # [v2.0.1] 生成唯一 Key: {clean_name}_{start_time}_{id_tail}
+                # id_tail 取 eventIdentifier 的后 6 位，确保即使有同名同时间的事件也不会覆盖
+                event_id = event.eventIdentifier() or ""
+                id_tail = event_id[-6:] if len(event_id) >= 6 else event_id
+                key = f"{clean_name}_{start_time_str}_{id_tail}"
                 
-                # [NEW] 5. 构造完整字典
+                # [v2.0.1] 同时生成语义 Key (用于与 Obsidian 模糊匹配)
+                semantic_key = f"{clean_name}_{start_time_str}"
+                
+                # [v2.0.1] 构造完整字典
                 result[key] = {
                     'name': clean_name,
-                    'id': event.eventIdentifier(),
+                    'id': event_id,
                     'is_completed': is_completed,
                     'raw_name': title,
                     'current_calendar': cal_title,
                     'start_time': start_time_str,
-                    'duration': duration_minutes
+                    'duration': duration_minutes,
+                    'semantic_key': semantic_key  # 供 sync_engine 进行模糊匹配
                 }
             except Exception as e:
                 print(f"⚠️ 处理事件失败: {e}")

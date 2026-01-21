@@ -2,7 +2,7 @@ import os
 
 
 class Config:
-    VERSION = "v2.0.0 (EventKit Instant Sync)"    # [2026-01-22] Major re-arch for instant sync
+    VERSION = "v2.0.1 (Unique ID + Self-Healing)"    # [2026-01-22] EventKit unique ID, caffeinate, self-healing
     
     # ==========================
     # 1. 基础路径配置 (来自 Dailynotes)
@@ -53,11 +53,9 @@ class Config:
     EXP_COEFF = 0.0068  # 指数系数
     EXP_OFFSET = 60     # 偏移量
     
-    # [v1.7] 日历数据库监听参数 (macOS)
-    CALENDAR_WATCH_PATH = os.path.expanduser("~/Library/Calendars")
-    CALENDAR_DEBOUNCE_SECONDS = 2.0  # 日历写入非常频繁，需要较大防抖
-
-
+    
+    # [v2.0] EventKit Sync
+    # No file watching required for calendar
     # 范围限制
     DAILY_NOTE_SECTIONS = ['# Day planner', '# Journey']
     SOURCE_FILE_CALLOUTS = ['> [!note] Tasks', '> [!note]- Tasks', '> [!note]+ Tasks']

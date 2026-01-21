@@ -2,6 +2,8 @@ import time
 import signal
 import os
 import sys
+import subprocess
+import atexit
 
 # Add src to sys.path to allow importing dailynotes package
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
@@ -9,22 +11,95 @@ from dailynotes.manager import FusionManager
 from config import Config
 from dailynotes.utils import ProcessLock, Logger
 
+# [v2.0.1] Caffeinate 进程句柄（防休眠）
+_caffeinate_proc = None
+
+def start_caffeinate():
+    """
+    [v2.0.1] 启动 caffeinate 防休眠进程
+    使用 -i 参数阻止系统进入 idle sleep
+    """
+    global _caffeinate_proc
+    try:
+        _caffeinate_proc = subprocess.Popen(
+            ['caffeinate', '-i', '-w', str(os.getpid())],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        Logger.info(f"☕ [Caffeinate] 防休眠已启用 (PID: {_caffeinate_proc.pid})")
+    except FileNotFoundError:
+        Logger.info("⚠️ [Caffeinate] caffeinate 命令不可用（非 macOS?），跳过防休眠")
+    except Exception as e:
+        Logger.info(f"⚠️ [Caffeinate] 启动失败: {e}")
+
+def stop_caffeinate():
+    """
+    [v2.0.1] 停止 caffeinate 进程
+    """
+    global _caffeinate_proc
+    if _caffeinate_proc:
+        try:
+            _caffeinate_proc.terminate()
+            _caffeinate_proc.wait(timeout=2)
+            Logger.info("☕ [Caffeinate] 防休眠已停止")
+        except Exception:
+            pass
+        _caffeinate_proc = None
+
+def run_with_self_healing():
+    """
+    [v2.0.1] 带错误自愈的主循环
+    如果 FusionManager 崩溃，自动重启
+    """
+    max_restarts = 5
+    restart_count = 0
+    restart_cooldown = 30  # 重启冷却时间（秒）
+    
+    while restart_count < max_restarts:
+        try:
+            app = FusionManager()
+            Logger.info(f"=== Antigravity Sync {Config.VERSION} (Exponential Dynamic Scheduling) ===")
+            Logger.info(f"路径: {Config.ROOT_DIR}")
+            Logger.info(f"模式: Watchdog (Vault & Calendar) + 指数动态调度")
+            Logger.info(f"调度公式: I(d) = {Config.EXP_BASE} * exp({Config.EXP_COEFF} * d) + {Config.EXP_OFFSET}")
+            
+            # [P2 FIX] Validate template file at startup
+            if os.path.exists(Config.TEMPLATE_FILE):
+                Logger.info(f"模板: ✅ {Config.REL_TEMPLATE_FILE}")
+            else:
+                Logger.info(f"⚠️ 模板文件不存在: {Config.REL_TEMPLATE_FILE} (将使用基础骨架)")
+            
+            if restart_count > 0:
+                Logger.info(f"🔄 [Self-Healing] 自动重启成功 (第 {restart_count} 次)")
+            
+            Logger.info("=" * 50)
+            
+            app.run()
+            break  # 正常退出
+            
+        except KeyboardInterrupt:
+            Logger.info("\n停止服务...")
+            break
+        except SystemExit:
+            Logger.info("收到退出信号...")
+            break
+        except Exception as e:
+            restart_count += 1
+            Logger.error_once(f"main_crash_{restart_count}", f"❌ [Self-Healing] 主循环异常: {e}")
+            
+            if restart_count < max_restarts:
+                Logger.info(f"⏳ [Self-Healing] {restart_cooldown}秒后尝试重启 ({restart_count}/{max_restarts})...")
+                time.sleep(restart_cooldown)
+            else:
+                Logger.error_once("max_restarts", f"❌ [Self-Healing] 达到最大重启次数 ({max_restarts})，退出")
+
 if __name__ == "__main__":
-    app = FusionManager()
-
-    Logger.info(f"=== Antigravity Sync {Config.VERSION} (Exponential Dynamic Scheduling) ===")
-    Logger.info(f"路径: {Config.ROOT_DIR}")
-    Logger.info(f"模式: Watchdog (Vault & Calendar) + 指数动态调度")
-    Logger.info(f"调度公式: I(d) = {Config.EXP_BASE} * exp({Config.EXP_COEFF} * d) + {Config.EXP_OFFSET}")
+    # [v2.0.1] 注册退出时清理 caffeinate
+    atexit.register(stop_caffeinate)
     
-    # [P2 FIX] Validate template file at startup
-    if os.path.exists(Config.TEMPLATE_FILE):
-        Logger.info(f"模板: ✅ {Config.REL_TEMPLATE_FILE}")
-    else:
-        Logger.info(f"⚠️ 模板文件不存在: {Config.REL_TEMPLATE_FILE} (将使用基础骨架)")
+    # [v2.0.1] 启动防休眠
+    start_caffeinate()
     
-    Logger.info("=" * 50)
-
     # 第一次尝试获取锁
     if not ProcessLock.acquire():
         Logger.info(f"⚠️  检测到锁文件 ({Config.LOCK_FILE})")
@@ -68,8 +143,7 @@ if __name__ == "__main__":
             Logger.info("✅ 成功接管锁，服务已启动。")
 
     try:
-        app.run()
-    except KeyboardInterrupt:
-        Logger.info("\n停止服务...")
+        run_with_self_healing()
     finally:
+        stop_caffeinate()
         ProcessLock.release()

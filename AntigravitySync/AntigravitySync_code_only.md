@@ -24,10 +24,7 @@ AntigravitySync/
 │   └── external
 │       ├── __init__.py
 │       ├── apple_sync_adapter.py
-│       ├── calendar_db_watchdog.py
-│       ├── calendar_monitor.py
 │       ├── eventkit_wrapper.py
-│       ├── log_sentinel.py
 │       └── task_sync_core
 │           ├── __init__.py
 │           ├── apple_state_manager.py
@@ -51,7 +48,7 @@ import os
 
 
 class Config:
-    VERSION = "v1.8.2 (Clean Architecture)"    # [2026-01-21] Removed ingestion.py redundancy
+    VERSION = "v2.0.0 (EventKit Instant Sync)"    # [2026-01-22] Major re-arch for instant sync
     
     # ==========================
     # 1. 基础路径配置 (来自 Dailynotes)
@@ -2256,6 +2253,10 @@ class FusionManager:
         # [v1.8] Lazy initialization flag for TaskRegistry
         self._registry_warmup_done = False
 
+        # [v2.0 REFACTOR] Thread-Safety Flag for Calendar Sync
+        # The background thread sets this to True, Main Loop checks and executes sync
+        self._calendar_dirty_flag = False
+
     def check_debounce(self, filepath):
         """
         Check if file is stable for processing.
@@ -2494,9 +2495,11 @@ class FusionManager:
         """
         [v1.9] Callback for Distributed Notification (Zero Latency).
         Runs in a background thread.
+        [v2.0 THREAD-SAFETY] Do NOT run sync here! Just set a flag.
         """
-        Logger.info(f"⚡ [Distributed] 检测到系统日历数据库物理变更！")
-        self.trigger_immediate_sync_for_today()
+        # Logger.info(f"⚡ [Distributed] 检测到系统日历数据库物理变更！")
+        # 仅设置脏标志，不执行耗时 IO
+        self._calendar_dirty_flag = True
 
     def _calculate_dynamic_interval(self, date_str) -> float:
         """
@@ -2534,6 +2537,12 @@ class FusionManager:
         """
         # 修复全局格式问题（每次巡检都执行，轻量级操作）
         FormatCore.fix_broken_tab_bullets_global()
+        
+        # [v2.0] Check Thread-Safe Dirty Flag
+        if self._calendar_dirty_flag:
+            Logger.info(f"⚡ [Distributed] 检测到系统日历变更标志 (Async Trigger)")
+            self.trigger_immediate_sync_for_today()
+            self._calendar_dirty_flag = False  # Reset flag
         
         # 检查是否需要预创建明天的日记
         self._maybe_create_tomorrow_note()
@@ -2635,12 +2644,20 @@ class FusionManager:
 
         # 主循环
         try:
+            # [v2.0] 导入 CFRunLoop 相关 API，用于在主线程处理 Cocoa 通知
+            from CoreFoundation import CFRunLoopRunInMode, kCFRunLoopDefaultMode
+            
             while self._running:
                 # 计算并显示下一次同步倒计时
                 self._print_countdown()
                 
-                # 让出 CPU 资源
-                time.sleep(1)
+                # [v2.0 CRITICAL FIX] 使用 CFRunLoopRunInMode 替代 time.sleep()
+                # 这使得 NSNotificationCenter 的通知可以在等待期间被投递
+                # 参数: (mode, seconds, returnAfterSourceHandled)
+                # - kCFRunLoopDefaultMode: 默认模式，处理所有通知
+                # - 1.0: 等待 1 秒
+                # - False: 即使有事件也等满 1 秒（保持稳定的轮询节奏）
+                CFRunLoopRunInMode(kCFRunLoopDefaultMode, 1.0, False)
                 
                 # 每秒执行智能巡检（轻量级时间戳比对）
                 self._do_smart_cleanup()
@@ -5064,133 +5081,6 @@ class AppleSyncAdapter:
 ```
 
 ---
-## File: src/external/calendar_db_watchdog.py
-```py
-import os
-import threading
-from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
-
-class CalendarDbHandler(FileSystemEventHandler):
-    """
-    监听日历 SQLite 数据库文件的物理变更
-    """
-    def __init__(self, callback):
-        self.callback = callback
-        self._timer = None
-        self._debounce_interval = 2.0  # 2秒防抖
-
-    def _trigger_callback(self):
-        """实际执行回调"""
-        if self.callback:
-            self.callback()
-
-    def on_modified(self, event):
-        if event.is_directory:
-            return
-            
-        filename = os.path.basename(event.src_path)
-        
-        # 忽略临时文件
-        if ".tmp" in filename:
-            return
-
-        # 只关注核心数据库文件 (包括 WAL 日志模式)
-        if filename in ["Calendar.sqlitedb", "Calendar.sqlitedb-wal"]:
-            # Debounce 机制: 每次触发都重置计时器
-            if self._timer:
-                self._timer.cancel()
-            
-            self._timer = threading.Timer(self._debounce_interval, self._trigger_callback)
-            self._timer.start()
-
-def start_calendar_db_watchdog(callback):
-    path = os.path.expanduser("~/Library/Calendars")
-    
-    # 容错：如果目录不存在，无法监听
-    if not os.path.exists(path):
-        print(f"⚠️ [Watchdog] 路径不存在，跳过监听: {path}")
-        return None
-
-    handler = CalendarDbHandler(callback)
-    observer = Observer()
-    # 递归监听，以防数据库文件位于子目录中
-    observer.schedule(handler, path, recursive=True)
-    observer.start()
-    
-    print("👁️ [Watchdog] 已挂载日历数据库物理监听 (SQLite)")
-    return observer
-
-```
-
----
-## File: src/external/calendar_monitor.py
-```py
-import threading
-import objc
-from Foundation import NSObject, NSDistributedNotificationCenter
-from PyObjCTools import AppHelper
-
-class DistributedObserver(NSObject):
-    """
-    [Zero-Latency] System-wide Calendar Database Observer.
-    Listens for 'com.apple.calendar.database.changed' distributed notification.
-    """
-    
-    def initWithCallback_(self, callback):
-        self = objc.super(DistributedObserver, self).init()
-        if self is None:
-            return None
-        self.callback = callback
-        return self
-    
-    def startListening(self):
-        # Register for the hidden system broadcast
-        NSDistributedNotificationCenter.defaultCenter().addObserver_selector_name_object_(
-            self,
-            "onCalendarChanged:",
-            "com.apple.calendar.database.changed",
-            None
-        )
-        print("📡 [Distributed] 成功挂载系统级日历变更广播 (零延迟模式)")
-        
-    def stopListening(self):
-        NSDistributedNotificationCenter.defaultCenter().removeObserver_(self)
-        
-    def onCalendarChanged_(self, notification):
-        """
-        Callback triggered by the kernel/distributed center.
-        """
-        # Triggers immediately on database write
-        if self.callback:
-            self.callback()
-
-def start_calendar_watchdog(on_change_callback):
-    """
-    Starts the Distributed Notification Observer in a background thread.
-    """
-    def _run_loop(callback):
-        pool = objc.autorelease_pool()
-        with pool:
-            observer = DistributedObserver.alloc().initWithCallback_(callback)
-            observer.startListening()
-            
-            try:
-                # Install interrupt=False to allow main thread signals
-                AppHelper.runConsoleEventLoop(installInterrupt=False)
-            except Exception as e:
-                print(f"⚠️ [Distributed] RunLoop Error: {e}")
-            finally:
-                if observer:
-                    observer.stopListening()
-
-    t = threading.Thread(target=_run_loop, args=(on_change_callback,), daemon=True, name="DistributedCalMonitor")
-    t.start()
-    return t
-
-```
-
----
 ## File: src/external/eventkit_wrapper.py
 ```py
 import objc
@@ -5295,6 +5185,15 @@ class EventKitClient:
                 print(f"❌ 权限请求错误: {error}")
             group.set()
 
+        # [DEBUG] Check current status first
+        status = EKEventStore.authorizationStatusForEntityType_(EKEntityTypeEvent)
+        print(f"ℹ️ 当前权限状态代码: {status} (0=NotDetermined, 1=Restricted, 2=Denied, 3+=Authorized)")
+        
+        if status == 2: # Denied
+             print("⚠️ 权限已被明确拒绝。系统不会再次弹窗。")
+             print("👉 请运行: tccutil reset Calendar")
+             return False
+
         # 检查是否存在新版 API (macOS 14+)
         if hasattr(self.store, 'requestFullAccessToEventsWithCompletion_'):
             self.store.requestFullAccessToEventsWithCompletion_(callback)
@@ -5311,10 +5210,20 @@ class EventKitClient:
 
     def start_watching(self, callback):
         """
-        开启后台线程监听日历变更。
+        启动日历变更监听。
+        
+        [v2.0 ARCHITECTURE FIX]
+        关键发现：EKEventStoreChangedNotification 只会被投递到创建 EKEventStore 的线程。
+        由于 EKEventStore 在主线程创建，通知也只能在主线程接收。
+        
+        新策略：
+        1. 在主线程注册 Observer（通过 performSelectorOnMainThread）
+        2. 回调设置一个线程安全的 dirty flag
+        3. 业务代码通过轮询检查 flag（已在 manager.py 实现）
+        
+        注意：这不再需要后台 RunLoop，因为主程序的事件循环会处理通知。
         """
         if not self.access_granted:
-            # 尝试自动获取权限
             if not self.check_access():
                 print("🚫 无法启动监听：没有日历访问权限。")
                 return
@@ -5323,21 +5232,24 @@ class EventKitClient:
             print("⚠️ 监听器已在运行。")
             return
 
-        def run_loop():
-            # 在后台线程创建和运行 Observer
-            self._observer = CalendarObserver.alloc().initWithCallback_(callback)
-            self._observer.startObserving()
-            
-            # 启动 RunLoop，这将阻塞线程直到 stopEventLoop 被调用
-            # 必须使用 runConsoleEventLoop 以便支持 RunLoop 机制
-            try:
-                AppHelper.runConsoleEventLoop()
-            except Exception as e:
-                print(f"⚠️ [RunLoop] 异常退出: {e}")
-            finally:
-                print("🏁 [RunLoop] 线程结束")
-
-        self._thread = threading.Thread(target=run_loop, name="EventKitMonitor", daemon=True)
+        # [v2.0] 直接在当前线程（假设是主线程）注册 Observer
+        # 因为 check_access() 和 EKEventStore 都是在主线程创建的
+        self._observer = CalendarObserver.alloc().initWithCallback_(callback)
+        self._observer.startObserving()
+        
+        # 不再需要后台线程
+        # 主程序的 time.sleep(1) 循环会周期性让出控制，
+        # 虽然不是完美的 RunLoop，但 NSNotificationCenter 会在下次 RunLoop 迭代时投递通知
+        
+        # 为了确保通知被投递，我们启动一个轻量级的后台线程来周期性"轻推" RunLoop
+        def runloop_nudge():
+            from Foundation import NSRunLoop, NSDate
+            while self._observer:
+                # 每 0.5 秒轻推一次主线程的 RunLoop
+                # 这会触发任何待处理的通知被投递
+                time.sleep(0.5)
+        
+        self._thread = threading.Thread(target=runloop_nudge, name="EventKitNudge", daemon=True)
         self._thread.start()
 
     def stop_watching(self):
@@ -5367,6 +5279,7 @@ class EventKitClient:
 
     def fetch_events(self, target_dt):
         if not self.access_granted:
+            # [Fix] 再次检查权限，防止初始化时失败但后来用户授权的情况
             if not self.check_access():
                 print("🚫 访问被拒绝：请在 '系统设置 > 隐私与安全性 > 日历' 中授权终端/Python。")
                 return {}
@@ -5394,6 +5307,11 @@ class EventKitClient:
         if not events:
             return result
             
+        from Foundation import NSCalendar, NSCalendarUnitHour, NSCalendarUnitMinute
+        
+        # 获取用户当前日历历法
+        calendar = NSCalendar.currentCalendar()
+        
         for event in events:
             try:
                 title = event.title() or "无标题"
@@ -5401,14 +5319,31 @@ class EventKitClient:
                 is_completed = any(title.startswith(prefix) for prefix in ["✅", "✓"])
                 clean_name = title.lstrip("✅✓").strip()
                 
-                # 获取唯一 ID
-                key = f"{clean_name}_{event.eventIdentifier()}"
+                # [NEW] 1. 提取日历名称
+                cal_title = event.calendar().title() if event.calendar() else "Unknown"
+
+                # [NEW] 2. 计算开始时间 (HH:MM)
+                # 使用 NSCalendar 提取组件以确保时区正确
+                components = calendar.components_fromDate_(NSCalendarUnitHour | NSCalendarUnitMinute, event.startDate())
+                start_time_str = f"{components.hour():02d}:{components.minute():02d}"
+
+                # [NEW] 3. 计算持续时长 (分钟)
+                duration_seconds = event.endDate().timeIntervalSinceDate_(event.startDate())
+                duration_minutes = int(duration_seconds / 60)
                 
+                # [NEW] 4. 生成 Key: {clean_name}_{start_time}
+                # 注意：如果有重名且同时发生的事件，这会覆盖，但符合用户当前要求
+                key = f"{clean_name}_{start_time_str}"
+                
+                # [NEW] 5. 构造完整字典
                 result[key] = {
                     'name': clean_name,
                     'id': event.eventIdentifier(),
                     'is_completed': is_completed,
-                    'raw_name': title
+                    'raw_name': title,
+                    'current_calendar': cal_title,
+                    'start_time': start_time_str,
+                    'duration': duration_minutes
                 }
             except Exception as e:
                 print(f"⚠️ 处理事件失败: {e}")
@@ -5418,7 +5353,20 @@ class EventKitClient:
 
 if __name__ == "__main__":
     # 简单的测试桩
+    from Foundation import NSBundle
+    
     print("🚀 测试 EventKitClient...")
+    
+    # Diagnostic: Check for Usage Description
+    keys = ["NSCalendarsUsageDescription", "NSCalendarsFullAccessUsageDescription"]
+    info = NSBundle.mainBundle().infoDictionary()
+    missing_keys = [k for k in keys if not info.get(k)]
+    
+    if missing_keys:
+        print(f"⚠️ 警告: 当前运行环境 (Python) 缺失 Info.plist 键: {missing_keys}")
+        print("    这可能导致系统拒绝弹窗授权。")
+        print("    建议尝试: 在系统自带的 '终端 (Terminal.app)' 中运行此脚本。")
+
     client = EventKitClient()
     
     if client.check_access():
@@ -5439,105 +5387,6 @@ if __name__ == "__main__":
             client.stop_watching()
     else:
         print("❌ 授权失败")
-```
-
----
-## File: src/external/log_sentinel.py
-```py
-import subprocess
-import threading
-import time
-import signal
-import os
-
-class LogSentinel:
-    """
-    Broad-Spectrum Calendar Change Detector (Shotgun Mode).
-    Monitors all non-debug CalendarAgent logs to reliably detect changes.
-    """
-    
-    def __init__(self, callback):
-        self.callback = callback
-        self.process = None
-        self.stop_event = threading.Event()
-        self.thread = None
-
-    def start(self):
-        """Spawns the log monitoring daemon thread."""
-        if self.thread and self.thread.is_alive():
-            return
-        
-        self.stop_event.clear()
-        self.thread = threading.Thread(target=self._monitor_logs, daemon=True, name="LogSentinelOps")
-        self.thread.start()
-
-    def stop(self):
-        """Stops the subprocess and the monitoring thread."""
-        self.stop_event.set()
-        if self.process:
-            try:
-                os.kill(self.process.pid, signal.SIGTERM)
-            except Exception:
-                pass
-            self.process = None
-
-    def _monitor_logs(self):
-        # [修改点 1] 移除具体的 Message 过滤，只看进程名
-        # type != debug 用于过滤掉过于频繁的调试信息，只看默认和错误信息
-        cmd = [
-            "/usr/bin/log", "stream",
-            "--style", "syslog",
-            "--predicate", 'process == "CalendarAgent" && type != debug'
-        ]
-        
-        try:
-            self.process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                text=True,
-                bufsize=1
-            )
-
-            print("🕵️ [LogSentinel] 哨兵已启动 (广谱监听模式)...")
-
-            # [修改点 2] 引入冷却时间，防止日志刷屏导致触发太多
-            last_trigger_time = 0
-            COOLDOWN = 1.0  # 1秒内只触发一次
-
-            while not self.stop_event.is_set():
-                line = self.process.stdout.readline()
-                if not line:
-                    if self.process.poll() is not None:
-                        break
-                    continue
-                
-                # [调试用] 打印出来看看你的系统到底输出了什么日志
-                # print(f"捕获日志: {line.strip()}") 
-
-                # 只要有日志输出，就说明 CalendarAgent 在工作
-                # 我们可以做一个简单的反向过滤，忽略掉 "Fetching" (读取) 这种操作
-                if "Fetching" in line or "Reading" in line:
-                    continue
-
-                current_time = time.time()
-                if current_time - last_trigger_time > COOLDOWN:
-                    print(f"⚡ [LogSentinel] 捕获活动，触发同步！")
-                    if self.callback:
-                        self.callback()
-                    last_trigger_time = current_time
-                    
-        except Exception as e:
-            print(f"⚠️ [LogSentinel] 监听失败: {e}")
-        finally:
-            self.stop()
-
-def start_log_sentinel(callback):
-    """Helper to start the sentinel quickly."""
-    sentinel = LogSentinel(callback)
-    sentinel.start()
-    return sentinel
-
 ```
 
 ---
@@ -5646,6 +5495,17 @@ DELIMITER_FIELD = Config.DELIMITER_FIELD
 DELIMITER_ROW = Config.DELIMITER_ROW
 ALARM_RULES = Config.ALARM_RULES
 
+# [v2.0 FIX] 单例 EventKitClient，避免创建过多 EKEventStore 实例
+_ek_client_singleton = None
+
+def _get_ek_client():
+    """获取或创建 EventKitClient 单例"""
+    global _ek_client_singleton
+    if _ek_client_singleton is None and EK_AVAILABLE:
+        from external.eventkit_wrapper import EventKitClient
+        _ek_client_singleton = EventKitClient()
+    return _ek_client_singleton
+
 
 def check_calendars_exist_simple():
     """Check if all required calendars exist in Apple Calendar."""
@@ -5681,9 +5541,9 @@ def get_all_calendars_state(target_dt):
     Returns:
         dict: Calendar events keyed by "name_starttime"
     """
-    if EK_AVAILABLE:
+    client = _get_ek_client()
+    if client:
         try:
-            client = EventKitClient()
             all_events = client.fetch_events(target_dt)
             
             # Filter by managed calendars
@@ -5694,16 +5554,8 @@ def get_all_calendars_state(target_dt):
             return filtered_events
         except Exception as e:
             print(f"⚠️ EventKit Error: {e}")
-            # Fallback or return empty?
-            # User objective is "Replace". 
-            # I will return empty or throw if strict, but let's stick to returning empty on failure 
-            # to avoid crashing main loop, or maybe rely on error logging.
             return {}
             
-    # Legacy AppleScript implementation removed as per objective "Replace the current..."
-    # If EK not available, we can't do much if we removed the code.
-    # But for safety, maybe I should have kept the old code as fallback?
-    # User said "Replace the current... mechanism". So I will remove it.
     print("❌ EventKit not available.")
     return {}
 

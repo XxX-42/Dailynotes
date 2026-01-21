@@ -353,7 +353,7 @@ def normalize_child_lines(raw_lines, target_parent_indent, source_parent_indent=
 
     return children
 
-def reconstruct_daily_block(sd, target_date):
+def reconstruct_daily_block(sd, target_date, preserved_time=None):
     fname = sd['fname']
     bid = sd['bid']
     status = sd['status']
@@ -361,7 +361,10 @@ def reconstruct_daily_block(sd, target_date):
     link_tag = f"[[{fname}]]"
     if link_tag not in text: text = f"{link_tag} {text}"
 
-    # 传递 sd['indent'] 作为 source_parent_indent
+    # [FIX] 如果传入了保留的时间，将其注入到 text 前端供 format_line 识别
+    if preserved_time:
+        text = f"{preserved_time} {text}"
+
     parent_line = format_line(sd['indent'], status, text, "", fname, bid, True)
     children = normalize_child_lines(
         sd['raw'][1:],

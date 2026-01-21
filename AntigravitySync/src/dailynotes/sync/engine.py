@@ -549,7 +549,11 @@ class SyncCore:
                     d_changed = (dd['hash'] != last_hash)
                     if s_changed and not d_changed:
                         Logger.info(f"   🔄 S->D 同步 ({bid}):")
-                        blk = reconstruct_daily_block(sd, target_date)
+                        # [FIX] 提取当前日记行中的时间，防止被源文件覆盖
+                        old_daily_line = dd['raw'][0]
+                        time_match = re.search(r'(\d{1,2}:\d{2}(?:\s*-\s*\d{1,2}:\d{2})?)', old_daily_line)
+                        preserved_time = time_match.group(1) if time_match else None
+                        blk = reconstruct_daily_block(sd, target_date, preserved_time=preserved_time)
                         dn_lines[dd['idx']:dd['idx'] + dd['len']] = blk
                         dn_mod = True
                         self.sm.update_task(bid, sd['hash'], sd['path'], target_date)

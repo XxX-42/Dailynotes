@@ -41,10 +41,17 @@ class Config:
     
     # [v3.0] Chronos Mode - 全事件驱动架构
     CHRONOS_SYNC_WINDOW_DAYS = 30      # 日历变更时同步的窗口大小（前后各15天）
-    CHRONOS_FULL_RANGE_PAST_YEARS = 1  # 全量同步：过去N年
+    CHRONOS_FULL_RANGE_PAST_DAYS = 2   # 全量同步：过去N天 (前天+昨天)
     CHRONOS_FULL_RANGE_FUTURE_YEARS = 10  # 全量同步：未来N年
     CHRONOS_EVENTKIT_BATCH_DAYS = 1460  # EventKit批次大小（约4年，系统限制）
     CHRONOS_LOOP_INTERVAL = 60.0       # 主循环间隔（秒）
+    
+    # [v2.0+] 指数动态调度参数
+    # 调度公式: I(d) = EXP_BASE * exp(EXP_COEFF * d) + EXP_OFFSET
+    # d 为距今天数，I(d) 为同步间隔（秒）
+    EXP_BASE = 60.0       # 基础间隔（秒）
+    EXP_COEFF = 0.1       # 指数系数（正值表示越旧越慢）
+    EXP_OFFSET = 30.0     # 偏移量/最小间隔（秒）
     
     # [v2.0] EventKit Sync
     # No file watching required for calendar

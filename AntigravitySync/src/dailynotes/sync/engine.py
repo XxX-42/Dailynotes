@@ -599,26 +599,68 @@ class SyncCore:
                         append_to_dn[sd['proj']].append(sd)
                         self.sm.update_task(bid, sd['hash'], sd['path'], target_date)
 
+            # --- 分支：日记里有，但源文件缓存中没找到 (潜在删除风险区) ---
             elif in_d and not in_s:
-                dd = dn_tasks[bid];
+                dd = dn_tasks[bid]
                 raw_first = dd['raw'][0]
                 db_data = self.sm.state.get(bid, {})
+                
+                # 确定该任务"理应"存在的源文件路径
                 last_path = db_data.get('source_path', '')
-                is_daily_native = (not last_path) or (Config.DAILY_NOTE_DIR in last_path)
                 target_file_direct = extract_routing_target(raw_first, self.file_path_map)
+                p_name = dd.get('proj')
+                implied_target = self.project_path_map.get(p_name) if p_name else None
+                
+                # 最终确认校验目标
+                potential_source = target_file_direct or implied_target or last_path
+
+                # [CRITICAL RESCUE] 临终磁盘校验逻辑
+                # 解决组件通信时差：如果缓存说没了，但在删除前，我们强制去磁盘读一次该任务的"老家"
+                if potential_source and os.path.exists(potential_source):
+                    # 只有当 potential_source 不是 Daily Note 本身时才重扫
+                    if Config.DAILY_NOTE_DIR not in potential_source:
+                        # 强迫 TaskRegistry 立即更新这个特定文件的缓存，不等待 Watchdog
+                        self._task_registry.update_file(potential_source, self.sm)
+                        
+                        # 重新尝试从更新后的注册表中获取任务
+                        refreshed_src_tasks = self._task_registry.get_tasks_by_date(target_date)
+                        if bid in refreshed_src_tasks:
+                            Logger.debug(f"    🛡️ [Rescue] 发现任务 {bid} 仍在磁盘，拦截误删并修正缓存")
+                            # 既然找到了，我们手动修正本轮循环的状态，将其从"删除"转为"同步"
+                            sd = refreshed_src_tasks[bid]
+                            # 补偿执行：既然判定为存在，执行原本属于 in_s & in_d 的同步检查
+                            last_hash = self.sm.get_task_hash(bid)
+                            if sd['hash'] != last_hash:
+                                Logger.info(f"    🔄 S->D 补差同步 ({bid}): 来自磁盘校验")
+                                blk = reconstruct_daily_block(sd, target_date)
+                                dn_lines[dd['idx']:dd['idx'] + dd['len']] = blk
+                                dn_mod = True
+                                self.sm.update_task(bid, sd['hash'], sd['path'], target_date)
+                            # 救活后，直接跳过后面的删除判定代码
+                            continue 
+
+                # --- 以下为原有的删除/推送逻辑保护 (仅在校验失败后执行) ---
+                is_daily_native = (not last_path) or (Config.DAILY_NOTE_DIR in last_path)
+                
                 is_deleted_from_source = False
                 if target_file_direct and last_path:
                     p1 = os.path.normcase(os.path.abspath(target_file_direct))
                     p2 = os.path.normcase(os.path.abspath(last_path))
                     if p1 == p2: is_deleted_from_source = True
-                should_push = (bid in organized_bids) or is_daily_native or (
-                        target_file_direct and os.path.exists(target_file_direct) and not is_deleted_from_source)
+
+                # 增加 Header Context 救命稻草：如果任务在有效的 ## [[项目]] 标题下，也视为有效
+                has_valid_header_context = (implied_target and os.path.exists(implied_target))
+
+                should_push = (bid in organized_bids) or \
+                              is_daily_native or \
+                              (target_file_direct and os.path.exists(target_file_direct) and not is_deleted_from_source) or \
+                              has_valid_header_context
+
                 if should_push:
                     target_file = None
                     if target_file_direct:
                         target_file = target_file_direct
                     else:
-                        p_name = dd.get('proj')
                         target_file = self.project_path_map.get(p_name)
                     if target_file and os.path.exists(target_file):
                         Logger.info(f"   🚀 [GRADUATE] 归档任务晋升上行 ({bid}) -> {os.path.basename(target_file)}")
@@ -641,7 +683,8 @@ class SyncCore:
                     else:
                         Logger.info(f"   ⚠️ [ORPHAN] 无法同步，找不到目标文件")
                 else:
-                    Logger.info(f"   🗑️ 删除 Daily ({bid}): 因 Source 移除")
+                    # 只有所有的救命稻草都断了，才执行删除
+                    Logger.info(f"   🗑️ 删除 Daily ({bid}): 经过磁盘校验，确认 Source 已移除")
                     for k in range(dd['idx'], dd['idx'] + dd['len']): dn_lines[k] = None
                     dn_mod = True
 

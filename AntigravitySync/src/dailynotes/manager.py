@@ -232,25 +232,46 @@ class FusionManager:
 
     def sync_recent_window(self):
         """
-        [v3.0] 同步日历变更窗口（前后各15天）
-        """
-        today = datetime.date.today()
-        window_half = Config.CHRONOS_SYNC_WINDOW_DAYS // 2
+        [v3.1] 日历变更触发的窗口同步
         
-        start_date = today - datetime.timedelta(days=window_half)
-        end_date = today + datetime.timedelta(days=window_half)
+        范围: 过去 CHRONOS_FULL_RANGE_PAST_DAYS 天 ~ 未来 CHRONOS_FULL_RANGE_FUTURE_YEARS 年
+        性能优化: 仅同步日历中有事件的日期，避免遍历所有空白日期
+        """
+        if not self._ek_client:
+            Logger.info("⚠️ [Chronos] EventKit 不可用，跳过窗口同步")
+            return
+        
+        today = datetime.date.today()
+        start_date = today - datetime.timedelta(days=Config.CHRONOS_FULL_RANGE_PAST_DAYS)
+        end_date = today + datetime.timedelta(days=Config.CHRONOS_FULL_RANGE_FUTURE_YEARS * 365)
+        
+        # 确保不早于 SYNC_START_DATE
+        sync_start = datetime.datetime.strptime(Config.SYNC_START_DATE, '%Y-%m-%d').date()
+        if start_date < sync_start:
+            start_date = sync_start
         
         Logger.info(f"🔄 [Chronos] 窗口同步: {start_date} ~ {end_date}")
         
-        current = start_date
+        # [性能优化] 使用 EventKit 批量获取有事件的日期，避免逐天遍历
+        events_by_date = self._ek_client.fetch_range_events(
+            start_date, 
+            end_date, 
+            Config.CHRONOS_EVENTKIT_BATCH_DAYS
+        )
+        
+        if not events_by_date:
+            Logger.info("📭 [Chronos] 窗口范围内无日历事件")
+            return
+        
+        Logger.info(f"📅 [Chronos] 发现 {len(events_by_date)} 天有日历事件")
+        
+        # 只同步有事件的日期
         synced_count = 0
-        while current <= end_date:
-            date_str = current.strftime('%Y-%m-%d')
+        for date_str in sorted(events_by_date.keys()):
             if date_str >= Config.SYNC_START_DATE:
                 result = self.process_single_date(date_str, is_event_trigger=True)
                 if result["apple_to_obsidian"] or result["obsidian_to_apple"]:
                     synced_count += 1
-            current += datetime.timedelta(days=1)
         
         Logger.info(f"✅ [Chronos] 窗口同步完成: {synced_count} 天有变动")
 
@@ -264,7 +285,7 @@ class FusionManager:
             return
         
         today = datetime.date.today()
-        start_date = today - datetime.timedelta(days=Config.CHRONOS_FULL_RANGE_PAST_YEARS * 365)
+        start_date = today - datetime.timedelta(days=Config.CHRONOS_FULL_RANGE_PAST_DAYS)
         end_date = today + datetime.timedelta(days=Config.CHRONOS_FULL_RANGE_FUTURE_YEARS * 365)
         
         # 确保不早于 SYNC_START_DATE
@@ -323,7 +344,7 @@ class FusionManager:
 
         Logger.info(f"🚀 Chronos Mode 启动 - 全事件驱动架构")
         Logger.info(f"   同步窗口: ±{Config.CHRONOS_SYNC_WINDOW_DAYS // 2} 天")
-        Logger.info(f"   全量范围: 过去 {Config.CHRONOS_FULL_RANGE_PAST_YEARS} 年 ~ 未来 {Config.CHRONOS_FULL_RANGE_FUTURE_YEARS} 年")
+        Logger.info(f"   全量范围: 过去 {Config.CHRONOS_FULL_RANGE_PAST_DAYS} 天 ~ 未来 {Config.CHRONOS_FULL_RANGE_FUTURE_YEARS} 年")
         Logger.info(f"   循环间隔: {Config.CHRONOS_LOOP_INTERVAL} 秒")
 
         # 初始化 Watchdog

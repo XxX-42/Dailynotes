@@ -1,0 +1,26 @@
+[92m[21:22:11 INFO] [task_registry.py:__init__] 📦 [TaskRegistry] 实例已创建[0m
+[92m[21:22:13 INFO] [apple_sync_adapter.py:_try_initialize] 🍏 Apple Calendar Sync 模块已加载[0m
+[92m[21:22:13 INFO] [main.py:Main] === Antigravity Sync v1.8.2 (Clean Architecture) (Exponential Dynamic Scheduling) ===[0m
+[92m[21:22:13 INFO] [main.py:Main] 路径: /Users/user999/Documents/【Liang_project】/远程仓库1[0m
+[92m[21:22:13 INFO] [main.py:Main] 模式: Watchdog (Vault & Calendar) + 指数动态调度[0m
+[92m[21:22:13 INFO] [main.py:Main] 调度公式: I(d) = 240 * exp(0.0068 * d) + 60[0m
+[92m[21:22:13 INFO] [main.py:Main] 模板: ✅ 【002_Infobox】/Templates/DayPlanTemplate.md[0m
+[92m[21:22:13 INFO] [main.py:Main] ==================================================[0m
+[92m[21:22:13 INFO] [manager.py:run] 🚀 事件驱动引擎启动: Watchdog (Vault & Calendar) + 指数动态调度[0m
+[92m[21:22:13 INFO] [manager.py:run]    调度公式: I(d) = 240 * exp(0.0068 * d) + 60[0m
+[92m[21:22:13 INFO] [manager.py:run]    冷却上限: 3600s | 事件防抖: 0.5s[0m
+[92m[21:22:13 INFO] [manager.py:run]    日期范围: DAY_START=-1 ~ DAY_END=90[0m
+[92m[21:22:13 INFO] [manager.py:run] 👁️ [Watchdog] 开始监听: /Users/user999/Documents/【Liang_project】/远程仓库1[0m
+[92m[21:22:13 INFO] [manager.py:run] 📅 [Watchdog] 开始监听日历数据库: /Users/user999/Library/Calendars[0m
+[92m[21:22:13 INFO] [engine.py:initialize_registry] 🚀 [SyncCore] 初始化 TaskRegistry (一次性全量扫描)...[0m
+[92m[21:22:13 INFO] [task_registry.py:initialize] 📦 [TaskRegistry] 初始化完成: 37 文件, 66 任务[0m
+[92m[21:22:13 INFO] [engine.py:initialize_registry] ✅ [SyncCore] TaskRegistry 初始化完成[0m
+📝 [C->O] 写入笔记: Online Task 2
+💾 Obsidian 文件已更新 (C->O): 2026-01-21
+[92m[21:22:25 INFO] [manager.py:process_single_date]    🍏 [Apple] 2026-01-21 同步成功[0m
+[92m[21:22:25 INFO] [manager.py:_process_event] 🔎 [Watchdog] 捕获底层事件 (MOVED): 2026-01-21.md[0m
+[90m[DEBUG] [manager.py:_process_event] [Event] 忽略自写入事件: 2026-01-21.md[0m
+⏱️  下次检测 [2026-01-21]:   12s  ⏱️  下次检测 [2026-01-21]:   11s  ⏱️  下次检测 [2026-01-21]:   10s  ⏱️  下次检测 [2026-01-21]:    9s  ⏱️  下次检测 [2026-01-21]:    8s  ⏱️  下次检测 [2026-01-21]:    7s  ⏱️  下次检测 [2026-01-21]:    6s  ⏱️  下次检测 [2026-01-21]:    5s  ⏱️  下次检测 [2026-01-21]:    4s  ⏱️  下次检测 [2026-01-21]:    3s  ⏱️  下次检测 [2026-01-21]:    2s  ⏱️  下次检测 [2026-01-21]:    1s  ⏱️  下次检测 [2026-01-21]:   23s  ⏱️  下次检测 [2026-01-21]:   22s                                                    [92m[21:22:51 INFO] [manager.py:run] 🛑 [Watchdog] 停止监听 Vault...[0m
+[92m[21:22:51 INFO] [manager.py:run] 🛑 [Watchdog] 停止监听 Calendar...[0m
+[92m[21:22:51 INFO] [manager.py:run] ✅ 状态已保存，引擎已停止[0m
+Received SIGTERM

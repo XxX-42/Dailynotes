@@ -6,6 +6,7 @@ import os
 from datetime import datetime, timedelta
 from config import Config
 from .utils import calculate_duration_minutes
+from dailynotes.utils import FileUtils
 from .calendar_service import get_all_calendars_state, BatchExecutor
 from .obsidian_service import get_obsidian_state
 
@@ -84,46 +85,104 @@ def perform_bidirectional_sync(date_str, obs_path, state_manager, target_dt):
                     found_old_key = old_k
                     break
             if found_old_key:
-                print(f"🕵️ [Rename C->O] 日历改名: {last_cal[found_old_key]['name']} -> {c_data['name']}")
+                print(f"🕵️ [Move/Rename C->O] 捕捉变动: {last_cal[found_old_key]['name']}@{last_cal[found_old_key]['start_time']} -> {c_data['name']}@{c_data['start_time']}")
+                rename_success = False
                 if found_old_key in current_obs:
                     line_idx = current_obs[found_old_key]['line_index']
-                    old_o_data = current_obs[found_old_key]
                     tag_suffix = CAL_TO_TAG.get(c_data['current_calendar'], "")
                     if tag_suffix == "#D":
                         tag_suffix = ""
                     tag_part = f"{tag_suffix} " if tag_suffix else ""
+                    
+                    # Calculate new end time based on duration
                     end_time_str = ""
-                    if old_o_data['end_time']:
-                        end_time_str = f" - {old_o_data['end_time']}"
-                    status_char = old_o_data['status']
-                    new_line = f"- [{status_char}] {old_o_data['start_time']}{end_time_str} {tag_part}{c_data['name']}\n"
+                    if c_data['duration'] != 30:
+                        end_t = datetime.strptime(c_data['start_time'], "%H:%M") + timedelta(minutes=c_data['duration'])
+                        end_time_str = f" - {end_t.strftime('%H:%M')}"
+                    
+                    status_char = current_obs[found_old_key]['status']
+                    new_line = f"- [{status_char}] {c_data['start_time']}{end_time_str} {tag_part}{c_data['name']}\n"
                     lines_to_modify[line_idx] = new_line
                     file_dirty = True
+                    
+                    # [v1.7.2/v1.7.4] Critical State Update (Name AND Time):
+                    new_obs_key = f"{c_data['name']}_{c_data['start_time']}"
+                    new_o_data = current_obs[found_old_key].copy()
+                    new_o_data['name'] = c_data['name']
+                    new_o_data['start_time'] = c_data['start_time']
+                    new_o_data['end_time'] = end_t.strftime('%H:%M') if c_data['duration'] != 30 else None
+                    
+                    del current_obs[found_old_key]
+                    current_obs[new_obs_key] = new_o_data
+                    
                     handled_obs_keys.add(found_old_key)
-                    handled_cal_keys.add(c_key)
+                    handled_obs_keys.add(new_obs_key)
+                    rename_success = True
+                # [v1.7.1] Fix: Always mark as handled if rename detected to prevent duplicate append
+                handled_cal_keys.add(c_key)
+                if not rename_success:
+                    print(f"⚠️ [Rename] Obsidian 中未找到旧任务 {found_old_key}，跳过本地重命名，但阻止重复写入")
 
     last_obs_time_map = {}
+    last_obs_name_map = {}
     for k, v in last_obs.items():
+        # Map by time
         if v['start_time'] not in last_obs_time_map:
             last_obs_time_map[v['start_time']] = []
         last_obs_time_map[v['start_time']].append(k)
+        # Map by name
+        if v['name'] not in last_obs_name_map:
+            last_obs_name_map[v['name']] = []
+        last_obs_name_map[v['name']].append(k)
 
     for o_key, o_data in current_obs.items():
         if o_key in handled_obs_keys:
             continue
         if o_key not in last_obs:
-            candidates = last_obs_time_map.get(o_data['start_time'], [])
-            for old_key in candidates:
-                if old_key not in current_obs:
-                    if old_key in current_cal:
-                        c_data = current_cal[old_key]
-                        print(f"🕵️ [Rename O->C] 笔记改名: {last_obs[old_key]['name']} -> {o_data['name']}")
-                        o_is_completed = (o_data['status'] == 'x')
+            # [Detection] Rename? (Same time, different name)
+            candidates_time = last_obs_time_map.get(o_data['start_time'], [])
+            found_move = False
+            for old_key in candidates_time:
+                if old_key not in current_obs and old_key in current_cal:
+                    c_data = current_cal[old_key]
+                    print(f"🕵️ [Rename O->C] 笔记改名: {last_obs[old_key]['name']} -> {o_data['name']}")
+                    o_is_completed = (o_data['status'] == 'x')
+                    dur = calculate_duration_minutes(o_data['start_time'], o_data['end_time'])
+                    
+                    if o_data['target_calendar'] != c_data['current_calendar']:
+                        batch.add_delete(c_data['id'], c_data['current_calendar'])
+                        batch.add_create(o_data['name'], o_data['start_time'], dur, o_data['target_calendar'], o_is_completed)
+                    else:
                         batch.add_update(c_data['id'], c_data['current_calendar'], o_data['name'], o_data['start_time'],
-                                         c_data['duration'], o_is_completed)
-                        handled_obs_keys.add(o_key)      # Current key (prevent duplicate create)
-                        handled_obs_keys.add(old_key)    # Old key (prevent delete)
+                                         dur, o_is_completed)
+                    
+                    handled_obs_keys.add(o_key)
+                    handled_obs_keys.add(old_key)
+                    handled_cal_keys.add(old_key)
+                    found_move = True
+                    break
+            
+            if not found_move:
+                # [Detection] Move? (Same name, different time)
+                candidates_name = last_obs_name_map.get(o_data['name'], [])
+                for old_key in candidates_name:
+                    if old_key not in current_obs and old_key in current_cal:
+                        c_data = current_cal[old_key]
+                        print(f"🕵️ [Move O->C] 笔记移动: {last_obs[old_key]['start_time']} -> {o_data['start_time']} ({o_data['name']})")
+                        o_is_completed = (o_data['status'] == 'x')
+                        dur = calculate_duration_minutes(o_data['start_time'], o_data['end_time'])
+                        
+                        if o_data['target_calendar'] != c_data['current_calendar']:
+                            batch.add_delete(c_data['id'], c_data['current_calendar'])
+                            batch.add_create(o_data['name'], o_data['start_time'], dur, o_data['target_calendar'], o_is_completed)
+                        else:
+                            batch.add_update(c_data['id'], c_data['current_calendar'], o_data['name'], o_data['start_time'],
+                                             dur, o_is_completed)
+                        
+                        handled_obs_keys.add(o_key)
+                        handled_obs_keys.add(old_key)
                         handled_cal_keys.add(old_key)
+                        found_move = True
                         break
 
     # Phase A: O -> C
@@ -139,6 +198,11 @@ def perform_bidirectional_sync(date_str, obs_path, state_manager, target_dt):
             if (o_data['target_calendar'] != last_data['target_calendar'] or
                     abs(o_dur - l_dur) > 2 or
                     o_data['status'] != last_data.get('status', ' ')):
+                
+                print(f"🐛 [Debug] is_modified=True for {key}:")
+                print(f"    Cal: {o_data['target_calendar']} vs {last_data['target_calendar']}")
+                print(f"    Dur: {o_dur} vs {l_dur}")
+                print(f"    Sts: '{o_data['status']}' vs '{last_data.get('status', ' ')}'")
                 is_modified = True
 
         if is_new or is_modified:
@@ -164,7 +228,9 @@ def perform_bidirectional_sync(date_str, obs_path, state_manager, target_dt):
         if key not in current_obs and key not in handled_obs_keys:
             if key in current_cal:
                 c_data = current_cal[key]
+                print(f"🗑️ [O->C] 触发日历删除: {key}")
                 batch.add_delete(c_data['id'], c_data['current_calendar'])
+                handled_cal_keys.add(key)
 
     # Phase B: C -> O
     for key, c_data in current_cal.items():
@@ -184,6 +250,20 @@ def perform_bidirectional_sync(date_str, obs_path, state_manager, target_dt):
             new_line = f"- [{status_char}] {c_data['start_time']}{end_time_str} {tag_part}{c_data['name']}\n"
             lines_to_append.append(new_line)
             file_dirty = True
+            
+            # [v1.7.2] Snapshot Consistency: Add to current_obs so snapshot saves it
+            new_key = key # key is already name_time
+            # Construct minimal data for snapshot
+            current_obs[new_key] = {
+                'name': c_data['name'],
+                'start_time': c_data['start_time'],
+                'end_time': end_t.strftime('%H:%M') if c_data['duration'] != 30 else None,
+                'target_calendar': c_data['current_calendar'],
+                'tag': tag_suffix,
+                'status': status_char,
+                'line_index': -1 # Placeholder, won't be used next run (re-parsed)
+            }
+
         elif key in last_cal and key in current_obs:
             last_c_data = last_cal[key]
             is_cal_modified = False
@@ -209,17 +289,32 @@ def perform_bidirectional_sync(date_str, obs_path, state_manager, target_dt):
                 new_line = f"- [{status_char}] {c_data['start_time']}{end_time_str} {tag_part}{c_data['name']}\n"
                 lines_to_modify[line_idx] = new_line
                 file_dirty = True
+                
+                # [v1.7.2] Snapshot Consistency: Update current_obs
+                current_obs[key]['target_calendar'] = c_data['current_calendar']
+                current_obs[key]['tag'] = tag_suffix
+                current_obs[key]['status'] = status_char
+                current_obs[key]['end_time'] = end_t.strftime('%H:%M') if c_data['duration'] != 30 else None
 
     for key in last_cal:
         if key not in current_cal and key not in handled_obs_keys:
             if key in current_obs:
                 line_idx = current_obs[key]['line_index']
-                print(f"✂️ [C->O] 日历删除: {current_obs[key]['name']}")
+                print(f"✂️ [C->O] 检测到日历端删除 (同步删除本地): {current_obs[key]['name']}")
                 lines_to_delete_indices.append(line_idx)
                 file_dirty = True
+                
+                # [v1.7.2] Snapshot Consistency: Remove from current_obs
+                del current_obs[key]
 
     # 4. Execute AppleScript batch
     batch.execute()
+
+    # [v1.7.3] State Stabilization:
+    # If any creations occurred, re-fetch calendar state immediately to capture IDs.
+    # This prevents duplication if a renamed/modified version appears in the next run.
+    if len(batch.creates) > 0:
+        current_cal = get_all_calendars_state(target_dt)
 
     # Phase C: Atomic Write
     if file_dirty or len(lines_to_append) > 0 or len(lines_to_delete_indices) > 0:
@@ -227,7 +322,7 @@ def perform_bidirectional_sync(date_str, obs_path, state_manager, target_dt):
             current_mtime_now = os.path.getmtime(obs_path)
             if current_mtime_now != initial_mtime:
                 print(f"⚠️ [Concurrency] 放弃写入 {date_str}：文件在计算期间已被修改")
-                return
+                return False, False
 
             if insert_idx == len(file_lines):
                 has_header = False
@@ -258,17 +353,16 @@ def perform_bidirectional_sync(date_str, obs_path, state_manager, target_dt):
                 file_lines.insert(insert_idx, line)
                 insert_idx += 1
 
-            temp_path = obs_path + ".tmp"
+            # [v1.7] Atomic Write with Hash Registration
+            # Use FileUtils to write file and register its hash so manager.py ignores this event
             try:
-                with open(temp_path, 'w', encoding='utf-8') as f:
-                    f.writelines(file_lines)
-                os.replace(temp_path, obs_path)
-                print(f"💾 Obsidian 文件已更新: {date_str}")
+                if FileUtils.write_file(obs_path, file_lines):
+                    print(f"💾 Obsidian 文件已更新 (C->O): {date_str}")
+                else:
+                    print(f"⚠️ Obsidian 文件写入被跳过 (无变动?): {date_str}")
             except Exception as e:
                 print(f"❌ 文件写入失败: {e}")
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
-                return
+                return False, False
 
     state_manager.update_snapshot(date_str, current_obs, current_cal)
     

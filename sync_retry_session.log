@@ -1,0 +1,54 @@
+[92m[19:20:26 INFO] [apple_sync_adapter.py:_try_initialize] 🍏 Apple Calendar Sync 模块已加载[0m
+[92m[19:20:26 INFO] [main.py:Main] === Antigravity Sync v1.7 (Real-Time Bi-Directional) (Exponential Dynamic Scheduling) ===[0m
+[92m[19:20:26 INFO] [main.py:Main] 路径: /Users/user999/Documents/【Liang_project】/远程仓库1[0m
+[92m[19:20:26 INFO] [main.py:Main] 模式: Watchdog (Vault & Calendar) + 指数动态调度[0m
+[92m[19:20:26 INFO] [main.py:Main] 调度公式: I(d) = 240 * exp(0.0068 * d) + 60[0m
+[92m[19:20:26 INFO] [main.py:Main] 模板: ✅ 【002_Infobox】/Templates/DayPlanTemplate.md[0m
+[92m[19:20:26 INFO] [main.py:Main] ==================================================[0m
+[92m[19:20:26 INFO] [manager.py:run] 🚀 事件驱动引擎启动: Watchdog (Vault & Calendar) + 指数动态调度[0m
+[92m[19:20:26 INFO] [manager.py:run]    调度公式: I(d) = 240 * exp(0.0068 * d) + 60[0m
+[92m[19:20:26 INFO] [manager.py:run]    冷却上限: 3600s | 事件防抖: 0.5s[0m
+[92m[19:20:26 INFO] [manager.py:run]    日期范围: DAY_START=-1 ~ DAY_END=90[0m
+[92m[19:20:26 INFO] [manager.py:run] 👁️ [Watchdog] 开始监听: /Users/user999/Documents/【Liang_project】/远程仓库1[0m
+[92m[19:20:26 INFO] [manager.py:run] 📅 [Watchdog] 开始监听日历数据库: /Users/user999/Library/Calendars[0m
+[92m[19:21:28 INFO] [manager.py:_process_event] 🔎 [Watchdog] 捕获底层事件 (MODIFIED): Test.md[0m
+[92m[19:21:28 INFO] [manager.py:_process_event] 📝 [Event] 检测到用户变更: Test.md[0m
+[92m[19:21:28 INFO] [manager.py:on_file_changed]    🔄 [Sync] 项目文件变更，触发今日同步[0m
+[92m[19:21:49 INFO] [manager.py:_process_event] 🔎 [Watchdog] 捕获底层事件 (MODIFIED): Test.md[0m
+[92m[19:21:49 INFO] [manager.py:_process_event] 📝 [Event] 检测到用户变更: Test.md[0m
+[92m[19:21:49 INFO] [manager.py:on_file_changed]    🔄 [Sync] 项目文件变更，触发今日同步[0m
+[92m[19:21:55 INFO] [manager.py:_process_event] 🔎 [Watchdog] 捕获底层事件 (MODIFIED): Test.md[0m
+[92m[19:21:55 INFO] [manager.py:_process_event] 📝 [Event] 检测到用户变更: Test.md[0m
+[92m[19:21:55 INFO] [manager.py:on_file_changed]    🔄 [Sync] 项目文件变更，触发今日同步[0m
+[92m[19:22:10 INFO] [manager.py:_process_event] 🔎 [Watchdog] 捕获底层事件 (MODIFIED): 2026-01-21.md[0m
+[92m[19:22:10 INFO] [manager.py:_process_event] 📝 [Event] 检测到用户变更: 2026-01-21.md[0m
+[92m[19:22:10 INFO] [manager.py:on_file_changed]    🔄 [Sync] 触发日期同步: 2026-01-21[0m
+🕵️ [Rename O->C] 笔记改名: Task-Retry-1-Init -> Task-Retry-1-Renamed
+🕵️ [Move O->C] 笔记移动: 10:00 -> 10:30 (Task-Retry-2)
+⚡ 执行批处理: +0 ~2 -0
+[92m[19:22:19 INFO] [manager.py:process_single_date]    🍏 [Apple] 2026-01-21 同步成功[0m
+⏱️  下次检测 [2026-01-21]:  178s  ⏱️  下次检测 [2026-01-21]:  177s  ⏱️  下次检测 [2026-01-21]:  176s  ⏱️  下次检测 [2026-01-21]:  175s  ⏱️  下次检测 [2026-01-21]:  174s  ⏱️  下次检测 [2026-01-21]:  173s  ⏱️  下次检测 [2026-01-21]:  172s  ⏱️  下次检测 [2026-01-21]:  171s  ⏱️  下次检测 [2026-01-21]:  170s  ⏱️  下次检测 [2026-01-21]:  166s  ⏱️  下次检测 [2026-01-21]:  164s  ⏱️  下次检测 [2026-01-21]:  156s  ⏱️  下次检测 [2026-01-21]:  154s  ⏱️  下次检测 [2026-01-21]:  153s  ⏱️  下次检测 [2026-01-21]:  152s  ⏱️  下次检测 [2026-01-21]:  151s  ⏱️  下次检测 [2026-01-21]:  149s  ⏱️  下次检测 [2026-01-21]:  148s  ⏱️  下次检测 [2026-01-21]:  147s  ⏱️  下次检测 [2026-01-21]:  146s  ⏱️  下次检测 [2026-01-21]:  145s  ⏱️  下次检测 [2026-01-21]:  144s  ⏱️  下次检测 [2026-01-21]:  143s  ⏱️  下次检测 [2026-01-21]:  142s  ⏱️  下次检测 [2026-01-21]:  141s  ⏱️  下次检测 [2026-01-21]:  140s  ⏱️  下次检测 [2026-01-21]:  137s  ⏱️  下次检测 [2026-01-21]:  136s  ⏱️  下次检测 [2026-01-21]:  135s  ⏱️  下次检测 [2026-01-21]:  134s  ⏱️  下次检测 [2026-01-21]:  133s  ⏱️  下次检测 [2026-01-21]:  132s                                                    [92m[19:23:15 INFO] [manager.py:_process_event] 🔎 [Watchdog] 捕获底层事件 (MODIFIED): 2026-01-21.md[0m
+[92m[19:23:15 INFO] [manager.py:_process_event] 📝 [Event] 检测到用户变更: 2026-01-21.md[0m
+[92m[19:23:15 INFO] [manager.py:on_file_changed]    🔄 [Sync] 触发日期同步: 2026-01-21[0m
+⏱️  下次检测 [2026-01-21]:  131s  ⏱️  下次检测 [2026-01-21]:  129s                                                    [90m[DEBUG] [format_core.py:_log_diff] === [FormatCore] Format Changes ===[0m
+[90m[DEBUG] [format_core.py:_log_diff] - - [ ] 11:00 #B Task-Retry-3[0m
+[90m[DEBUG] [format_core.py:_log_diff] + - [ ] 11:00 #B Task-Retry-3[0m
+[90m[DEBUG] [format_core.py:_log_diff] -[0m
+[92m[19:23:18 INFO] [format_core.py:execute] ✨ [Format] 优化日记排版与间距: 2026-01-21.md[0m
+[92m[19:23:18 INFO] [manager.py:process_single_date]    ✨ [Internal] 格式化完成: 2026-01-21[0m
+[92m[19:23:18 INFO] [manager.py:process_single_date]    ⚡ [Trigger] 内部修改触发立即同步: 2026-01-21[0m
+⏱️  下次检测 [2026-01-21]:  128s  ⏱️  下次检测 [2026-01-21]:  127s  ⏱️  下次检测 [2026-01-21]:  126s  ⏱️  下次检测 [2026-01-21]:  125s  ⏱️  下次检测 [2026-01-21]:  124s  ⏱️  下次检测 [2026-01-21]:  122s  🕵️ [Move/Rename C->O] 捕捉变动: Task-Retry-1-Init@09:00 -> Task-Retry-1-Renamed@09:00
+⚠️ [Rename] Obsidian 中未找到旧任务 Task-Retry-1-Init_09:00，跳过本地重命名，但阻止重复写入
+🕵️ [Move/Rename C->O] 捕捉变动: Task-Retry-2@10:00 -> Task-Retry-2@10:30
+⚠️ [Rename] Obsidian 中未找到旧任务 Task-Retry-2_10:00，跳过本地重命名，但阻止重复写入
+🕵️ [Move/Rename C->O] 捕捉变动: Task-Retry-3@11:00 -> Task-Retry-3-CalMod@11:30
+💾 Obsidian 文件已更新 (C->O): 2026-01-21
+                                                  [92m[19:23:25 INFO] [manager.py:process_single_date]    🍏 [Apple] 2026-01-21 同步成功[0m
+[92m[19:23:25 INFO] [manager.py:_process_event] 🔎 [Watchdog] 捕获底层事件 (MOVED): 2026-01-21.md[0m
+[90m[DEBUG] [manager.py:_process_event] [Event] 忽略自写入事件: 2026-01-21.md[0m
+[92m[19:23:25 INFO] [manager.py:_process_event] 🔎 [Watchdog] 捕获底层事件 (MOVED): 2026-01-21.md[0m
+[90m[DEBUG] [manager.py:_process_event] [Event] 防抖跳过: 2026-01-21.md[0m
+⏱️  下次检测 [2026-01-21]:  121s  ⏱️  下次检测 [2026-01-21]:  119s  ⏱️  下次检测 [2026-01-21]:  118s  ⏱️  下次检测 [2026-01-21]:  117s  ⏱️  下次检测 [2026-01-21]:  116s  ⏱️  下次检测 [2026-01-21]:  115s  ⏱️  下次检测 [2026-01-21]:  113s  ⏱️  下次检测 [2026-01-21]:  112s  ⏱️  下次检测 [2026-01-21]:  111s  ⏱️  下次检测 [2026-01-21]:  110s  ⏱️  下次检测 [2026-01-21]:  108s  ⏱️  下次检测 [2026-01-21]:  107s  ⏱️  下次检测 [2026-01-21]:  106s  ⏱️  下次检测 [2026-01-21]:  105s  ⏱️  下次检测 [2026-01-21]:  104s  ⏱️  下次检测 [2026-01-21]:  103s  ⏱️  下次检测 [2026-01-21]:  102s  ⏱️  下次检测 [2026-01-21]:  101s  ⏱️  下次检测 [2026-01-21]:  100s  ⏱️  下次检测 [2026-01-21]:   99s  ⏱️  下次检测 [2026-01-21]:   98s  ⏱️  下次检测 [2026-01-21]:   97s  ⏱️  下次检测 [2026-01-21]:   96s  ⏱️  下次检测 [2026-01-21]:   95s  ⏱️  下次检测 [2026-01-21]:   94s  ⏱️  下次检测 [2026-01-21]:   93s  ⏱️  下次检测 [2026-01-21]:   92s  ⏱️  下次检测 [2026-01-21]:   90s  ⏱️  下次检测 [2026-01-21]:   89s  ⏱️  下次检测 [2026-01-21]:   88s  ⏱️  下次检测 [2026-01-21]:   87s  ⏱️  下次检测 [2026-01-21]:   86s                                                    [92m[19:24:00 INFO] [manager.py:run] 🛑 [Watchdog] 停止监听 Vault...[0m
+[92m[19:24:00 INFO] [manager.py:run] 🛑 [Watchdog] 停止监听 Calendar...[0m
+[92m[19:24:00 INFO] [manager.py:run] ✅ 状态已保存，引擎已停止[0m
+Received SIGTERM

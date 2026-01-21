@@ -23,6 +23,14 @@ from .state_manager import StateManager
 from .sync import SyncCore
 from external.apple_sync_adapter import AppleSyncAdapter
 
+# [v1.9] Native Calendar Monitor Import
+try:
+    from external.calendar_monitor import start_calendar_watchdog
+    CALENDAR_MONITOR_AVAILABLE = True
+except ImportError:
+    start_calendar_watchdog = None
+    CALENDAR_MONITOR_AVAILABLE = False
+
 # watchdog 导入（带降级处理）
 try:
     from watchdog.observers import Observer
@@ -30,13 +38,23 @@ try:
     WATCHDOG_AVAILABLE = True
 except ImportError:
     WATCHDOG_AVAILABLE = False
+    Observer = None
+    # 提供空基类以避免继承错误
+    class FileSystemEventHandler:
+        pass
     Logger.error_once("watchdog_import", "⚠️ watchdog 库未安装，将使用轮询模式")
 
 
 class ObsidianEventHandler(FileSystemEventHandler):
     """
-    [v1.4] 文件变更事件处理器
+    [v1.6] 文件变更事件处理器 - 支持原子写入
     监听 Obsidian Vault 中的 .md 文件变动，触发同步逻辑。
+    
+    关键修复：Obsidian 使用"原子写入"模式保存文件：
+    1. 写入临时文件 (e.g., .md.tmp)
+    2. 重命名临时文件覆盖目标文件 (rename/move)
+    
+    因此必须同时监听 on_modified 和 on_moved 事件。
     """
     
     def __init__(self, manager):
@@ -44,29 +62,34 @@ class ObsidianEventHandler(FileSystemEventHandler):
         self.manager = manager
         self._last_event_time = {}  # 防抖追踪: {filepath: timestamp}
     
-    def on_modified(self, event):
-        """处理文件修改事件"""
-        if event.is_directory:
-            return
+    def _process_event(self, filepath, event_type):
+        """
+        统一的事件处理逻辑（供 on_modified 和 on_moved 调用）
         
-        filepath = event.src_path
-        
-        # 仅处理 .md 文件
+        Args:
+            filepath: 目标文件路径
+            event_type: 事件类型字符串 ("MODIFIED" 或 "MOVED")
+        """
+        # [过滤] 仅处理 .md 文件
         if not filepath.endswith('.md'):
             return
         
-        # 排除目录检查
+        # [过滤] 排除目录检查
         if FileUtils.is_excluded(filepath):
             return
+
+        # [底层日志] 立即输出，这是调试的关键
+        Logger.info(f"🔎 [Watchdog] 捕获底层事件 ({event_type}): {os.path.basename(filepath)}")
         
-        # [关键] 防抖检查：避免短时间内重复触发
+        # [防抖] 避免短时间内重复触发
         now = time.time()
         last_time = self._last_event_time.get(filepath, 0)
         if now - last_time < Config.EVENT_DEBOUNCE_SECONDS:
+            Logger.debug(f"[Event] 防抖跳过: {os.path.basename(filepath)}")
             return
         self._last_event_time[filepath] = now
         
-        # [关键] 自写入检测：读取内容哈希并检查是否为系统写入
+        # [哈希自省] 检测是否为脚本自身的写入
         try:
             content = FileUtils.read_content(filepath)
             if content is None:
@@ -79,12 +102,36 @@ class ObsidianEventHandler(FileSystemEventHandler):
                 Logger.debug(f"[Event] 忽略自写入事件: {os.path.basename(filepath)}")
                 return
             
-            # 用户编辑事件，触发同步
-            Logger.info(f"📝 [Event] 检测到变更: {os.path.basename(filepath)}")
+            # [触发] 用户编辑事件，触发同步
+            Logger.info(f"📝 [Event] 检测到用户变更: {os.path.basename(filepath)}")
             self.manager.on_file_changed(filepath)
             
         except Exception as e:
             Logger.error_once(f"event_err_{filepath}", f"事件处理异常: {e}")
+    
+    def on_modified(self, event):
+        """处理文件修改事件（传统编辑器直接写入）"""
+        if event.is_directory:
+            return
+        self._process_event(event.src_path, "MODIFIED")
+    
+    def on_moved(self, event):
+        """
+        处理文件移动/重命名事件（原子写入的核心）
+        
+        Obsidian 保存流程：
+        1. 写入 .md.tmp 临时文件
+        2. rename(".md.tmp", ".md") 覆盖目标
+        
+        关键：必须使用 dest_path (重命名后的目标路径)
+        """
+        if event.is_directory:
+            return
+        # 注意：使用 dest_path，这是重命名后的新文件名
+        self._process_event(event.dest_path, "MOVED")
+
+
+
 
 
 class FusionManager:
@@ -121,6 +168,9 @@ class FusionManager:
         
         # [v1.5] 动态调度状态：记录每个日期的上次同步时间戳
         self._last_full_sync_registry = {}  # {date_str: timestamp}
+        
+        # [v1.8] Lazy initialization flag for TaskRegistry
+        self._registry_warmup_done = False
 
     def check_debounce(self, filepath):
         """
@@ -243,7 +293,7 @@ class FusionManager:
                 dates.append(date_str)
         return dates
 
-    def process_single_date(self, date_str):
+    def process_single_date(self, date_str, is_event_trigger=False):
         """
         Process a single date: internal sync + formatting + Apple sync.
         Returns detailed result dict.
@@ -266,16 +316,17 @@ class FusionManager:
                 is_system_edit = FileUtils.check_system_write(content_hash)
             
             if not is_system_edit:
+                # [v1.5.2] 允许事件驱动绕过防抖冷却
                 idle_duration = time.time() - FileUtils.get_mtime(daily_path)
-                if idle_duration < Config.TYPING_COOLDOWN_SECONDS:
+                if not is_event_trigger and idle_duration < Config.TYPING_COOLDOWN_SECONDS:
                     results["skipped"] = True
                     return results
 
         # --- [PRIORITY 1] Obsidian Internal Processing ---
-        if self.check_debounce(daily_path) or not os.path.exists(daily_path):
+        if is_event_trigger or self.check_debounce(daily_path) or not os.path.exists(daily_path):
             try:
-                source_data_by_date = self.sync_core.scan_all_source_tasks()
-                tasks_for_date = source_data_by_date.get(date_str, {})
+                # [v1.8] Use registry's O(1) lookup instead of full scan
+                tasks_for_date = self.sync_core.get_tasks_for_date(date_str)
                 self.sync_core.process_date(date_str, tasks_for_date)
 
                 if os.path.exists(daily_path):
@@ -292,7 +343,7 @@ class FusionManager:
         if results["internal_mod"]:
             should_sync_apple = True
             Logger.info(f"   ⚡ [Trigger] 内部修改触发立即同步: {date_str}")
-        elif os.path.exists(daily_path) and self.check_debounce(daily_path):
+        elif os.path.exists(daily_path) and (is_event_trigger or self.check_debounce(daily_path)):
             should_sync_apple = True
 
         if should_sync_apple:
@@ -310,24 +361,58 @@ class FusionManager:
 
     def on_file_changed(self, filepath):
         """
-        [v1.4] 事件驱动入口：文件变更时调用
-        从文件路径提取日期并触发同步
+        [v1.8 REFACTORED] 事件驱动入口：文件变更时调用
+        
+        改进内容:
+        - 日记文件: 直接触发该日期的同步
+        - 项目文件: 使用 process_file_event 增量更新，只同步受影响的日期
         """
         filename = os.path.basename(filepath)
+        
+        # [v1.8] Lazy warmup: ensure registry is initialized on first event
+        if not self._registry_warmup_done:
+            Logger.info("🔄 [Manager] Warming up TaskRegistry...")
+            self.sync_core.initialize_registry()
+            self._registry_warmup_done = True
         
         # 尝试从文件名提取日期 (格式: YYYY-MM-DD.md)
         date_match = re.match(r'^(\d{4}-\d{2}-\d{2})\.md$', filename)
         
         if date_match:
-            # 这是一个日记文件
+            # 这是一个日记文件 - 直接触发该日期同步
             date_str = date_match.group(1)
             Logger.info(f"   🔄 [Sync] 触发日期同步: {date_str}")
-            self.process_single_date(date_str)
+            self.process_single_date(date_str, is_event_trigger=True)
         else:
-            # 这是一个项目文件，触发今日同步
-            today_str = datetime.date.today().strftime('%Y-%m-%d')
-            Logger.info(f"   🔄 [Sync] 项目文件变更，触发今日同步")
-            self.process_single_date(today_str)
+            # [v1.8] 项目文件 - 使用增量同步
+            # 只扫描这ONE个文件，然后只同步受影响的日期
+            affected_dates = self.sync_core.process_file_event(filepath)
+            
+            if affected_dates:
+                Logger.info(f"   🔄 [Sync] 项目文件变更，影响 {len(affected_dates)} 个日期")
+                for date_str in affected_dates:
+                    self.process_single_date(date_str, is_event_trigger=True)
+            else:
+                # Fallback: 如果文件中没有任务，仍然同步今天
+                today_str = datetime.date.today().strftime('%Y-%m-%d')
+                Logger.info(f"   🔄 [Sync] 项目文件变更（无任务），触发今日同步")
+                self.process_single_date(today_str, is_event_trigger=True)
+
+    def trigger_immediate_sync_for_today(self):
+        """
+        [v1.7] 由日历事件触发的立即同步
+        """
+        today_str = datetime.date.today().strftime('%Y-%m-%d')
+        Logger.info(f"   🔄 [Sync] Calendar 变动触发今日同步: {today_str}")
+        self.process_single_date(today_str, is_event_trigger=True)
+
+    def _on_calendar_push_event(self):
+        """
+        [v1.9] Callback for Distributed Notification (Zero Latency).
+        Runs in a background thread.
+        """
+        Logger.info(f"⚡ [Distributed] 检测到系统日历数据库物理变更！")
+        self.trigger_immediate_sync_for_today()
 
     def _calculate_dynamic_interval(self, date_str) -> float:
         """
@@ -343,6 +428,12 @@ class FusionManager:
             target_date = datetime.datetime.strptime(date_str, '%Y-%m-%d').date()
             today = datetime.date.today()
             d = abs((target_date - today).days)  # 距离今天的天数
+            
+            # [v1.8.3] Privacy-aware Fast Polling for Today
+            # 由于 macOS TCC 权限限制，Watchdog 可能无法监听到日历数据库变化
+            # 对“今天”强制使用 30 秒的快速轮询，确保近似实时的体验
+            if d == 0:
+                return 30.0
             
             # 指数拟合公式
             interval = Config.EXP_BASE * math.exp(Config.EXP_COEFF * d) + Config.EXP_OFFSET
@@ -382,6 +473,34 @@ class FusionManager:
                 self.process_single_date(date_str)
                 self._last_full_sync_registry[date_str] = now
 
+    def _print_countdown(self):
+        """
+        [v1.5.2] 实时输出下一次大检测的倒计时
+        在同一行更新秒数，使用回车符覆盖
+        """
+        now = time.time()
+        date_range = self.get_date_range()
+        
+        min_countdown = float('inf')
+        next_date = None
+        
+        for date_str in date_range:
+            last_sync = self._last_full_sync_registry.get(date_str, 0)
+            interval = self._calculate_dynamic_interval(date_str)
+            remaining = interval - (now - last_sync)
+            
+            if remaining > 0 and remaining < min_countdown:
+                min_countdown = remaining
+                next_date = date_str
+        
+        if next_date and min_countdown < float('inf'):
+            countdown_str = f"⏱️  下次检测 [{next_date}]: {int(min_countdown):>4}s"
+            # 使用 \r 回到行首，覆盖原内容
+            sys.stdout.write(f"\r{countdown_str}  ")
+            sys.stdout.flush()
+            # 标记倒计时行正在显示，让 Logger 知道需要先清行
+            Logger._countdown_active = True
+
     def run(self):
         """
         [v1.5] 事件驱动主循环
@@ -394,7 +513,7 @@ class FusionManager:
         signal.signal(signal.SIGTERM, _term_handler)
         self._running = True
 
-        Logger.info(f"🚀 事件驱动引擎启动: watchdog + 指数动态调度")
+        Logger.info(f"🚀 事件驱动引擎启动: Watchdog (Vault & Calendar) + 指数动态调度")
         Logger.info(f"   调度公式: I(d) = {Config.EXP_BASE} * exp({Config.EXP_COEFF} * d) + {Config.EXP_OFFSET}")
         Logger.info(f"   冷却上限: {Config.DYNAMIC_SYNC_MAX_INTERVAL}s | 事件防抖: {Config.EVENT_DEBOUNCE_SECONDS}s")
         Logger.info(f"   日期范围: DAY_START={Config.DAY_START} ~ DAY_END={Config.DAY_END}")
@@ -412,6 +531,17 @@ class FusionManager:
             except Exception as e:
                 Logger.error_once("observer_init", f"Watchdog 初始化失败: {e}")
                 self._observer = None
+            
+            # [v1.7] Start Calendar Observer
+            # [v1.9] Start Native Calendar Observer (Distributed Mode)
+            if CALENDAR_MONITOR_AVAILABLE and start_calendar_watchdog:
+                try:
+                    start_calendar_watchdog(self._on_calendar_push_event)
+                except Exception as e:
+                    Logger.error_once("cal_monitor_fail", f"Native Calendar Monitor 启动失败: {e}")
+            else:
+                Logger.info("⚠️ [Native] PyObjC/Fundation 模块缺失，日历实时监听不可用")
+
         else:
             Logger.info("⚠️ [Watchdog] 不可用，使用纯轮询模式")
 
@@ -421,6 +551,9 @@ class FusionManager:
         # 主循环
         try:
             while self._running:
+                # 计算并显示下一次同步倒计时
+                self._print_countdown()
+                
                 # 让出 CPU 资源
                 time.sleep(1)
                 
@@ -432,9 +565,11 @@ class FusionManager:
         finally:
             # 优雅停止 Observer
             if self._observer:
-                Logger.info("🛑 [Watchdog] 停止监听...")
+                Logger.info("🛑 [Watchdog] 停止监听 Vault...")
                 self._observer.stop()
                 self._observer.join(timeout=3)
+            
+
             
             self.sm.save()
             Logger.info("✅ 状态已保存，引擎已停止")

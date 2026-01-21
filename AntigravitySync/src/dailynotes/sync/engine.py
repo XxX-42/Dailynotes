@@ -10,7 +10,7 @@ from typing import Dict, List, Optional, Any, Set
 from config import Config
 from ..utils import Logger, FileUtils
 from .discovery import scan_projects
-from .ingestion import scan_all_source_tasks
+from .task_registry import get_registry, TaskRegistry
 from .parsing import (
     clean_task_text, 
     normalize_block_content, 
@@ -40,6 +40,10 @@ class SyncCore:
         self._sync_counter_reset_time = time.time()
         self._SYNC_THRESHOLD = 5  # Max syncs per task per reset period
         self._RESET_INTERVAL = 60  # Reset counters every 60 seconds
+        
+        # [v1.8] TaskRegistry for incremental sync
+        self._task_registry: TaskRegistry = get_registry()
+        self._registry_initialized = False
 
     def trigger_delayed_verification(self, filepath, delay=10):
         def _job():
@@ -79,9 +83,77 @@ class SyncCore:
         self.project_map, self.project_path_map, self.file_path_map = scan_projects()
 
     def scan_all_source_tasks(self) -> Dict[str, Dict]:
-        # Delegate to ingestion module
+        """
+        [v1.8 REFACTORED] Now uses TaskRegistry for cached lookups.
+        Only performs full scan if registry is not initialized.
+        """
         self.scan_projects()
-        return scan_all_source_tasks(self.project_map, self.sm)
+        
+        # Initialize registry if needed (first run)
+        if not self._registry_initialized:
+            self.initialize_registry()
+        
+        # Return cached data from registry
+        return self._task_registry.get_all_tasks_by_date()
+    
+    def initialize_registry(self) -> None:
+        """
+        [v1.8] Initialize the TaskRegistry with a full scan.
+        This is called ONCE at startup.
+        """
+        if self._registry_initialized:
+            Logger.debug("[SyncCore] Registry already initialized, skipping")
+            return
+        
+        Logger.info("🚀 [SyncCore] 初始化 TaskRegistry (一次性全量扫描)...")
+        self.scan_projects()  # Ensure project map is current
+        self._task_registry.initialize(self.project_map, self.sm)
+        self._registry_initialized = True
+        Logger.info("✅ [SyncCore] TaskRegistry 初始化完成")
+    
+    def process_file_event(self, filepath: str) -> Set[str]:
+        """
+        [v1.8] Process a file change event incrementally.
+        
+        This is the NEW entry point for watchdog events, replacing the
+        full scan_all_source_tasks() call in the runtime loop.
+        
+        Args:
+            filepath: Absolute path to the changed file
+            
+        Returns:
+            Set of date strings that were affected by this file change
+        """
+        # Ensure registry is initialized
+        if not self._registry_initialized:
+            self.initialize_registry()
+        
+        # Update project map if needed (for new files in new directories)
+        self.scan_projects()
+        self._task_registry.refresh_project_map(self.project_map)
+        
+        # Incremental update: only rescan this ONE file
+        affected_dates = self._task_registry.update_file(filepath, self.sm)
+        
+        Logger.debug(f"[SyncCore] 增量更新: {os.path.basename(filepath)} -> 影响日期: {affected_dates}")
+        
+        return affected_dates
+    
+    def get_tasks_for_date(self, date_str: str) -> Dict[str, Dict]:
+        """
+        [v1.8] Get tasks for a specific date from the registry.
+        Fast O(1) lookup.
+        
+        Args:
+            date_str: Date in YYYY-MM-DD format
+            
+        Returns:
+            Dictionary of { bid: task_dict }
+        """
+        if not self._registry_initialized:
+            self.initialize_registry()
+        
+        return self._task_registry.get_tasks_by_date(date_str)
         
     def calculate_nearest_project(self, routing_path):
         """

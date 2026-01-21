@@ -14,7 +14,7 @@ if __name__ == "__main__":
 
     Logger.info(f"=== Antigravity Sync {Config.VERSION} (Exponential Dynamic Scheduling) ===")
     Logger.info(f"路径: {Config.ROOT_DIR}")
-    Logger.info(f"模式: watchdog 事件驱动 + 指数动态调度")
+    Logger.info(f"模式: Watchdog (Vault & Calendar) + 指数动态调度")
     Logger.info(f"调度公式: I(d) = {Config.EXP_BASE} * exp({Config.EXP_COEFF} * d) + {Config.EXP_OFFSET}")
     
     # [P2 FIX] Validate template file at startup

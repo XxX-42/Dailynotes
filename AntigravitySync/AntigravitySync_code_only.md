@@ -7,30 +7,38 @@ AntigravitySync/
 ├── aggregate.py
 ├── config.py
 ├── main.py
-└── src
-    ├── dailynotes
-    │   ├── __init__.py
-    │   ├── format_core.py
-    │   ├── manager.py
-    │   ├── state_manager.py
-    │   ├── sync
-    │   │   ├── __init__.py
-    │   │   ├── discovery.py
-    │   │   ├── engine.py
-    │   │   ├── ingestion.py
-    │   │   ├── parsing.py
-    │   │   └── rendering.py
-    │   └── utils.py
-    └── external
-        ├── __init__.py
-        ├── apple_sync_adapter.py
-        └── task_sync_core
-            ├── __init__.py
-            ├── apple_state_manager.py
-            ├── calendar_service.py
-            ├── obsidian_service.py
-            ├── sync_engine.py
-            └── utils.py
+├── src
+│   ├── dailynotes
+│   │   ├── __init__.py
+│   │   ├── format_core.py
+│   │   ├── manager.py
+│   │   ├── state_manager.py
+│   │   ├── sync
+│   │   │   ├── __init__.py
+│   │   │   ├── discovery.py
+│   │   │   ├── engine.py
+│   │   │   ├── parsing.py
+│   │   │   ├── rendering.py
+│   │   │   └── task_registry.py
+│   │   └── utils.py
+│   └── external
+│       ├── __init__.py
+│       ├── apple_sync_adapter.py
+│       ├── calendar_monitor.py
+│       ├── log_sentinel.py
+│       └── task_sync_core
+│           ├── __init__.py
+│           ├── apple_state_manager.py
+│           ├── calendar_service.py
+│           ├── obsidian_service.py
+│           ├── sync_engine.py
+│           └── utils.py
+├── test.python
+└── tests
+    ├── __init__.py
+    ├── conftest.py
+    ├── test_parsing.py
+    └── test_registry.py
 ```
 
 ---
@@ -41,14 +49,14 @@ import os
 
 
 class Config:
-    VERSION = "v1.5"    # [2026-01-21] Exponential Dynamic Scheduling
+    VERSION = "v1.8.2 (Clean Architecture)"    # [2026-01-21] Removed ingestion.py redundancy
     
     # ==========================
     # 1. 基础路径配置 (来自 Dailynotes)
     # ==========================
     VAULT_ROOT = r'/Users/user999/Documents/【Liang_project】/远程仓库1'
     REL_ATTACHMENT_DIR = r'【ATTACHMENT】'
-    REL_TEMPLATE_FILE = r'DayPlanTemplate.md'
+    REL_TEMPLATE_FILE = r'【002_Infobox】/Templates/DayPlanTemplate.md'
 
     # 自动拼接
     DAILY_NOTE_DIR = os.path.join(VAULT_ROOT, REL_ATTACHMENT_DIR, r'【DAILYNOTE】')
@@ -91,6 +99,10 @@ class Config:
     EXP_BASE = 240      # 基础系数
     EXP_COEFF = 0.0068  # 指数系数
     EXP_OFFSET = 60     # 偏移量
+    
+    # [v1.7] 日历数据库监听参数 (macOS)
+    CALENDAR_WATCH_PATH = os.path.expanduser("~/Library/Calendars")
+    CALENDAR_DEBOUNCE_SECONDS = 2.0  # 日历写入非常频繁，需要较大防抖
 
 
     # 范围限制
@@ -153,7 +165,7 @@ if __name__ == "__main__":
 
     Logger.info(f"=== Antigravity Sync {Config.VERSION} (Exponential Dynamic Scheduling) ===")
     Logger.info(f"路径: {Config.ROOT_DIR}")
-    Logger.info(f"模式: watchdog 事件驱动 + 指数动态调度")
+    Logger.info(f"模式: Watchdog (Vault & Calendar) + 指数动态调度")
     Logger.info(f"调度公式: I(d) = {Config.EXP_BASE} * exp({Config.EXP_COEFF} * d) + {Config.EXP_OFFSET}")
     
     # [P2 FIX] Validate template file at startup
@@ -212,6 +224,1575 @@ if __name__ == "__main__":
         Logger.info("\n停止服务...")
     finally:
         ProcessLock.release()
+
+```
+
+---
+## File: test.python
+```python
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+def check_and_guide_fda():
+    # 1. 定义检测目标：日历数据库（受 FDA 保护）
+    # 兼容旧版和现代 macOS (Group Containers)
+    potential_paths = [
+        Path.home() / "Library/Calendars/Calendar.sqlitedb",
+        Path.home() / "Library/Group Containers/group.com.apple.calendar/Calendar.sqlitedb"
+    ]
+    
+    print("--- 正在检测 '完全磁盘访问权限 (FDA)' ---")
+    
+    found_any = False
+    for calendar_db in potential_paths:
+        if not calendar_db.exists():
+            continue
+        
+        found_any = True
+        # 2. 尝试执行低级读取测试
+        try:
+            # 尝试打开文件句柄进行读取
+            with open(calendar_db, 'rb') as f:
+                f.read(10)
+            print(f" [状态] 正常：已通过 {calendar_db.name} 验证完全磁盘访问权限。")
+            return True
+        except PermissionError:
+            print(f" [警告] 权限缺失：访问 {calendar_db.name} 被拦截。")
+        except Exception as e:
+            print(f" [错误] 检测 {calendar_db.name} 时发生未知异常: {e}")
+
+    if not found_any:
+        print(" [提示] 无法找到日历数据库路径，可能日历从未启动或路径变动。")
+        # 尝试检查 Messages 数据库作为兜底
+        messages_db = Path.home() / "Library/Messages/chat.db"
+        if messages_db.exists():
+            try:
+                with open(messages_db, 'rb') as f:
+                    f.read(10)
+                print(" [状态] 正常：已通过 Messages 数据库验证完全磁盘访问权限。")
+                return True
+            except PermissionError:
+                print(" [警告] 权限缺失：Messages 数据库访问被拦截。")
+    
+
+    # 3. 如果检测失败，启动引导逻辑
+    print("\n--- 引导修复步骤 ---")
+    print("1. 系统设置窗口即将打开。")
+    print("2. 请在列表中找到并勾选你的终端 (Terminal / iTerm2) 或 IDE (VS Code)。")
+    print(f"3. 如果列表中没有，请点击 '+' 号添加：{sys.executable}")
+    print("4. 修改后需要重启终端才能生效。")
+
+    # 4. 自动化指令：直接跳转到隐私与安全性 -> 完全磁盘访问权限
+    # 该 URL Schema 适用于 macOS Ventura (13.0) 及更高版本
+    url = "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles"
+    subprocess.run(["open", url])
+    
+    return False
+
+if __name__ == "__main__":
+    if not check_and_guide_fda():
+        sys.exit(1)
+    else:
+        print("权限验证通过，可以继续执行同步逻辑。")
+```
+
+---
+## File: tests/__init__.py
+```py
+"""
+AntigravitySync Test Suite
+"""
+
+```
+
+---
+## File: tests/conftest.py
+```py
+"""
+AntigravitySync Test Suite - conftest.py
+Common fixtures and configuration for pytest.
+
+This module provides:
+- Path setup for importing src modules
+- Mock fixtures for FileUtils, Config, StateManager
+- Sample data generators for testing
+"""
+
+import os
+import sys
+import pytest
+from unittest.mock import MagicMock, patch, PropertyMock
+from typing import Dict, List, Any
+
+# ============================================================================
+# PATH SETUP - Ensure tests can import AntigravitySync modules
+# ============================================================================
+
+# Get the AntigravitySync directory (parent of tests/)
+ANTIGRAVITY_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SRC_DIR = os.path.join(ANTIGRAVITY_DIR, 'src')
+
+# Add paths to sys.path if not already present
+for path in [ANTIGRAVITY_DIR, SRC_DIR]:
+    if path not in sys.path:
+        sys.path.insert(0, path)
+
+
+# ============================================================================
+# MOCK CONFIG FIXTURE
+# ============================================================================
+
+@pytest.fixture
+def mock_config():
+    """
+    Create a mock Config object with test-safe values.
+    """
+    config = MagicMock()
+    config.VERSION = "v1.8.2 (Test)"
+    config.ROOT_DIR = "/mock/vault"
+    config.DAILY_NOTE_DIR = "/mock/vault/DailyNotes"
+    config.SYNC_START_DATE = "2025-01-01"
+    config.TYPING_COOLDOWN_SECONDS = 3
+    config.DEBUG_MODE = True
+    return config
+
+
+@pytest.fixture(autouse=True)
+def patch_config(mock_config):
+    """
+    Auto-patch Config for all tests.
+    """
+    with patch.dict('sys.modules', {'config': MagicMock()}):
+        with patch('config.Config', mock_config):
+            yield mock_config
+
+
+# ============================================================================
+# MOCK FILEUTILS FIXTURE
+# ============================================================================
+
+@pytest.fixture
+def mock_file_utils():
+    """
+    Create a mock FileUtils that simulates file operations.
+    
+    Usage:
+        mock_file_utils.read_file.return_value = ["line1", "line2"]
+    """
+    file_utils = MagicMock()
+    
+    # Default behaviors
+    file_utils.read_file.return_value = []
+    file_utils.write_file.return_value = None
+    file_utils.is_excluded.return_value = False
+    file_utils.get_mtime.return_value = 0.0
+    file_utils.read_content.return_value = ""
+    file_utils.calculate_hash.return_value = "mockhash"
+    
+    return file_utils
+
+
+@pytest.fixture
+def patch_file_utils(mock_file_utils):
+    """
+    Patch FileUtils globally for a test.
+    """
+    with patch('dailynotes.utils.FileUtils', mock_file_utils):
+        yield mock_file_utils
+
+
+# ============================================================================
+# MOCK STATE MANAGER FIXTURE
+# ============================================================================
+
+@pytest.fixture
+def mock_state_manager():
+    """
+    Create a mock StateManager for hash and ID operations.
+    """
+    sm = MagicMock()
+    
+    # Default behaviors
+    sm.calc_hash.return_value = "testhash123"
+    sm.find_id_by_hash.return_value = None  # No existing ID found
+    
+    return sm
+
+
+# ============================================================================
+# SAMPLE DATA GENERATORS
+# ============================================================================
+
+@pytest.fixture
+def sample_task_lines():
+    """
+    Generate common task line patterns for testing.
+    """
+    return {
+        "simple": "- [ ] Simple task",
+        "with_time": "- [ ] 10:00 Task with time",
+        "with_time_range": "- [ ] 10:00 - 11:00 Task with duration",
+        "with_id": "- [ ] Task with ID ^abc123",
+        "with_date_link": "- [ ] Task [[2025-01-15]]",
+        "with_emoji_date": "- [ ] Task 📅 2025-01-15",
+        "with_tag": "- [ ] 10:00 #A Tagged task",
+        "completed": "- [x] Completed task",
+        "indented": "  - [ ] Indented child task",
+        "deeply_indented": "    - [ ] Deeply indented task",
+        "with_return_link": "- [ ] Task [[Project#^abc123|⮐]]",
+        "complex": "- [ ] 14:00 - 15:00 #A Complex task [[2025-01-20]] ^xyz789",
+    }
+
+
+@pytest.fixture
+def sample_task_section():
+    """
+    Generate a complete # Tasks section for testing.
+    """
+    return [
+        "# Tasks\n",
+        "\n",
+        "## [[2025-01-15]]\n",
+        "\n",
+        "- [ ] 10:00 First task ^task01\n",
+        "- [ ] 11:00 Second task ^task02\n",
+        "  - [ ] Child of second ^child1\n",
+        "\n",
+        "## [[2025-01-16]]\n",
+        "\n",
+        "- [ ] 09:00 Tomorrow task ^task03\n",
+        "\n",
+        "----------\n",
+    ]
+
+
+@pytest.fixture
+def sample_project_file():
+    """
+    Generate a complete project file with YAML frontmatter.
+    """
+    return [
+        "---\n",
+        "tags:\n",
+        "  - main\n",
+        "---\n",
+        "\n",
+        "# Project Title\n",
+        "\n",
+        "Some project description.\n",
+        "\n",
+        "# Tasks\n",
+        "\n",
+        "## [[2025-01-15]]\n",
+        "\n",
+        "- [ ] 10:00 Project task one ^proj01\n",
+        "- [ ] 11:00 Project task two ^proj02\n",
+        "\n",
+        "----------\n",
+        "\n",
+        "# Notes\n",
+        "\n",
+        "Some other content.\n",
+    ]
+
+
+@pytest.fixture
+def sample_project_map():
+    """
+    Generate a mock project map for testing.
+    """
+    return {
+        "/mock/vault/ProjectA": "ProjectA",
+        "/mock/vault/ProjectB": "ProjectB",
+        "/mock/vault/Nested/ProjectC": "ProjectC",
+    }
+
+
+# ============================================================================
+# REGISTRY HELPERS
+# ============================================================================
+
+@pytest.fixture
+def fresh_registry():
+    """
+    Create a fresh TaskRegistry instance (bypassing singleton).
+    
+    This is needed because TaskRegistry is a singleton, and we need
+    isolated instances for testing.
+    """
+    from dailynotes.sync.task_registry import TaskRegistry
+    
+    # Reset singleton state
+    TaskRegistry._instance = None
+    
+    # Create fresh instance
+    registry = TaskRegistry()
+    registry._initialized = True  # Mark as initialized to avoid auto-init
+    registry._file_cache = {}
+    registry._date_index = {}
+    registry._file_to_dates = {}
+    registry._project_map = {}
+    
+    yield registry
+    
+    # Cleanup: reset singleton again
+    TaskRegistry._instance = None
+
+
+# ============================================================================
+# LOGGING HELPERS
+# ============================================================================
+
+@pytest.fixture
+def capture_logs():
+    """
+    Capture log output for assertions.
+    """
+    logs = []
+    
+    with patch('dailynotes.utils.Logger') as mock_logger:
+        mock_logger.info.side_effect = lambda msg: logs.append(('INFO', msg))
+        mock_logger.debug.side_effect = lambda msg: logs.append(('DEBUG', msg))
+        mock_logger.error_once.side_effect = lambda key, msg: logs.append(('ERROR', msg))
+        
+        yield logs
+
+
+# ============================================================================
+# PYTEST CONFIGURATION
+# ============================================================================
+
+def pytest_configure(config):
+    """
+    Configure pytest markers.
+    """
+    config.addinivalue_line(
+        "markers", "slow: marks tests as slow (deselect with '-m \"not slow\"')"
+    )
+    config.addinivalue_line(
+        "markers", "integration: marks tests that require real file I/O"
+    )
+
+```
+
+---
+## File: tests/test_parsing.py
+```py
+"""
+AntigravitySync Test Suite - test_parsing.py
+Unit tests for src/dailynotes/sync/parsing.py
+
+Tests cover:
+- get_indent_depth: Indentation calculation
+- clean_task_text: Task text extraction
+- capture_block: Block boundary detection
+- parse_file_tasks: Core parsing logic
+- generate_block_id: ID generation
+"""
+
+import os
+import sys
+import re
+import pytest
+from unittest.mock import MagicMock, patch, call
+from typing import List
+
+# ============================================================================
+# PATH SETUP
+# ============================================================================
+
+ANTIGRAVITY_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SRC_DIR = os.path.join(ANTIGRAVITY_DIR, 'src')
+for path in [ANTIGRAVITY_DIR, SRC_DIR]:
+    if path not in sys.path:
+        sys.path.insert(0, path)
+
+
+# ============================================================================
+# TESTS: get_indent_depth
+# ============================================================================
+
+class TestGetIndentDepth:
+    """Tests for the get_indent_depth function."""
+    
+    def test_no_indent(self):
+        """Test line with no indentation."""
+        from dailynotes.sync.parsing import get_indent_depth
+        assert get_indent_depth("- [ ] Task") == 0
+    
+    def test_two_space_indent(self):
+        """Test line with 2-space indentation."""
+        from dailynotes.sync.parsing import get_indent_depth
+        assert get_indent_depth("  - [ ] Task") == 2
+    
+    def test_four_space_indent(self):
+        """Test line with 4-space indentation."""
+        from dailynotes.sync.parsing import get_indent_depth
+        assert get_indent_depth("    - [ ] Task") == 4
+    
+    def test_tab_indent(self):
+        """Test line with tab indentation (should expand to 4 spaces)."""
+        from dailynotes.sync.parsing import get_indent_depth
+        assert get_indent_depth("\t- [ ] Task") == 4
+    
+    def test_mixed_indent(self):
+        """Test line with mixed spaces and tabs."""
+        from dailynotes.sync.parsing import get_indent_depth
+        # Tab (4) + 2 spaces = 6
+        assert get_indent_depth("\t  - [ ] Task") == 6
+    
+    def test_quoted_line(self):
+        """Test line with quote prefix (should be stripped)."""
+        from dailynotes.sync.parsing import get_indent_depth
+        # Quote prefix removed, then indent measured
+        assert get_indent_depth("> - [ ] Task") == 0
+        assert get_indent_depth(">   - [ ] Task") == 2
+
+
+# ============================================================================
+# TESTS: clean_task_text
+# ============================================================================
+
+class TestCleanTaskText:
+    """Tests for the clean_task_text function."""
+    
+    def test_simple_task(self):
+        """Test cleaning a simple task line."""
+        from dailynotes.sync.parsing import clean_task_text
+        result = clean_task_text("- [ ] Simple task", None, None)
+        assert result == "Simple task"
+    
+    def test_removes_time(self):
+        """Test that time is removed from task text."""
+        from dailynotes.sync.parsing import clean_task_text
+        result = clean_task_text("- [ ] 10:00 Task with time", None, None)
+        assert result == "Task with time"
+    
+    def test_removes_time_range(self):
+        """Test that time range is removed."""
+        from dailynotes.sync.parsing import clean_task_text
+        result = clean_task_text("- [ ] 10:00 - 11:30 Task", None, None)
+        assert result == "Task"
+    
+    def test_removes_block_id(self):
+        """Test that block ID is removed."""
+        from dailynotes.sync.parsing import clean_task_text
+        result = clean_task_text("- [ ] Task ^abc123", "abc123", None)
+        assert result == "Task"
+    
+    def test_removes_date_link(self):
+        """Test that date links are removed."""
+        from dailynotes.sync.parsing import clean_task_text
+        result = clean_task_text("- [ ] Task [[2025-01-15]]", None, None)
+        assert result == "Task"
+    
+    def test_removes_emoji_date(self):
+        """Test that emoji dates are removed."""
+        from dailynotes.sync.parsing import clean_task_text
+        result = clean_task_text("- [ ] Task 📅 [[2025-01-15]]", None, None)
+        # Note: The emoji itself may remain, only the date portion is removed
+        assert "2025-01-15" not in result
+        assert "Task" in result
+    
+    def test_removes_return_link(self):
+        """Test that return links are removed."""
+        from dailynotes.sync.parsing import clean_task_text
+        result = clean_task_text("- [ ] Task [[Project#^abc123|⮐]]", None, None)
+        assert result == "Task"
+    
+    def test_removes_context_link(self):
+        """Test that self-referencing project links are removed."""
+        from dailynotes.sync.parsing import clean_task_text
+        result = clean_task_text("- [ ] Task [[ProjectName]]", None, "ProjectName")
+        assert result == "Task"
+    
+    def test_preserves_regular_links(self):
+        """Test that non-date, non-return links are preserved."""
+        from dailynotes.sync.parsing import clean_task_text
+        result = clean_task_text("- [ ] Task [[SomeNote]]", None, None)
+        assert "SomeNote" in result or "[[SomeNote]]" in result
+    
+    def test_complex_cleanup(self):
+        """Test cleaning a complex task line."""
+        from dailynotes.sync.parsing import clean_task_text
+        line = "- [ ] 14:00 - 15:00 Complex #A task [[2025-01-20]] ^xyz789"
+        result = clean_task_text(line, "xyz789", None)
+        assert "Complex" in result
+        assert "#A" in result or "task" in result
+        assert "14:00" not in result
+        assert "^xyz789" not in result
+
+
+# ============================================================================
+# TESTS: capture_block
+# ============================================================================
+
+class TestCaptureBlock:
+    """Tests for the capture_block function."""
+    
+    def test_single_line_task(self):
+        """Test capturing a single-line task."""
+        from dailynotes.sync.parsing import capture_block
+        lines = ["- [ ] Task\n", "- [ ] Another\n"]
+        block, consumed = capture_block(lines, 0)
+        
+        assert len(block) == 1
+        assert consumed == 1
+    
+    def test_task_with_children(self):
+        """Test capturing a task with indented children."""
+        from dailynotes.sync.parsing import capture_block
+        lines = [
+            "- [ ] Parent task\n",
+            "  - [ ] Child task\n",
+            "  - Note line\n",
+            "- [ ] Sibling task\n",
+        ]
+        block, consumed = capture_block(lines, 0)
+        
+        assert consumed == 3  # Parent + 2 children
+        assert len(block) == 3
+    
+    def test_stops_at_same_indent(self):
+        """Test that capture stops at same/lower indentation."""
+        from dailynotes.sync.parsing import capture_block
+        lines = [
+            "- [ ] Task 1\n",
+            "- [ ] Task 2\n",
+        ]
+        block, consumed = capture_block(lines, 0)
+        
+        assert consumed == 1
+        assert block[0].strip() == "- [ ] Task 1"
+    
+    def test_empty_lines_within_block(self):
+        """Test handling of empty lines within a block."""
+        from dailynotes.sync.parsing import capture_block
+        lines = [
+            "- [ ] Task\n",
+            "  note\n",
+            "\n",
+            "  more notes\n",
+            "- [ ] Next\n",
+        ]
+        block, consumed = capture_block(lines, 0)
+        
+        # Should include empty line and more notes
+        assert consumed >= 3
+    
+    def test_stops_after_too_many_empty_lines(self):
+        """Test that capture stops after MAX_CONSECUTIVE_EMPTY lines."""
+        from dailynotes.sync.parsing import capture_block
+        lines = [
+            "- [ ] Task\n",
+            "\n",
+            "\n",
+            "\n",  # 3 empty lines - should stop
+            "  - [ ] Would-be child\n",
+        ]
+        block, consumed = capture_block(lines, 0)
+        
+        # Should stop before "would-be child"
+        assert "Would-be child" not in "".join(block)
+
+
+# ============================================================================
+# TESTS: generate_block_id
+# ============================================================================
+
+class TestGenerateBlockId:
+    """Tests for the generate_block_id function."""
+    
+    def test_format(self):
+        """Test that generated ID has correct format."""
+        from dailynotes.sync.parsing import generate_block_id
+        bid = generate_block_id()
+        
+        assert bid.startswith('^')
+        assert len(bid) == 7  # ^ + 6 chars
+    
+    def test_alphanumeric(self):
+        """Test that ID contains only allowed characters."""
+        from dailynotes.sync.parsing import generate_block_id
+        bid = generate_block_id()
+        
+        # Remove the ^ prefix
+        chars = bid[1:]
+        assert all(c.isalnum() for c in chars)
+    
+    def test_uniqueness(self):
+        """Test that multiple IDs are unique."""
+        from dailynotes.sync.parsing import generate_block_id
+        ids = [generate_block_id() for _ in range(100)]
+        
+        # All should be unique
+        assert len(set(ids)) == 100
+
+
+# ============================================================================
+# TESTS: parse_file_tasks
+# ============================================================================
+
+class TestParseFileTasks:
+    """Tests for the main parse_file_tasks function."""
+    
+    @pytest.fixture
+    def mock_dependencies(self):
+        """Set up mocks for parse_file_tasks dependencies."""
+        # Config/Logger/FileUtils are lazy-imported inside parse_file_tasks
+        # So we patch them at the config and utils module level
+        with patch('config.Config') as mock_config, \
+             patch('dailynotes.utils.Logger') as mock_logger, \
+             patch('dailynotes.utils.FileUtils') as mock_file_utils:
+            
+            mock_config.SYNC_START_DATE = "2025-01-01"
+            mock_file_utils.read_file.return_value = []
+            mock_file_utils.write_file.return_value = None
+            
+            yield {
+                'config': mock_config,
+                'logger': mock_logger,
+                'file_utils': mock_file_utils,
+            }
+    
+    def test_empty_file(self, mock_dependencies):
+        """Test parsing an empty file."""
+        from dailynotes.sync.parsing import parse_file_tasks
+        
+        mock_sm = MagicMock()
+        tasks, lines, modified = parse_file_tasks(
+            "/test/file.md", [], "TestProject", mock_sm, write_back=False
+        )
+        
+        assert tasks == []
+        assert not modified
+    
+    def test_no_task_section(self, mock_dependencies):
+        """Test file without a # Tasks section."""
+        from dailynotes.sync.parsing import parse_file_tasks
+        
+        lines = [
+            "# Notes\n",
+            "\n",
+            "Some content\n",
+        ]
+        
+        mock_sm = MagicMock()
+        tasks, _, _ = parse_file_tasks(
+            "/test/file.md", lines, "TestProject", mock_sm, write_back=False
+        )
+        
+        assert tasks == []
+    
+    def test_basic_task_extraction(self, mock_dependencies):
+        """Test extracting a basic task from # Tasks section."""
+        from dailynotes.sync.parsing import parse_file_tasks
+        
+        lines = [
+            "# Tasks\n",
+            "\n",
+            "## [[2025-01-15]]\n",
+            "\n",
+            "- [ ] 10:00 Test task ^abc123\n",
+            "\n",
+            "----------\n",
+        ]
+        
+        mock_sm = MagicMock()
+        mock_sm.calc_hash.return_value = "hash123"
+        
+        tasks, _, _ = parse_file_tasks(
+            "/test/file.md", lines, "TestProject", mock_sm, write_back=False
+        )
+        
+        assert len(tasks) == 1
+        task = tasks[0]
+        assert task['bid'] == 'abc123'
+        assert task['proj'] == 'TestProject'
+        assert task['_task_date'] == '2025-01-15'
+    
+    def test_multiple_dates(self, mock_dependencies):
+        """Test extracting tasks from multiple date headers."""
+        from dailynotes.sync.parsing import parse_file_tasks
+        
+        lines = [
+            "# Tasks\n",
+            "\n",
+            "## [[2025-01-15]]\n",
+            "- [ ] Task one ^task01\n",
+            "\n",
+            "## [[2025-01-16]]\n",
+            "- [ ] Task two ^task02\n",
+            "\n",
+            "----------\n",
+        ]
+        
+        mock_sm = MagicMock()
+        mock_sm.calc_hash.return_value = "hash"
+        
+        tasks, _, _ = parse_file_tasks(
+            "/test/file.md", lines, "TestProject", mock_sm, write_back=False
+        )
+        
+        assert len(tasks) == 2
+        dates = {t['_task_date'] for t in tasks}
+        assert dates == {'2025-01-15', '2025-01-16'}
+    
+    def test_generates_missing_id(self, mock_dependencies):
+        """Test that a missing block ID is generated."""
+        from dailynotes.sync.parsing import parse_file_tasks
+        
+        lines = [
+            "# Tasks\n",
+            "## [[2025-01-15]]\n",
+            "- [ ] Task without ID\n",
+            "----------\n",
+        ]
+        
+        mock_sm = MagicMock()
+        mock_sm.calc_hash.return_value = "hash"
+        mock_sm.find_id_by_hash.return_value = None
+        
+        tasks, modified_lines, was_modified = parse_file_tasks(
+            "/test/file.md", lines, "TestProject", mock_sm, write_back=False
+        )
+        
+        assert len(tasks) == 1
+        assert tasks[0]['bid'] is not None
+        assert len(tasks[0]['bid']) >= 6
+        assert was_modified  # Should be modified because ID was added
+    
+    def test_rescues_id_from_hash(self, mock_dependencies):
+        """Test that ID is recovered using hash lookup."""
+        from dailynotes.sync.parsing import parse_file_tasks
+        
+        lines = [
+            "# Tasks\n",
+            "## [[2025-01-15]]\n",
+            "- [ ] Task without ID\n",
+            "----------\n",
+        ]
+        
+        mock_sm = MagicMock()
+        mock_sm.calc_hash.return_value = "hash"
+        mock_sm.find_id_by_hash.return_value = "rescued1"  # Return rescued ID
+        
+        tasks, _, _ = parse_file_tasks(
+            "/test/file.md", lines, "TestProject", mock_sm, write_back=False
+        )
+        
+        assert len(tasks) == 1
+        assert tasks[0]['bid'] == 'rescued1'
+    
+    def test_respects_time_gate(self, mock_dependencies):
+        """Test that tasks before SYNC_START_DATE are skipped."""
+        from dailynotes.sync.parsing import parse_file_tasks
+        
+        # Set sync start date to 2025-01-10
+        mock_dependencies['config'].SYNC_START_DATE = "2025-01-10"
+        
+        lines = [
+            "# Tasks\n",
+            "## [[2025-01-05]]\n",  # Before sync start
+            "- [ ] Old task ^old001\n",
+            "## [[2025-01-15]]\n",  # After sync start
+            "- [ ] New task ^new001\n",
+            "----------\n",
+        ]
+        
+        mock_sm = MagicMock()
+        mock_sm.calc_hash.return_value = "hash"
+        mock_sm.find_id_by_hash.return_value = None  # Must be None, not MagicMock
+        
+        tasks, _, _ = parse_file_tasks(
+            "/test/file.md", lines, "TestProject", mock_sm, write_back=False
+        )
+        
+        # Only the new task should be returned
+        assert len(tasks) == 1
+        assert tasks[0]['bid'] == 'new001'
+    
+    def test_stops_at_delimiter(self, mock_dependencies):
+        """Test that parsing stops at ---------- delimiter."""
+        from dailynotes.sync.parsing import parse_file_tasks
+        
+        lines = [
+            "# Tasks\n",
+            "## [[2025-01-15]]\n",
+            "- [ ] Task in section ^task01\n",
+            "----------\n",
+            "- [ ] Task outside ^task02\n",  # Should NOT be parsed
+        ]
+        
+        mock_sm = MagicMock()
+        mock_sm.calc_hash.return_value = "hash"
+        
+        tasks, _, _ = parse_file_tasks(
+            "/test/file.md", lines, "TestProject", mock_sm, write_back=False
+        )
+        
+        assert len(tasks) == 1
+        assert tasks[0]['bid'] == 'task01'
+    
+    def test_nested_children_captured(self, mock_dependencies):
+        """Test that nested child lines are captured in raw block."""
+        from dailynotes.sync.parsing import parse_file_tasks
+        
+        lines = [
+            "# Tasks\n",
+            "## [[2025-01-15]]\n",
+            "- [ ] Parent task ^parent\n",
+            "  - [ ] Child task\n",
+            "  - Note under parent\n",
+            "----------\n",
+        ]
+        
+        mock_sm = MagicMock()
+        mock_sm.calc_hash.return_value = "hash"
+        
+        tasks, _, _ = parse_file_tasks(
+            "/test/file.md", lines, "TestProject", mock_sm, write_back=False
+        )
+        
+        assert len(tasks) == 1  # Only parent is a "task"
+        # Raw block should include children
+        raw = "".join(tasks[0]['raw'])
+        assert "Child task" in raw
+        assert "Note under parent" in raw
+    
+    def test_completed_task_status(self, mock_dependencies):
+        """Test that completed task status is captured."""
+        from dailynotes.sync.parsing import parse_file_tasks
+        
+        lines = [
+            "# Tasks\n",
+            "## [[2025-01-15]]\n",
+            "- [x] Completed task ^done01\n",
+            "----------\n",
+        ]
+        
+        mock_sm = MagicMock()
+        mock_sm.calc_hash.return_value = "hash"
+        
+        tasks, _, _ = parse_file_tasks(
+            "/test/file.md", lines, "TestProject", mock_sm, write_back=False
+        )
+        
+        assert len(tasks) == 1
+        assert tasks[0]['status'] == 'x'
+
+
+# ============================================================================
+# TESTS: Write-back behavior
+# ============================================================================
+
+class TestParseFileTasksWriteBack:
+    """Tests for parse_file_tasks write_back functionality."""
+    
+    def test_write_back_disabled(self):
+        """Test that write_back=False prevents file writes."""
+        with patch('config.Config') as mock_config, \
+             patch('dailynotes.utils.Logger'), \
+             patch('dailynotes.utils.FileUtils') as mock_file_utils:
+            
+            mock_config.SYNC_START_DATE = "2025-01-01"
+            
+            from dailynotes.sync.parsing import parse_file_tasks
+            
+            lines = [
+                "# Tasks\n",
+                "## [[2025-01-15]]\n",
+                "- [ ] Task without ID\n",  # Will trigger modification
+                "----------\n",
+            ]
+            
+            mock_sm = MagicMock()
+            mock_sm.calc_hash.return_value = "hash"
+            mock_sm.find_id_by_hash.return_value = None
+            
+            tasks, _, modified = parse_file_tasks(
+                "/test/file.md", lines, "TestProject", mock_sm, write_back=False
+            )
+            
+            # Should NOT write even if modified
+            mock_file_utils.write_file.assert_not_called()
+    
+    def test_write_back_enabled(self):
+        """Test that write_back=True triggers file write when modified."""
+        with patch('config.Config') as mock_config, \
+             patch('dailynotes.utils.Logger'), \
+             patch('dailynotes.utils.FileUtils') as mock_file_utils:
+            
+            mock_config.SYNC_START_DATE = "2025-01-01"
+            mock_file_utils.read_file.return_value = ["original\n"]
+            
+            from dailynotes.sync.parsing import parse_file_tasks
+            
+            lines = [
+                "# Tasks\n",
+                "## [[2025-01-15]]\n",
+                "- [ ] Task without ID\n",
+                "----------\n",
+            ]
+            
+            mock_sm = MagicMock()
+            mock_sm.calc_hash.return_value = "hash"
+            mock_sm.find_id_by_hash.return_value = None
+            
+            tasks, _, modified = parse_file_tasks(
+                "/test/file.md", lines, "TestProject", mock_sm, write_back=True
+            )
+            
+            # Should write because content was modified
+            assert modified
+            mock_file_utils.write_file.assert_called_once()
+
+```
+
+---
+## File: tests/test_registry.py
+```py
+"""
+AntigravitySync Test Suite - test_registry.py
+Unit tests for src/dailynotes/sync/task_registry.py
+
+Critical tests for v1.8 core value:
+- Initialization populates cache
+- Incremental update_file correctly adds/removes/modifies tasks
+- Data consistency: update overwrites old data, doesn't append
+- Affected dates tracking
+
+ALL FILE I/O IS MOCKED - NO REAL DISK ACCESS
+"""
+
+import os
+import sys
+import pytest
+from unittest.mock import MagicMock, patch, call
+from typing import Dict, List, Set
+
+# ============================================================================
+# PATH SETUP
+# ============================================================================
+
+ANTIGRAVITY_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SRC_DIR = os.path.join(ANTIGRAVITY_DIR, 'src')
+for path in [ANTIGRAVITY_DIR, SRC_DIR]:
+    if path not in sys.path:
+        sys.path.insert(0, path)
+
+
+# ============================================================================
+# HELPER: Reset TaskRegistry singleton between tests
+# ============================================================================
+
+@pytest.fixture(autouse=True)
+def reset_registry_singleton():
+    """Reset TaskRegistry singleton before and after each test."""
+    # Import here to ensure path is set up
+    from dailynotes.sync.task_registry import TaskRegistry
+    
+    # Reset before test
+    TaskRegistry._instance = None
+    
+    yield
+    
+    # Reset after test
+    TaskRegistry._instance = None
+
+
+# ============================================================================
+# HELPER: Create mock tasks
+# ============================================================================
+
+def make_mock_task(bid: str, date: str, project: str = "TestProj", 
+                   pure: str = "Test task") -> Dict:
+    """Create a mock task dictionary."""
+    return {
+        'proj': project,
+        'bid': bid,
+        'pure': pure,
+        'status': ' ',
+        'path': f'/mock/vault/{project}.md',
+        'fname': project,
+        'raw': [f"- [ ] {pure} ^{bid}\n"],
+        'hash': f'hash_{bid}',
+        'indent': 0,
+        'dates': f'[[{date}]]',
+        'is_quoted': False,
+        '_task_date': date,
+    }
+
+
+# ============================================================================
+# TESTS: TaskRegistry Initialization
+# ============================================================================
+
+class TestTaskRegistryInitialization:
+    """Tests for TaskRegistry initialization behavior."""
+    
+    def test_singleton_pattern(self):
+        """Test that TaskRegistry is a singleton."""
+        with patch('dailynotes.sync.task_registry.Config') as mock_config, \
+             patch('dailynotes.sync.task_registry.Logger'):
+            
+            mock_config.ROOT_DIR = "/mock/vault"
+            
+            from dailynotes.sync.task_registry import TaskRegistry, get_registry
+            
+            reg1 = get_registry()
+            reg2 = get_registry()
+            
+            assert reg1 is reg2
+    
+    def test_initialize_calls_os_walk(self):
+        """Test that initialize() uses os.walk for full scan."""
+        with patch('dailynotes.sync.task_registry.Config') as mock_config, \
+             patch('dailynotes.sync.task_registry.Logger'), \
+             patch('dailynotes.sync.task_registry.FileUtils') as mock_fu, \
+             patch('dailynotes.sync.task_registry.parse_file_tasks') as mock_parse, \
+             patch('os.walk') as mock_walk:
+            
+            mock_config.ROOT_DIR = "/mock/vault"
+            mock_config.SYNC_START_DATE = "2025-01-01"
+            mock_fu.is_excluded.return_value = False
+            
+            # Simulate os.walk returning one directory with one file
+            mock_walk.return_value = [
+                ("/mock/vault/ProjectA", [], ["main.md"]),
+            ]
+            
+            # parse_file_tasks returns empty (we test parsing elsewhere)
+            mock_parse.return_value = ([], [], False)
+            mock_fu.read_file.return_value = ["# Tasks\n"]
+            
+            from dailynotes.sync.task_registry import TaskRegistry
+            
+            registry = TaskRegistry()
+            registry._project_map = {"/mock/vault/ProjectA": "ProjectA"}
+            
+            mock_sm = MagicMock()
+            registry.initialize({"/mock/vault/ProjectA": "ProjectA"}, mock_sm)
+            
+            # os.walk should be called
+            mock_walk.assert_called_once_with("/mock/vault")
+    
+    def test_initialize_populates_cache(self):
+        """Test that initialize() populates _file_cache and _date_index."""
+        with patch('dailynotes.sync.task_registry.Config') as mock_config, \
+             patch('dailynotes.sync.task_registry.Logger'), \
+             patch('dailynotes.sync.task_registry.FileUtils') as mock_fu, \
+             patch('dailynotes.sync.task_registry.parse_file_tasks') as mock_parse, \
+             patch('os.walk') as mock_walk:
+            
+            mock_config.ROOT_DIR = "/mock/vault"
+            mock_config.SYNC_START_DATE = "2025-01-01"
+            mock_fu.is_excluded.return_value = False
+            
+            mock_walk.return_value = [
+                ("/mock/vault/ProjectA", [], ["main.md"]),
+            ]
+            
+            # Return 2 tasks from parsing
+            mock_tasks = [
+                make_mock_task("task01", "2025-01-15"),
+                make_mock_task("task02", "2025-01-15"),
+            ]
+            mock_parse.return_value = (mock_tasks, [], False)
+            mock_fu.read_file.return_value = ["# Tasks\n"]
+            
+            from dailynotes.sync.task_registry import TaskRegistry
+            
+            registry = TaskRegistry()
+            project_map = {"/mock/vault/ProjectA": "ProjectA"}
+            
+            mock_sm = MagicMock()
+            registry.initialize(project_map, mock_sm)
+            
+            # Check _file_cache
+            assert "/mock/vault/ProjectA/main.md" in registry._file_cache
+            assert len(registry._file_cache["/mock/vault/ProjectA/main.md"]) == 2
+            
+            # Check _date_index
+            assert "2025-01-15" in registry._date_index
+            assert "task01" in registry._date_index["2025-01-15"]
+            assert "task02" in registry._date_index["2025-01-15"]
+
+
+# ============================================================================
+# TESTS: Incremental Update (CRITICAL v1.8 TESTS)
+# ============================================================================
+
+class TestTaskRegistryUpdate:
+    """
+    CRITICAL: Tests for update_file() - the core of incremental sync.
+    
+    These tests verify:
+    1. New tasks are added to cache
+    2. Modified tasks overwrite old entries
+    3. Deleted tasks are removed from cache
+    4. Affected dates are correctly tracked
+    """
+    
+    def test_update_adds_new_tasks(self):
+        """Test that update_file adds new tasks to cache."""
+        with patch('dailynotes.sync.task_registry.Config') as mock_config, \
+             patch('dailynotes.sync.task_registry.Logger'), \
+             patch('dailynotes.sync.task_registry.FileUtils') as mock_fu, \
+             patch('dailynotes.sync.task_registry.parse_file_tasks') as mock_parse, \
+             patch('os.path.exists', return_value=True):
+            
+            mock_config.ROOT_DIR = "/mock/vault"
+            mock_config.SYNC_START_DATE = "2025-01-01"
+            mock_fu.read_file.return_value = ["# Tasks\n"]
+            
+            from dailynotes.sync.task_registry import TaskRegistry
+            
+            registry = TaskRegistry()
+            registry._project_map = {"/mock/vault/ProjectA": "ProjectA"}
+            registry._file_cache = {}
+            registry._date_index = {}
+            registry._file_to_dates = {}
+            
+            # Simulate parsing returns 3 tasks
+            mock_tasks = [
+                make_mock_task("new01", "2025-01-15"),
+                make_mock_task("new02", "2025-01-15"),
+                make_mock_task("new03", "2025-01-16"),
+            ]
+            mock_parse.return_value = (mock_tasks, [], False)
+            
+            mock_sm = MagicMock()
+            affected = registry.update_file("/mock/vault/ProjectA/test.md", mock_sm)
+            
+            # Check cache contains 3 tasks
+            assert len(registry._file_cache["/mock/vault/ProjectA/test.md"]) == 3
+            
+            # Check affected dates
+            assert affected == {"2025-01-15", "2025-01-16"}
+    
+    def test_update_overwrites_modified_tasks(self):
+        """
+        CRITICAL: Test that update_file overwrites old tasks, not appends.
+        
+        Scenario:
+        - File initially has 3 tasks: A, B, C
+        - File is modified to have 2 tasks: A, D (B and C deleted, D added)
+        - Cache should have ONLY A and D, not A, B, C, D
+        """
+        with patch('dailynotes.sync.task_registry.Config') as mock_config, \
+             patch('dailynotes.sync.task_registry.Logger'), \
+             patch('dailynotes.sync.task_registry.FileUtils') as mock_fu, \
+             patch('dailynotes.sync.task_registry.parse_file_tasks') as mock_parse, \
+             patch('os.path.exists', return_value=True):
+            
+            mock_config.ROOT_DIR = "/mock/vault"
+            mock_config.SYNC_START_DATE = "2025-01-01"
+            mock_fu.read_file.return_value = ["# Tasks\n"]
+            
+            from dailynotes.sync.task_registry import TaskRegistry
+            
+            registry = TaskRegistry()
+            registry._project_map = {"/mock/vault/ProjectA": "ProjectA"}
+            
+            filepath = "/mock/vault/ProjectA/test.md"
+            
+            # === INITIAL STATE: 3 tasks (A, B, C) ===
+            initial_tasks = [
+                make_mock_task("taskA", "2025-01-15"),
+                make_mock_task("taskB", "2025-01-15"),
+                make_mock_task("taskC", "2025-01-15"),
+            ]
+            registry._file_cache = {filepath: initial_tasks}
+            registry._date_index = {
+                "2025-01-15": {
+                    "taskA": initial_tasks[0],
+                    "taskB": initial_tasks[1],
+                    "taskC": initial_tasks[2],
+                }
+            }
+            registry._file_to_dates = {filepath: {"2025-01-15"}}
+            
+            # Verify initial state
+            assert len(registry._file_cache[filepath]) == 3
+            assert len(registry._date_index["2025-01-15"]) == 3
+            
+            # === MODIFIED STATE: 2 tasks (A, D) - B and C deleted ===
+            modified_tasks = [
+                make_mock_task("taskA", "2025-01-15"),  # Kept
+                make_mock_task("taskD", "2025-01-15"),  # New
+                # taskB and taskC are DELETED
+            ]
+            mock_parse.return_value = (modified_tasks, [], False)
+            
+            mock_sm = MagicMock()
+            affected = registry.update_file(filepath, mock_sm)
+            
+            # === VERIFY: Cache should have ONLY 2 tasks ===
+            assert len(registry._file_cache[filepath]) == 2
+            
+            # === VERIFY: Date index should have ONLY taskA and taskD ===
+            assert len(registry._date_index["2025-01-15"]) == 2
+            assert "taskA" in registry._date_index["2025-01-15"]
+            assert "taskD" in registry._date_index["2025-01-15"]
+            assert "taskB" not in registry._date_index["2025-01-15"]  # DELETED
+            assert "taskC" not in registry._date_index["2025-01-15"]  # DELETED
+    
+    def test_update_removes_deleted_tasks(self):
+        """
+        CRITICAL: Test that deleting all tasks from a file clears the cache.
+        
+        This prevents "zombie tasks" from accumulating in memory.
+        """
+        with patch('dailynotes.sync.task_registry.Config') as mock_config, \
+             patch('dailynotes.sync.task_registry.Logger'), \
+             patch('dailynotes.sync.task_registry.FileUtils') as mock_fu, \
+             patch('dailynotes.sync.task_registry.parse_file_tasks') as mock_parse, \
+             patch('os.path.exists', return_value=True):
+            
+            mock_config.ROOT_DIR = "/mock/vault"
+            mock_config.SYNC_START_DATE = "2025-01-01"
+            mock_fu.read_file.return_value = ["# Tasks\n"]
+            
+            from dailynotes.sync.task_registry import TaskRegistry
+            
+            registry = TaskRegistry()
+            registry._project_map = {"/mock/vault/ProjectA": "ProjectA"}
+            
+            filepath = "/mock/vault/ProjectA/test.md"
+            
+            # === INITIAL STATE: 3 tasks ===
+            initial_tasks = [
+                make_mock_task("del01", "2025-01-15"),
+                make_mock_task("del02", "2025-01-15"),
+                make_mock_task("del03", "2025-01-16"),
+            ]
+            registry._file_cache = {filepath: initial_tasks}
+            registry._date_index = {
+                "2025-01-15": {"del01": initial_tasks[0], "del02": initial_tasks[1]},
+                "2025-01-16": {"del03": initial_tasks[2]},
+            }
+            registry._file_to_dates = {filepath: {"2025-01-15", "2025-01-16"}}
+            
+            # === ALL TASKS DELETED ===
+            mock_parse.return_value = ([], [], False)  # Empty tasks
+            
+            mock_sm = MagicMock()
+            affected = registry.update_file(filepath, mock_sm)
+            
+            # === VERIFY: File should no longer be in cache ===
+            assert filepath not in registry._file_cache or registry._file_cache[filepath] == []
+            
+            # === VERIFY: Tasks should be removed from date index ===
+            assert "del01" not in registry._date_index.get("2025-01-15", {})
+            assert "del02" not in registry._date_index.get("2025-01-15", {})
+            assert "del03" not in registry._date_index.get("2025-01-16", {})
+            
+            # === VERIFY: Affected dates includes both old dates ===
+            assert "2025-01-15" in affected
+            assert "2025-01-16" in affected
+    
+    def test_update_handles_file_deletion(self):
+        """Test that update_file handles a deleted file correctly."""
+        with patch('dailynotes.sync.task_registry.Config') as mock_config, \
+             patch('dailynotes.sync.task_registry.Logger'), \
+             patch('dailynotes.sync.task_registry.FileUtils') as mock_fu, \
+             patch('os.path.exists', return_value=False):  # FILE DELETED
+            
+            mock_config.ROOT_DIR = "/mock/vault"
+            
+            from dailynotes.sync.task_registry import TaskRegistry
+            
+            registry = TaskRegistry()
+            registry._project_map = {"/mock/vault/ProjectA": "ProjectA"}
+            
+            filepath = "/mock/vault/ProjectA/deleted.md"
+            
+            # === INITIAL STATE: File had tasks ===
+            initial_tasks = [make_mock_task("gone01", "2025-01-20")]
+            registry._file_cache = {filepath: initial_tasks}
+            registry._date_index = {"2025-01-20": {"gone01": initial_tasks[0]}}
+            registry._file_to_dates = {filepath: {"2025-01-20"}}
+            
+            mock_sm = MagicMock()
+            affected = registry.update_file(filepath, mock_sm)
+            
+            # === VERIFY: File removed from cache ===
+            assert filepath not in registry._file_cache
+            
+            # === VERIFY: Tasks removed from date index ===
+            assert "gone01" not in registry._date_index.get("2025-01-20", {})
+            
+            # === VERIFY: Affected dates returned ===
+            assert "2025-01-20" in affected
+    
+    def test_update_changes_task_date(self):
+        """Test that changing a task's date updates both old and new date indices."""
+        with patch('dailynotes.sync.task_registry.Config') as mock_config, \
+             patch('dailynotes.sync.task_registry.Logger'), \
+             patch('dailynotes.sync.task_registry.FileUtils') as mock_fu, \
+             patch('dailynotes.sync.task_registry.parse_file_tasks') as mock_parse, \
+             patch('os.path.exists', return_value=True):
+            
+            mock_config.ROOT_DIR = "/mock/vault"
+            mock_config.SYNC_START_DATE = "2025-01-01"
+            mock_fu.read_file.return_value = ["# Tasks\n"]
+            
+            from dailynotes.sync.task_registry import TaskRegistry
+            
+            registry = TaskRegistry()
+            registry._project_map = {"/mock/vault/ProjectA": "ProjectA"}
+            
+            filepath = "/mock/vault/ProjectA/test.md"
+            
+            # === INITIAL STATE: Task on Jan 15 ===
+            initial_task = make_mock_task("move01", "2025-01-15")
+            registry._file_cache = {filepath: [initial_task]}
+            registry._date_index = {"2025-01-15": {"move01": initial_task}}
+            registry._file_to_dates = {filepath: {"2025-01-15"}}
+            
+            # === MODIFIED: Task moved to Jan 20 ===
+            moved_task = make_mock_task("move01", "2025-01-20")  # Same ID, different date
+            mock_parse.return_value = ([moved_task], [], False)
+            
+            mock_sm = MagicMock()
+            affected = registry.update_file(filepath, mock_sm)
+            
+            # === VERIFY: Task no longer on old date ===
+            assert "move01" not in registry._date_index.get("2025-01-15", {})
+            
+            # === VERIFY: Task is on new date ===
+            assert "move01" in registry._date_index.get("2025-01-20", {})
+            
+            # === VERIFY: Both dates are affected ===
+            assert "2025-01-15" in affected
+            assert "2025-01-20" in affected
+
+
+# ============================================================================
+# TESTS: Data Retrieval
+# ============================================================================
+
+class TestTaskRegistryRetrieval:
+    """Tests for get_tasks_by_date and get_affected_dates."""
+    
+    def test_get_tasks_by_date(self):
+        """Test retrieving tasks for a specific date."""
+        with patch('dailynotes.sync.task_registry.Config'), \
+             patch('dailynotes.sync.task_registry.Logger'):
+            
+            from dailynotes.sync.task_registry import TaskRegistry
+            
+            registry = TaskRegistry()
+            
+            task1 = make_mock_task("get01", "2025-01-15")
+            task2 = make_mock_task("get02", "2025-01-15")
+            
+            registry._date_index = {
+                "2025-01-15": {"get01": task1, "get02": task2},
+                "2025-01-16": {},
+            }
+            
+            result = registry.get_tasks_by_date("2025-01-15")
+            
+            assert len(result) == 2
+            assert "get01" in result
+            assert "get02" in result
+    
+    def test_get_tasks_by_date_returns_copy(self):
+        """Test that get_tasks_by_date returns a copy, not the original."""
+        with patch('dailynotes.sync.task_registry.Config'), \
+             patch('dailynotes.sync.task_registry.Logger'):
+            
+            from dailynotes.sync.task_registry import TaskRegistry
+            
+            registry = TaskRegistry()
+            
+            task = make_mock_task("copy01", "2025-01-15")
+            registry._date_index = {"2025-01-15": {"copy01": task}}
+            
+            result = registry.get_tasks_by_date("2025-01-15")
+            
+            # Modify the result
+            result["injected"] = {"evil": "data"}
+            
+            # Original should be unchanged
+            assert "injected" not in registry._date_index["2025-01-15"]
+    
+    def test_get_tasks_by_date_nonexistent(self):
+        """Test retrieving tasks for a date with no tasks."""
+        with patch('dailynotes.sync.task_registry.Config'), \
+             patch('dailynotes.sync.task_registry.Logger'):
+            
+            from dailynotes.sync.task_registry import TaskRegistry
+            
+            registry = TaskRegistry()
+            registry._date_index = {}
+            
+            result = registry.get_tasks_by_date("2099-12-31")
+            
+            assert result == {}
+    
+    def test_get_affected_dates(self):
+        """Test getting dates affected by a specific file."""
+        with patch('dailynotes.sync.task_registry.Config'), \
+             patch('dailynotes.sync.task_registry.Logger'):
+            
+            from dailynotes.sync.task_registry import TaskRegistry
+            
+            registry = TaskRegistry()
+            
+            filepath = "/mock/vault/test.md"
+            registry._file_to_dates = {
+                filepath: {"2025-01-15", "2025-01-16", "2025-01-17"},
+            }
+            
+            result = registry.get_affected_dates(filepath)
+            
+            assert result == {"2025-01-15", "2025-01-16", "2025-01-17"}
+
+
+# ============================================================================
+# TESTS: Thread Safety
+# ============================================================================
+
+class TestTaskRegistryThreadSafety:
+    """Tests for thread-safe operations."""
+    
+    def test_concurrent_updates_dont_crash(self):
+        """Test that concurrent update_file calls don't cause crashes."""
+        import threading
+        
+        with patch('dailynotes.sync.task_registry.Config') as mock_config, \
+             patch('dailynotes.sync.task_registry.Logger'), \
+             patch('dailynotes.sync.task_registry.FileUtils') as mock_fu, \
+             patch('dailynotes.sync.task_registry.parse_file_tasks') as mock_parse, \
+             patch('os.path.exists', return_value=True):
+            
+            mock_config.ROOT_DIR = "/mock/vault"
+            mock_config.SYNC_START_DATE = "2025-01-01"
+            mock_fu.read_file.return_value = ["# Tasks\n"]
+            
+            from dailynotes.sync.task_registry import TaskRegistry
+            
+            registry = TaskRegistry()
+            registry._project_map = {"/mock/vault/ProjectA": "ProjectA"}
+            registry._file_cache = {}
+            registry._date_index = {}
+            registry._file_to_dates = {}
+            
+            mock_parse.return_value = ([make_mock_task("t1", "2025-01-15")], [], False)
+            mock_sm = MagicMock()
+            
+            errors = []
+            
+            def do_update(file_num):
+                try:
+                    registry.update_file(f"/mock/vault/ProjectA/file{file_num}.md", mock_sm)
+                except Exception as e:
+                    errors.append(e)
+            
+            threads = [threading.Thread(target=do_update, args=(i,)) for i in range(10)]
+            
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+            
+            # No errors should have occurred
+            assert len(errors) == 0
+
+
+# ============================================================================
+# TESTS: Realistic Parsing Scenarios (Complex Data)
+# ============================================================================
+
+class TestTaskRegistryRealisticScenarios:
+    """
+    Tests with realistic, complex markdown content.
+    
+    These scenarios match real-world usage patterns.
+    """
+    
+    def test_complex_task_section(self):
+        """Test parsing a complex # Tasks section with various formats."""
+        with patch('dailynotes.sync.task_registry.Config') as mock_config, \
+             patch('dailynotes.sync.task_registry.Logger'), \
+             patch('dailynotes.sync.task_registry.FileUtils') as mock_fu, \
+             patch('os.walk') as mock_walk, \
+             patch('os.path.exists', return_value=True):
+            
+            mock_config.ROOT_DIR = "/mock/vault"
+            mock_config.SYNC_START_DATE = "2025-01-01"
+            mock_fu.is_excluded.return_value = False
+            mock_fu.write_file.return_value = None
+            
+            # Realistic complex content
+            complex_content = [
+                "---\n",
+                "tags:\n",
+                "  - main\n",
+                "---\n",
+                "\n",
+                "# Project Overview\n",
+                "\n",
+                "Some project notes.\n",
+                "\n",
+                "# Tasks\n",
+                "\n",
+                "## [[2025-01-15]]\n",
+                "\n",
+                "- [ ] 普通任务 ^task01\n",
+                "- [x] 10:00 - 11:00 带时间的任务 ^task02\n",
+                "    - [ ] 缩进的子任务 ^child01\n",
+                "    - 普通缩进备注\n",
+                "- [ ] 14:00 #A 带标签的紧急任务 [[2025-01-15]] ^task03\n",
+                "- [ ] Task with return link [[Project#^abc123|⮐]] ^task04\n",
+                "\n",
+                "## [[2025-01-16]]\n",
+                "\n",
+                "- [ ] 明天的任务 📅 2025-01-16 ^task05\n",
+                "\n",
+                "----------\n",
+                "\n",
+                "# Notes\n",
+                "\n",
+                "Other content that should be ignored.\n",
+            ]
+            
+            mock_fu.read_file.return_value = complex_content
+            
+            mock_walk.return_value = [
+                ("/mock/vault/Project", [], ["main.md"]),
+            ]
+            
+            from dailynotes.sync.task_registry import TaskRegistry
+            
+            registry = TaskRegistry()
+            mock_sm = MagicMock()
+            mock_sm.calc_hash.return_value = "hash"
+            mock_sm.find_id_by_hash.return_value = None
+            
+            registry.initialize({"/mock/vault/Project": "Project"}, mock_sm)
+            
+            # Verify tasks were parsed
+            tasks_jan15 = registry.get_tasks_by_date("2025-01-15")
+            tasks_jan16 = registry.get_tasks_by_date("2025-01-16")
+            
+            # Should have 4 main tasks on Jan 15 (child is part of parent's block)
+            assert len(tasks_jan15) == 4
+            
+            # Should have 1 task on Jan 16
+            assert len(tasks_jan16) == 1
+            
+            # Verify specific task IDs exist
+            assert "task01" in tasks_jan15
+            assert "task02" in tasks_jan15
+            assert "task03" in tasks_jan15
+            assert "task04" in tasks_jan15
+            assert "task05" in tasks_jan16
 
 ```
 
@@ -517,6 +2098,14 @@ from .state_manager import StateManager
 from .sync import SyncCore
 from external.apple_sync_adapter import AppleSyncAdapter
 
+# [v1.9] Native Calendar Monitor Import
+try:
+    from external.calendar_monitor import start_calendar_watchdog
+    CALENDAR_MONITOR_AVAILABLE = True
+except ImportError:
+    start_calendar_watchdog = None
+    CALENDAR_MONITOR_AVAILABLE = False
+
 # watchdog 导入（带降级处理）
 try:
     from watchdog.observers import Observer
@@ -524,13 +2113,23 @@ try:
     WATCHDOG_AVAILABLE = True
 except ImportError:
     WATCHDOG_AVAILABLE = False
+    Observer = None
+    # 提供空基类以避免继承错误
+    class FileSystemEventHandler:
+        pass
     Logger.error_once("watchdog_import", "⚠️ watchdog 库未安装，将使用轮询模式")
 
 
 class ObsidianEventHandler(FileSystemEventHandler):
     """
-    [v1.4] 文件变更事件处理器
+    [v1.6] 文件变更事件处理器 - 支持原子写入
     监听 Obsidian Vault 中的 .md 文件变动，触发同步逻辑。
+    
+    关键修复：Obsidian 使用"原子写入"模式保存文件：
+    1. 写入临时文件 (e.g., .md.tmp)
+    2. 重命名临时文件覆盖目标文件 (rename/move)
+    
+    因此必须同时监听 on_modified 和 on_moved 事件。
     """
     
     def __init__(self, manager):
@@ -538,29 +2137,34 @@ class ObsidianEventHandler(FileSystemEventHandler):
         self.manager = manager
         self._last_event_time = {}  # 防抖追踪: {filepath: timestamp}
     
-    def on_modified(self, event):
-        """处理文件修改事件"""
-        if event.is_directory:
-            return
+    def _process_event(self, filepath, event_type):
+        """
+        统一的事件处理逻辑（供 on_modified 和 on_moved 调用）
         
-        filepath = event.src_path
-        
-        # 仅处理 .md 文件
+        Args:
+            filepath: 目标文件路径
+            event_type: 事件类型字符串 ("MODIFIED" 或 "MOVED")
+        """
+        # [过滤] 仅处理 .md 文件
         if not filepath.endswith('.md'):
             return
         
-        # 排除目录检查
+        # [过滤] 排除目录检查
         if FileUtils.is_excluded(filepath):
             return
+
+        # [底层日志] 立即输出，这是调试的关键
+        Logger.info(f"🔎 [Watchdog] 捕获底层事件 ({event_type}): {os.path.basename(filepath)}")
         
-        # [关键] 防抖检查：避免短时间内重复触发
+        # [防抖] 避免短时间内重复触发
         now = time.time()
         last_time = self._last_event_time.get(filepath, 0)
         if now - last_time < Config.EVENT_DEBOUNCE_SECONDS:
+            Logger.debug(f"[Event] 防抖跳过: {os.path.basename(filepath)}")
             return
         self._last_event_time[filepath] = now
         
-        # [关键] 自写入检测：读取内容哈希并检查是否为系统写入
+        # [哈希自省] 检测是否为脚本自身的写入
         try:
             content = FileUtils.read_content(filepath)
             if content is None:
@@ -573,12 +2177,36 @@ class ObsidianEventHandler(FileSystemEventHandler):
                 Logger.debug(f"[Event] 忽略自写入事件: {os.path.basename(filepath)}")
                 return
             
-            # 用户编辑事件，触发同步
-            Logger.info(f"📝 [Event] 检测到变更: {os.path.basename(filepath)}")
+            # [触发] 用户编辑事件，触发同步
+            Logger.info(f"📝 [Event] 检测到用户变更: {os.path.basename(filepath)}")
             self.manager.on_file_changed(filepath)
             
         except Exception as e:
             Logger.error_once(f"event_err_{filepath}", f"事件处理异常: {e}")
+    
+    def on_modified(self, event):
+        """处理文件修改事件（传统编辑器直接写入）"""
+        if event.is_directory:
+            return
+        self._process_event(event.src_path, "MODIFIED")
+    
+    def on_moved(self, event):
+        """
+        处理文件移动/重命名事件（原子写入的核心）
+        
+        Obsidian 保存流程：
+        1. 写入 .md.tmp 临时文件
+        2. rename(".md.tmp", ".md") 覆盖目标
+        
+        关键：必须使用 dest_path (重命名后的目标路径)
+        """
+        if event.is_directory:
+            return
+        # 注意：使用 dest_path，这是重命名后的新文件名
+        self._process_event(event.dest_path, "MOVED")
+
+
+
 
 
 class FusionManager:
@@ -615,6 +2243,9 @@ class FusionManager:
         
         # [v1.5] 动态调度状态：记录每个日期的上次同步时间戳
         self._last_full_sync_registry = {}  # {date_str: timestamp}
+        
+        # [v1.8] Lazy initialization flag for TaskRegistry
+        self._registry_warmup_done = False
 
     def check_debounce(self, filepath):
         """
@@ -737,7 +2368,7 @@ class FusionManager:
                 dates.append(date_str)
         return dates
 
-    def process_single_date(self, date_str):
+    def process_single_date(self, date_str, is_event_trigger=False):
         """
         Process a single date: internal sync + formatting + Apple sync.
         Returns detailed result dict.
@@ -760,16 +2391,17 @@ class FusionManager:
                 is_system_edit = FileUtils.check_system_write(content_hash)
             
             if not is_system_edit:
+                # [v1.5.2] 允许事件驱动绕过防抖冷却
                 idle_duration = time.time() - FileUtils.get_mtime(daily_path)
-                if idle_duration < Config.TYPING_COOLDOWN_SECONDS:
+                if not is_event_trigger and idle_duration < Config.TYPING_COOLDOWN_SECONDS:
                     results["skipped"] = True
                     return results
 
         # --- [PRIORITY 1] Obsidian Internal Processing ---
-        if self.check_debounce(daily_path) or not os.path.exists(daily_path):
+        if is_event_trigger or self.check_debounce(daily_path) or not os.path.exists(daily_path):
             try:
-                source_data_by_date = self.sync_core.scan_all_source_tasks()
-                tasks_for_date = source_data_by_date.get(date_str, {})
+                # [v1.8] Use registry's O(1) lookup instead of full scan
+                tasks_for_date = self.sync_core.get_tasks_for_date(date_str)
                 self.sync_core.process_date(date_str, tasks_for_date)
 
                 if os.path.exists(daily_path):
@@ -786,7 +2418,7 @@ class FusionManager:
         if results["internal_mod"]:
             should_sync_apple = True
             Logger.info(f"   ⚡ [Trigger] 内部修改触发立即同步: {date_str}")
-        elif os.path.exists(daily_path) and self.check_debounce(daily_path):
+        elif os.path.exists(daily_path) and (is_event_trigger or self.check_debounce(daily_path)):
             should_sync_apple = True
 
         if should_sync_apple:
@@ -804,24 +2436,58 @@ class FusionManager:
 
     def on_file_changed(self, filepath):
         """
-        [v1.4] 事件驱动入口：文件变更时调用
-        从文件路径提取日期并触发同步
+        [v1.8 REFACTORED] 事件驱动入口：文件变更时调用
+        
+        改进内容:
+        - 日记文件: 直接触发该日期的同步
+        - 项目文件: 使用 process_file_event 增量更新，只同步受影响的日期
         """
         filename = os.path.basename(filepath)
+        
+        # [v1.8] Lazy warmup: ensure registry is initialized on first event
+        if not self._registry_warmup_done:
+            Logger.info("🔄 [Manager] Warming up TaskRegistry...")
+            self.sync_core.initialize_registry()
+            self._registry_warmup_done = True
         
         # 尝试从文件名提取日期 (格式: YYYY-MM-DD.md)
         date_match = re.match(r'^(\d{4}-\d{2}-\d{2})\.md$', filename)
         
         if date_match:
-            # 这是一个日记文件
+            # 这是一个日记文件 - 直接触发该日期同步
             date_str = date_match.group(1)
             Logger.info(f"   🔄 [Sync] 触发日期同步: {date_str}")
-            self.process_single_date(date_str)
+            self.process_single_date(date_str, is_event_trigger=True)
         else:
-            # 这是一个项目文件，触发今日同步
-            today_str = datetime.date.today().strftime('%Y-%m-%d')
-            Logger.info(f"   🔄 [Sync] 项目文件变更，触发今日同步")
-            self.process_single_date(today_str)
+            # [v1.8] 项目文件 - 使用增量同步
+            # 只扫描这ONE个文件，然后只同步受影响的日期
+            affected_dates = self.sync_core.process_file_event(filepath)
+            
+            if affected_dates:
+                Logger.info(f"   🔄 [Sync] 项目文件变更，影响 {len(affected_dates)} 个日期")
+                for date_str in affected_dates:
+                    self.process_single_date(date_str, is_event_trigger=True)
+            else:
+                # Fallback: 如果文件中没有任务，仍然同步今天
+                today_str = datetime.date.today().strftime('%Y-%m-%d')
+                Logger.info(f"   🔄 [Sync] 项目文件变更（无任务），触发今日同步")
+                self.process_single_date(today_str, is_event_trigger=True)
+
+    def trigger_immediate_sync_for_today(self):
+        """
+        [v1.7] 由日历事件触发的立即同步
+        """
+        today_str = datetime.date.today().strftime('%Y-%m-%d')
+        Logger.info(f"   🔄 [Sync] Calendar 变动触发今日同步: {today_str}")
+        self.process_single_date(today_str, is_event_trigger=True)
+
+    def _on_calendar_push_event(self):
+        """
+        [v1.9] Callback for Distributed Notification (Zero Latency).
+        Runs in a background thread.
+        """
+        Logger.info(f"⚡ [Distributed] 检测到系统日历数据库物理变更！")
+        self.trigger_immediate_sync_for_today()
 
     def _calculate_dynamic_interval(self, date_str) -> float:
         """
@@ -837,6 +2503,12 @@ class FusionManager:
             target_date = datetime.datetime.strptime(date_str, '%Y-%m-%d').date()
             today = datetime.date.today()
             d = abs((target_date - today).days)  # 距离今天的天数
+            
+            # [v1.8.3] Privacy-aware Fast Polling for Today
+            # 由于 macOS TCC 权限限制，Watchdog 可能无法监听到日历数据库变化
+            # 对“今天”强制使用 30 秒的快速轮询，确保近似实时的体验
+            if d == 0:
+                return 30.0
             
             # 指数拟合公式
             interval = Config.EXP_BASE * math.exp(Config.EXP_COEFF * d) + Config.EXP_OFFSET
@@ -876,6 +2548,34 @@ class FusionManager:
                 self.process_single_date(date_str)
                 self._last_full_sync_registry[date_str] = now
 
+    def _print_countdown(self):
+        """
+        [v1.5.2] 实时输出下一次大检测的倒计时
+        在同一行更新秒数，使用回车符覆盖
+        """
+        now = time.time()
+        date_range = self.get_date_range()
+        
+        min_countdown = float('inf')
+        next_date = None
+        
+        for date_str in date_range:
+            last_sync = self._last_full_sync_registry.get(date_str, 0)
+            interval = self._calculate_dynamic_interval(date_str)
+            remaining = interval - (now - last_sync)
+            
+            if remaining > 0 and remaining < min_countdown:
+                min_countdown = remaining
+                next_date = date_str
+        
+        if next_date and min_countdown < float('inf'):
+            countdown_str = f"⏱️  下次检测 [{next_date}]: {int(min_countdown):>4}s"
+            # 使用 \r 回到行首，覆盖原内容
+            sys.stdout.write(f"\r{countdown_str}  ")
+            sys.stdout.flush()
+            # 标记倒计时行正在显示，让 Logger 知道需要先清行
+            Logger._countdown_active = True
+
     def run(self):
         """
         [v1.5] 事件驱动主循环
@@ -888,7 +2588,7 @@ class FusionManager:
         signal.signal(signal.SIGTERM, _term_handler)
         self._running = True
 
-        Logger.info(f"🚀 事件驱动引擎启动: watchdog + 指数动态调度")
+        Logger.info(f"🚀 事件驱动引擎启动: Watchdog (Vault & Calendar) + 指数动态调度")
         Logger.info(f"   调度公式: I(d) = {Config.EXP_BASE} * exp({Config.EXP_COEFF} * d) + {Config.EXP_OFFSET}")
         Logger.info(f"   冷却上限: {Config.DYNAMIC_SYNC_MAX_INTERVAL}s | 事件防抖: {Config.EVENT_DEBOUNCE_SECONDS}s")
         Logger.info(f"   日期范围: DAY_START={Config.DAY_START} ~ DAY_END={Config.DAY_END}")
@@ -906,6 +2606,17 @@ class FusionManager:
             except Exception as e:
                 Logger.error_once("observer_init", f"Watchdog 初始化失败: {e}")
                 self._observer = None
+            
+            # [v1.7] Start Calendar Observer
+            # [v1.9] Start Native Calendar Observer (Distributed Mode)
+            if CALENDAR_MONITOR_AVAILABLE and start_calendar_watchdog:
+                try:
+                    start_calendar_watchdog(self._on_calendar_push_event)
+                except Exception as e:
+                    Logger.error_once("cal_monitor_fail", f"Native Calendar Monitor 启动失败: {e}")
+            else:
+                Logger.info("⚠️ [Native] PyObjC/Fundation 模块缺失，日历实时监听不可用")
+
         else:
             Logger.info("⚠️ [Watchdog] 不可用，使用纯轮询模式")
 
@@ -915,6 +2626,9 @@ class FusionManager:
         # 主循环
         try:
             while self._running:
+                # 计算并显示下一次同步倒计时
+                self._print_countdown()
+                
                 # 让出 CPU 资源
                 time.sleep(1)
                 
@@ -926,9 +2640,11 @@ class FusionManager:
         finally:
             # 优雅停止 Observer
             if self._observer:
-                Logger.info("🛑 [Watchdog] 停止监听...")
+                Logger.info("🛑 [Watchdog] 停止监听 Vault...")
                 self._observer.stop()
                 self._observer.join(timeout=3)
+            
+
             
             self.sm.save()
             Logger.info("✅ 状态已保存，引擎已停止")
@@ -1099,6 +2815,7 @@ class StateManager:
 ## File: src/dailynotes/utils.py
 ```py
 import os
+import sys
 import datetime
 import time
 import tempfile
@@ -1116,6 +2833,16 @@ except ImportError:
 
 class Logger:
     _shown_errors = set()
+    _countdown_active = False  # 跟踪倒计时行是否正在显示
+
+    @classmethod
+    def _clear_countdown_line(cls):
+        """清除倒计时行，为正常日志输出腾出空间"""
+        if cls._countdown_active:
+            # 回车 + 清行 + 换行
+            sys.stdout.write("\r" + " " * 50 + "\r")
+            sys.stdout.flush()
+            cls._countdown_active = False
 
     @staticmethod
     def _get_caller_info():
@@ -1133,36 +2860,40 @@ class Logger:
         except Exception:
             return "[Unknown:Unknown]"
 
-    @staticmethod
-    def error_once(key, message):
-        if key not in Logger._shown_errors:
-            caller = Logger._get_caller_info()
+    @classmethod
+    def error_once(cls, key, message):
+        if key not in cls._shown_errors:
+            cls._clear_countdown_line()
+            caller = cls._get_caller_info()
             print(f"\033[91m[ERROR] {caller} {message}\033[0m")
-            Logger._shown_errors.add(key)
+            cls._shown_errors.add(key)
 
-    @staticmethod
-    def info(message, date_tag=None):
+    @classmethod
+    def info(cls, message, date_tag=None):
         # [特性] 聚焦日志：仅显示今天的日志（当前文件）
         t = datetime.datetime.now().strftime('%H:%M:%S')
         today_str = datetime.date.today().strftime('%Y-%m-%d')
         
         if date_tag and date_tag != today_str:
             return # 跳过历史日志以减少干扰
-            
+        
+        cls._clear_countdown_line()
         prefix = f"[{date_tag}] " if date_tag else ""
-        caller = Logger._get_caller_info()
+        caller = cls._get_caller_info()
         print(f"\033[92m[{t} INFO] {caller} {prefix}{message}\033[0m")
 
-    @staticmethod
-    def debug(message):
+    @classmethod
+    def debug(cls, message):
         if Config.DEBUG_MODE:
-            caller = Logger._get_caller_info()
+            cls._clear_countdown_line()
+            caller = cls._get_caller_info()
             print(f"\033[90m[DEBUG] {caller} {message}\033[0m")
 
-    @staticmethod
-    def debug_block(title, lines):
+    @classmethod
+    def debug_block(cls, title, lines):
         if Config.DEBUG_MODE:
-            caller = Logger._get_caller_info()
+            cls._clear_countdown_line()
+            caller = cls._get_caller_info()
             print(f"\033[96m--- [DEBUG] {caller} {title} ---\033[0m")
             for line in lines:
                 print(f"  | {line.rstrip()}")
@@ -1275,6 +3006,13 @@ class FileUtils:
     @staticmethod
     def is_excluded(path):
         path = os.path.normpath(path)
+        
+        # [白名单] DAILY_NOTE_DIR 及其文件不应被排除
+        daily_dir = os.path.normpath(Config.DAILY_NOTE_DIR)
+        if path == daily_dir or path.startswith(daily_dir + os.sep):
+            return False
+        
+        # [黑名单] 排除目录检查
         for exclude in Config.EXCLUDE_DIRS:
             exclude = os.path.normpath(exclude)
             if path == exclude or path.startswith(exclude + os.sep):
@@ -1344,6 +3082,7 @@ class ProcessLock:
 ## File: src/dailynotes/sync/__init__.py
 ```py
 from .engine import SyncCore
+from .task_registry import TaskRegistry, get_registry
 
 ```
 
@@ -1413,7 +3152,7 @@ from typing import Dict, List, Optional, Any, Set
 from config import Config
 from ..utils import Logger, FileUtils
 from .discovery import scan_projects
-from .ingestion import scan_all_source_tasks
+from .task_registry import get_registry, TaskRegistry
 from .parsing import (
     clean_task_text, 
     normalize_block_content, 
@@ -1443,6 +3182,10 @@ class SyncCore:
         self._sync_counter_reset_time = time.time()
         self._SYNC_THRESHOLD = 5  # Max syncs per task per reset period
         self._RESET_INTERVAL = 60  # Reset counters every 60 seconds
+        
+        # [v1.8] TaskRegistry for incremental sync
+        self._task_registry: TaskRegistry = get_registry()
+        self._registry_initialized = False
 
     def trigger_delayed_verification(self, filepath, delay=10):
         def _job():
@@ -1482,9 +3225,77 @@ class SyncCore:
         self.project_map, self.project_path_map, self.file_path_map = scan_projects()
 
     def scan_all_source_tasks(self) -> Dict[str, Dict]:
-        # Delegate to ingestion module
+        """
+        [v1.8 REFACTORED] Now uses TaskRegistry for cached lookups.
+        Only performs full scan if registry is not initialized.
+        """
         self.scan_projects()
-        return scan_all_source_tasks(self.project_map, self.sm)
+        
+        # Initialize registry if needed (first run)
+        if not self._registry_initialized:
+            self.initialize_registry()
+        
+        # Return cached data from registry
+        return self._task_registry.get_all_tasks_by_date()
+    
+    def initialize_registry(self) -> None:
+        """
+        [v1.8] Initialize the TaskRegistry with a full scan.
+        This is called ONCE at startup.
+        """
+        if self._registry_initialized:
+            Logger.debug("[SyncCore] Registry already initialized, skipping")
+            return
+        
+        Logger.info("🚀 [SyncCore] 初始化 TaskRegistry (一次性全量扫描)...")
+        self.scan_projects()  # Ensure project map is current
+        self._task_registry.initialize(self.project_map, self.sm)
+        self._registry_initialized = True
+        Logger.info("✅ [SyncCore] TaskRegistry 初始化完成")
+    
+    def process_file_event(self, filepath: str) -> Set[str]:
+        """
+        [v1.8] Process a file change event incrementally.
+        
+        This is the NEW entry point for watchdog events, replacing the
+        full scan_all_source_tasks() call in the runtime loop.
+        
+        Args:
+            filepath: Absolute path to the changed file
+            
+        Returns:
+            Set of date strings that were affected by this file change
+        """
+        # Ensure registry is initialized
+        if not self._registry_initialized:
+            self.initialize_registry()
+        
+        # Update project map if needed (for new files in new directories)
+        self.scan_projects()
+        self._task_registry.refresh_project_map(self.project_map)
+        
+        # Incremental update: only rescan this ONE file
+        affected_dates = self._task_registry.update_file(filepath, self.sm)
+        
+        Logger.debug(f"[SyncCore] 增量更新: {os.path.basename(filepath)} -> 影响日期: {affected_dates}")
+        
+        return affected_dates
+    
+    def get_tasks_for_date(self, date_str: str) -> Dict[str, Dict]:
+        """
+        [v1.8] Get tasks for a specific date from the registry.
+        Fast O(1) lookup.
+        
+        Args:
+            date_str: Date in YYYY-MM-DD format
+            
+        Returns:
+            Dictionary of { bid: task_dict }
+        """
+        if not self._registry_initialized:
+            self.initialize_registry()
+        
+        return self._task_registry.get_tasks_by_date(date_str)
         
     def calculate_nearest_project(self, routing_path):
         """
@@ -2057,156 +3868,6 @@ class SyncCore:
 ```
 
 ---
-## File: src/dailynotes/sync/ingestion.py
-```py
-import os
-import re
-import datetime
-import random
-import string
-from typing import Dict
-from config import Config
-from ..utils import Logger, FileUtils
-from .parsing import capture_block, clean_task_text, normalize_block_content, get_indent_depth
-from .rendering import format_line, inject_into_task_section
-
-def generate_block_id():
-    return '^' + ''.join(random.choices(string.ascii_lowercase + string.digits, k=6))
-
-def scan_all_source_tasks(project_map, sm) -> Dict[str, Dict]:
-    # Need to run scan_projects before this? No, project_map is passed in.
-    # self.scan_projects() # Caller handles this.
-    
-    source_data_by_date = {}
-    today_str = datetime.date.today().strftime('%Y-%m-%d')
-    for root, dirs, files in os.walk(Config.ROOT_DIR):
-        dirs[:] = [d for d in dirs if not FileUtils.is_excluded(os.path.join(root, d))]
-        if FileUtils.is_excluded(root): continue
-        curr_proj = None
-        temp = root
-        while temp.startswith(Config.ROOT_DIR):
-            if temp in project_map: curr_proj = project_map[temp]; break
-            temp = os.path.dirname(temp)
-            if temp == os.path.dirname(temp): break
-        if not curr_proj: continue
-        for f in files:
-            if not f.endswith('.md'): continue
-            path = os.path.join(root, f)
-            lines = FileUtils.read_file(path)
-            if not lines: continue
-            mod = False
-            fname = os.path.splitext(f)[0]
-            i = 0
-
-            in_task_section = False
-            current_section_date = None
-            seen_section_dates = set()
-            while i < len(lines):
-                line = lines[i]
-                stripped = line.strip()
-                if stripped == '# Tasks':
-                    in_task_section = True;
-                    current_section_date = None;
-                    seen_section_dates.clear();
-                    i += 1;
-                    continue
-                if stripped == '----------':
-                    in_task_section = False;
-                    current_section_date = None;
-                    i += 1;
-                    continue
-                if not in_task_section: i += 1; continue
-                header_match = re.match(r'^#+\s*\[\[\s*(\d{4}-\d{2}-\d{2})\s*\]\]', stripped)
-                if header_match:
-                    date_str = header_match.group(1)
-                    if date_str in seen_section_dates:
-                        Logger.info(f"   🔍 发现重复标题 {date_str}，将触发重组...");
-                        mod = True
-                    else:
-                        seen_section_dates.add(date_str)
-                    current_section_date = date_str;
-                    i += 1;
-                    continue
-                if stripped.startswith('#'): current_section_date = None; i += 1; continue
-                if not re.match(r'^\s*-\s*\[.\]', line): i += 1; continue
-                task_date = None
-                if current_section_date:
-                    task_date = current_section_date
-                else:
-                    date_match = re.search(r'[📅✅]\s*(\d{4}-\d{2}-\d{2})', line)
-                    if date_match:
-                        task_date = date_match.group(1)
-                    else:
-                        link_match = re.search(r'\[\[(\d{4}-\d{2}-\d{2})(?:#|\||\]\])', line)
-                        if link_match: task_date = link_match.group(1)
-                is_in_inbox_area = (current_section_date is None)
-                if is_in_inbox_area and not task_date: i += 1; continue
-                if not task_date: task_date = today_str; mod = True
-
-                # [MODIFIED] Use visual depth
-                indent = get_indent_depth(line)
-
-                status_match = re.search(r'-\s*\[(.)\]', line)
-                st = status_match.group(1) if status_match else ' '
-                id_m = re.search(r'\^([a-zA-Z0-9]{6,7})\s*$', line)
-                bid = id_m.group(1) if id_m else None
-                if not bid:
-                    raw_block, _ = capture_block(lines, i)
-                    temp_clean = clean_task_text(line, None, fname)
-                    temp_clean = re.sub(r'\s+\^?[a-zA-Z0-9]*$', '', temp_clean).strip()
-                    combined_body = normalize_block_content(raw_block[1:])
-                    temp_combined_text = temp_clean + "|||" + combined_body
-                    recovery_hash = sm.calc_hash(st, temp_combined_text)
-                    found_id = sm.find_id_by_hash(path, recovery_hash)
-                    if found_id:
-                        Logger.info(f"   🚑 [RESCUE] 指纹匹配成功! '{temp_clean[:10]}...' -> 复活 ID: {found_id}")
-                        bid = found_id;
-                        mod = True
-                    else:
-                        bid = generate_block_id().replace('^', '');
-                        mod = True
-                clean_txt = clean_task_text(line, bid, context_name=fname)
-                dates_pattern = r'([📅✅]\s*\d{4}-\d{2}-\d{2}|\[\[\d{4}-\d{2}-\d{2}(?:#\^[a-zA-Z0-9]+)?(?:\|[📅⮐])?\]\])'
-                dates = " ".join(re.findall(dates_pattern, line))
-                if current_section_date and current_section_date not in dates: dates = f"[[{task_date}]]"; mod = True
-                if task_date not in line and not dates: dates = f"[[{task_date}]]"; mod = True
-                new_line = format_line(indent, st, clean_txt, dates, fname, bid, False)
-                if new_line.strip() != line.strip(): lines[i] = new_line; mod = True
-
-                # [TIME GATE]
-                if task_date < Config.SYNC_START_DATE:
-                    _, consumed = capture_block(lines, i)
-                    i += consumed
-                    continue
-
-                block, consumed = capture_block(lines, i)
-                combined_text = clean_txt + "|||" + normalize_block_content(block[1:])
-                content_hash = sm.calc_hash(st, combined_text)
-                if task_date not in source_data_by_date: source_data_by_date[task_date] = {}
-                source_data_by_date[task_date][bid] = {
-                    'proj': curr_proj, 'bid': bid, 'pure': clean_txt, 'status': st,
-                    'path': path, 'fname': fname, 'raw': block, 'hash': content_hash, 'indent': indent,
-                    'dates': dates, 'is_quoted': False
-                }
-                i += consumed
-            if mod:
-                lines = inject_into_task_section(lines, [])
-                # [CHECK] 比对磁盘文件，防止死循环
-                orig = FileUtils.read_file(path)
-                new_c = "".join(lines)
-                old_c = "".join(orig) if orig else ""
-                if new_c != old_c:
-                    Logger.info(f"   💾 [WRITE] 自动格式化源文件 (Scan): {os.path.basename(path)}")
-                    FileUtils.write_file(path, lines)
-    for delta in range(3):
-        target_d = datetime.date.today() - datetime.timedelta(days=delta)
-        target_s = target_d.strftime('%Y-%m-%d')
-        if target_s not in source_data_by_date: source_data_by_date[target_s] = {}
-    return source_data_by_date
-
-```
-
----
 ## File: src/dailynotes/sync/parsing.py
 ```py
 import re
@@ -2345,6 +4006,207 @@ def extract_routing_target(line, file_path_map):
     """
     path, _ = extract_routing_info(line, file_path_map)
     return path
+
+
+def generate_block_id() -> str:
+    """Generate a unique block ID."""
+    import random
+    import string
+    return '^' + ''.join(random.choices(string.ascii_lowercase + string.digits, k=6))
+
+
+def parse_file_tasks(filepath: str, lines: list, project_name: str, sm, 
+                     write_back: bool = True) -> tuple:
+    """
+    [v1.8.1 DRY] Central parsing function for extracting tasks from a markdown file.
+    
+    This is the SINGLE SOURCE OF TRUTH for file parsing logic.
+    Used by TaskRegistry for both initial scan and incremental updates.
+    
+    Args:
+        filepath: Absolute path to the .md file
+        lines: List of line strings (already read from file)
+        project_name: The project this file belongs to
+        sm: StateManager for hash calculations
+        write_back: If True, write modified lines back to file
+        
+    Returns:
+        Tuple of (tasks_list, modified_lines, was_modified)
+        - tasks_list: List of task dictionaries
+        - modified_lines: The (potentially modified) lines
+        - was_modified: Boolean indicating if lines were changed
+    """
+    import os
+    import datetime
+    from config import Config
+    from ..utils import Logger, FileUtils
+    
+    # Lazy import to avoid circular dependency
+    from .rendering import format_line, inject_into_task_section
+    
+    if not lines:
+        return [], lines, False
+    
+    tasks = []
+    mod = False
+    fname = os.path.splitext(os.path.basename(filepath))[0]
+    today_str = datetime.date.today().strftime('%Y-%m-%d')
+    
+    i = 0
+    in_task_section = False
+    current_section_date = None
+    seen_section_dates = set()
+    
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+        
+        # Detect section markers
+        if stripped == '# Tasks':
+            in_task_section = True
+            current_section_date = None
+            seen_section_dates.clear()
+            i += 1
+            continue
+        
+        if stripped == '----------':
+            in_task_section = False
+            current_section_date = None
+            i += 1
+            continue
+        
+        if not in_task_section:
+            i += 1
+            continue
+        
+        # Check for date headers
+        header_match = re.match(r'^#+\s*\[\[\s*(\d{4}-\d{2}-\d{2})\s*\]\]', stripped)
+        if header_match:
+            date_str = header_match.group(1)
+            if date_str in seen_section_dates:
+                Logger.info(f"   🔍 发现重复标题 {date_str}，将触发重组...")
+                mod = True
+            else:
+                seen_section_dates.add(date_str)
+            current_section_date = date_str
+            i += 1
+            continue
+        
+        if stripped.startswith('#'):
+            current_section_date = None
+            i += 1
+            continue
+        
+        # Check for task lines
+        if not re.match(r'^\s*-\s*\[.\]', line):
+            i += 1
+            continue
+        
+        # Determine task date
+        task_date = None
+        if current_section_date:
+            task_date = current_section_date
+        else:
+            date_match = re.search(r'[📅✅]\s*(\d{4}-\d{2}-\d{2})', line)
+            if date_match:
+                task_date = date_match.group(1)
+            else:
+                link_match = re.search(r'\[\[(\d{4}-\d{2}-\d{2})(?:#|\||\]\])', line)
+                if link_match:
+                    task_date = link_match.group(1)
+        
+        is_in_inbox_area = (current_section_date is None)
+        if is_in_inbox_area and not task_date:
+            i += 1
+            continue
+        
+        if not task_date:
+            task_date = today_str
+            mod = True
+        
+        # Parse task properties
+        indent = get_indent_depth(line)
+        status_match = re.search(r'-\s*\[(.)\]', line)
+        st = status_match.group(1) if status_match else ' '
+        
+        # Extract or generate block ID
+        id_m = re.search(r'\^([a-zA-Z0-9]{6,7})\s*$', line)
+        bid = id_m.group(1) if id_m else None
+        
+        if not bid:
+            raw_block, _ = capture_block(lines, i)
+            temp_clean = clean_task_text(line, None, fname)
+            temp_clean = re.sub(r'\s+\^?[a-zA-Z0-9]*$', '', temp_clean).strip()
+            combined_body = normalize_block_content(raw_block[1:])
+            temp_combined_text = temp_clean + "|||" + combined_body
+            recovery_hash = sm.calc_hash(st, temp_combined_text)
+            found_id = sm.find_id_by_hash(filepath, recovery_hash)
+            
+            if found_id:
+                Logger.info(f"   🚑 [RESCUE] 指纹匹配成功! '{temp_clean[:10]}...' -> 复活 ID: {found_id}")
+                bid = found_id
+                mod = True
+            else:
+                bid = generate_block_id().replace('^', '')
+                mod = True
+        
+        # Clean task text
+        clean_txt = clean_task_text(line, bid, context_name=fname)
+        dates_pattern = r'([📅✅]\s*\d{4}-\d{2}-\d{2}|\[\[\d{4}-\d{2}-\d{2}(?:#\^[a-zA-Z0-9]+)?(?:\|[📅⮐])?\]\])'
+        dates = " ".join(re.findall(dates_pattern, line))
+        
+        if current_section_date and current_section_date not in dates:
+            dates = f"[[{task_date}]]"
+            mod = True
+        if task_date not in line and not dates:
+            dates = f"[[{task_date}]]"
+            mod = True
+        
+        # Format the line
+        new_line = format_line(indent, st, clean_txt, dates, fname, bid, False)
+        if new_line.strip() != line.strip():
+            lines[i] = new_line
+            mod = True
+        
+        # TIME GATE: Skip tasks before sync start date
+        if task_date < Config.SYNC_START_DATE:
+            _, consumed = capture_block(lines, i)
+            i += consumed
+            continue
+        
+        # Capture full block and build task dict
+        block, consumed = capture_block(lines, i)
+        combined_text = clean_txt + "|||" + normalize_block_content(block[1:])
+        content_hash = sm.calc_hash(st, combined_text)
+        
+        tasks.append({
+            'proj': project_name,
+            'bid': bid,
+            'pure': clean_txt,
+            'status': st,
+            'path': filepath,
+            'fname': fname,
+            'raw': block,
+            'hash': content_hash,
+            'indent': indent,
+            'dates': dates,
+            'is_quoted': False,
+            '_task_date': task_date  # Internal field for date indexing
+        })
+        
+        i += consumed
+    
+    # Write back if modified and requested
+    if mod and write_back:
+        lines = inject_into_task_section(lines, [])
+        orig = FileUtils.read_file(filepath)
+        new_c = "".join(lines)
+        old_c = "".join(orig) if orig else ""
+        if new_c != old_c:
+            Logger.info(f"   💾 [WRITE] 自动格式化源文件: {os.path.basename(filepath)}")
+            FileUtils.write_file(filepath, lines)
+    
+    return tasks, lines, mod
 
 ```
 
@@ -2781,6 +4643,301 @@ def cleanup_empty_headers(lines, date_tag):
 ```
 
 ---
+## File: src/dailynotes/sync/task_registry.py
+```py
+"""
+TaskRegistry - Incremental Task Cache for AntigravitySync v1.8
+
+This module implements a persistent in-memory cache for all source tasks,
+enabling O(1) file updates instead of O(n) full-disk scans.
+
+Architecture:
+    - _file_cache:  { filepath: [task_dicts...] }  # Tasks indexed by source file
+    - _date_index:  { date_str: {bid: task_dict} } # Tasks indexed by date (derived view)
+
+Key Methods:
+    - initialize(project_map, sm): Full scan at startup (one-time os.walk)
+    - update_file(filepath, project_name, sm): Incremental single-file rescan
+    - get_tasks_by_date(date_str): Fast lookup for process_date()
+    - get_affected_dates(filepath): Returns dates affected by a file change
+"""
+
+import os
+import re
+import datetime
+import random
+import string
+import threading
+from typing import Dict, List, Set, Optional, Any, Tuple
+from config import Config
+from ..utils import Logger, FileUtils
+from .parsing import (
+    capture_block, 
+    clean_task_text, 
+    normalize_block_content, 
+    get_indent_depth,
+    parse_file_tasks,
+    generate_block_id
+)
+
+
+class TaskRegistry:
+    """
+    Thread-safe task registry implementing incremental synchronization.
+    """
+    
+    _instance = None
+    _lock = threading.Lock()
+    
+    def __new__(cls):
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+                    cls._instance._initialized = False
+        return cls._instance
+    
+    def __init__(self):
+        if self._initialized:
+            return
+        
+        self._file_cache: Dict[str, List[Dict]] = {}   # { filepath: [tasks...] }
+        self._date_index: Dict[str, Dict[str, Dict]] = {}  # { date: {bid: task} }
+        self._file_to_dates: Dict[str, Set[str]] = {}  # { filepath: {dates...} }
+        self._project_map: Dict[str, str] = {}  # Cached project map
+        self._file_lock = threading.RLock()  # Reentrant lock for nested calls
+        self._initialized = True
+        
+        Logger.info("📦 [TaskRegistry] 实例已创建")
+    
+    def initialize(self, project_map: Dict[str, str], sm) -> None:
+        """
+        Perform full scan at startup to populate the registry.
+        This is the ONLY place where os.walk should be used.
+        
+        Args:
+            project_map: { directory_path: project_name }
+            sm: StateManager instance for hash calculations
+        """
+        with self._file_lock:
+            self._project_map = project_map.copy()
+            self._file_cache.clear()
+            self._date_index.clear()
+            self._file_to_dates.clear()
+            
+            today_str = datetime.date.today().strftime('%Y-%m-%d')
+            file_count = 0
+            task_count = 0
+            
+            # Single os.walk at startup
+            for root, dirs, files in os.walk(Config.ROOT_DIR):
+                dirs[:] = [d for d in dirs if not FileUtils.is_excluded(os.path.join(root, d))]
+                if FileUtils.is_excluded(root):
+                    continue
+                
+                # Determine project for this directory
+                curr_proj = self._resolve_project(root)
+                if not curr_proj:
+                    continue
+                
+                for f in files:
+                    if not f.endswith('.md'):
+                        continue
+                    
+                    filepath = os.path.join(root, f)
+                    tasks = self._scan_single_file(filepath, curr_proj, sm)
+                    
+                    if tasks:
+                        self._file_cache[filepath] = tasks
+                        self._update_date_index_from_file(filepath, tasks)
+                        file_count += 1
+                        task_count += len(tasks)
+            
+            # Ensure at least 3 recent dates exist in index
+            for delta in range(3):
+                target_date = datetime.date.today() - datetime.timedelta(days=delta)
+                target_str = target_date.strftime('%Y-%m-%d')
+                if target_str not in self._date_index:
+                    self._date_index[target_str] = {}
+            
+            Logger.info(f"📦 [TaskRegistry] 初始化完成: {file_count} 文件, {task_count} 任务")
+    
+    def _resolve_project(self, directory: str) -> Optional[str]:
+        """Traverse up to find the nearest ancestor project."""
+        temp = directory
+        while temp.startswith(Config.ROOT_DIR):
+            if temp in self._project_map:
+                return self._project_map[temp]
+            parent = os.path.dirname(temp)
+            if parent == temp:
+                break
+            temp = parent
+        return None
+    
+    def _scan_single_file(self, filepath: str, project_name: str, sm) -> List[Dict]:
+        """
+        Parse a single markdown file and extract all source tasks.
+        [v1.8.1] Now delegates to centralized parse_file_tasks for DRY.
+        
+        Args:
+            filepath: Absolute path to the .md file
+            project_name: The project this file belongs to
+            sm: StateManager for hash calculations
+            
+        Returns:
+            List of task dictionaries
+        """
+        lines = FileUtils.read_file(filepath)
+        if not lines:
+            return []
+        
+        # Delegate to centralized parsing function
+        tasks, _, _ = parse_file_tasks(filepath, lines, project_name, sm, write_back=True)
+        
+        return tasks
+    
+    def _update_date_index_from_file(self, filepath: str, tasks: List[Dict]) -> None:
+        """Update the date index with tasks from a file."""
+        dates_in_file = set()
+        
+        for task in tasks:
+            task_date = task.get('_task_date')
+            if not task_date:
+                continue
+            
+            dates_in_file.add(task_date)
+            
+            if task_date not in self._date_index:
+                self._date_index[task_date] = {}
+            
+            bid = task['bid']
+            # Create a copy without the internal _task_date field
+            task_copy = {k: v for k, v in task.items() if not k.startswith('_')}
+            self._date_index[task_date][bid] = task_copy
+        
+        self._file_to_dates[filepath] = dates_in_file
+    
+    def update_file(self, filepath: str, sm) -> Set[str]:
+        """
+        Incrementally update the cache for a single file.
+        Called when a file change event is received.
+        
+        Args:
+            filepath: The file that was modified
+            sm: StateManager for hash calculations
+            
+        Returns:
+            Set of date strings affected by this change
+        """
+        with self._file_lock:
+            # Collect old affected dates before clearing
+            old_dates = self._file_to_dates.get(filepath, set()).copy()
+            
+            # Clear old tasks from date index
+            old_tasks = self._file_cache.get(filepath, [])
+            for task in old_tasks:
+                task_date = task.get('_task_date')
+                bid = task.get('bid')
+                if task_date and bid and task_date in self._date_index:
+                    self._date_index[task_date].pop(bid, None)
+            
+            # Clear file from cache
+            self._file_cache.pop(filepath, None)
+            self._file_to_dates.pop(filepath, None)
+            
+            # Re-scan file if it still exists
+            if os.path.exists(filepath):
+                # Determine project
+                directory = os.path.dirname(filepath)
+                project_name = self._resolve_project(directory)
+                
+                if project_name:
+                    tasks = self._scan_single_file(filepath, project_name, sm)
+                    
+                    if tasks:
+                        self._file_cache[filepath] = tasks
+                        self._update_date_index_from_file(filepath, tasks)
+            
+            # Get new affected dates
+            new_dates = self._file_to_dates.get(filepath, set())
+            
+            # Return union of old and new dates
+            return old_dates | new_dates
+    
+    def get_tasks_by_date(self, date_str: str) -> Dict[str, Dict]:
+        """
+        Get all tasks for a specific date.
+        Fast O(1) lookup from the date index.
+        
+        Args:
+            date_str: Date string in YYYY-MM-DD format
+            
+        Returns:
+            Dictionary of { bid: task_dict }
+        """
+        with self._file_lock:
+            return self._date_index.get(date_str, {}).copy()
+    
+    def get_affected_dates(self, filepath: str) -> Set[str]:
+        """
+        Get all dates that have tasks from a specific file.
+        
+        Args:
+            filepath: Absolute path to the file
+            
+        Returns:
+            Set of date strings
+        """
+        with self._file_lock:
+            return self._file_to_dates.get(filepath, set()).copy()
+    
+    def refresh_project_map(self, project_map: Dict[str, str]) -> None:
+        """
+        Update the internal project map (called when projects are re-scanned).
+        
+        Args:
+            project_map: Updated { directory_path: project_name }
+        """
+        with self._file_lock:
+            self._project_map = project_map.copy()
+    
+    def get_all_tasks_by_date(self) -> Dict[str, Dict[str, Dict]]:
+        """
+        Get the entire date index.
+        Used for compatibility with the original scan_all_source_tasks() return value.
+        
+        Returns:
+            Dictionary of { date_str: { bid: task_dict } }
+        """
+        with self._file_lock:
+            return {date: tasks.copy() for date, tasks in self._date_index.items()}
+    
+    def is_initialized(self) -> bool:
+        """Check if the registry has been initialized."""
+        return bool(self._file_cache) or bool(self._date_index)
+    
+    def clear(self) -> None:
+        """Clear all cached data (for testing)."""
+        with self._file_lock:
+            self._file_cache.clear()
+            self._date_index.clear()
+            self._file_to_dates.clear()
+            self._project_map.clear()
+
+
+# Global singleton access
+_registry: Optional[TaskRegistry] = None
+
+def get_registry() -> TaskRegistry:
+    """Get the global TaskRegistry singleton."""
+    global _registry
+    if _registry is None:
+        _registry = TaskRegistry()
+    return _registry
+
+```
+
+---
 ## File: src/external/__init__.py
 ```py
 # External sync modules
@@ -2888,6 +5045,172 @@ class AppleSyncAdapter:
     def is_available(self) -> bool:
         """Check if Apple Sync is available and initialized."""
         return self.enabled
+
+```
+
+---
+## File: src/external/calendar_monitor.py
+```py
+import threading
+import objc
+from Foundation import NSObject, NSDistributedNotificationCenter
+from PyObjCTools import AppHelper
+
+class DistributedObserver(NSObject):
+    """
+    [Zero-Latency] System-wide Calendar Database Observer.
+    Listens for 'com.apple.calendar.database.changed' distributed notification.
+    """
+    
+    def initWithCallback_(self, callback):
+        self = objc.super(DistributedObserver, self).init()
+        if self is None:
+            return None
+        self.callback = callback
+        return self
+    
+    def startListening(self):
+        # Register for the hidden system broadcast
+        NSDistributedNotificationCenter.defaultCenter().addObserver_selector_name_object_(
+            self,
+            "onCalendarChanged:",
+            "com.apple.calendar.database.changed",
+            None
+        )
+        print("📡 [Distributed] 成功挂载系统级日历变更广播 (零延迟模式)")
+        
+    def stopListening(self):
+        NSDistributedNotificationCenter.defaultCenter().removeObserver_(self)
+        
+    def onCalendarChanged_(self, notification):
+        """
+        Callback triggered by the kernel/distributed center.
+        """
+        # Triggers immediately on database write
+        if self.callback:
+            self.callback()
+
+def start_calendar_watchdog(on_change_callback):
+    """
+    Starts the Distributed Notification Observer in a background thread.
+    """
+    def _run_loop(callback):
+        pool = objc.autorelease_pool()
+        with pool:
+            observer = DistributedObserver.alloc().initWithCallback_(callback)
+            observer.startListening()
+            
+            try:
+                # Install interrupt=False to allow main thread signals
+                AppHelper.runConsoleEventLoop(installInterrupt=False)
+            except Exception as e:
+                print(f"⚠️ [Distributed] RunLoop Error: {e}")
+            finally:
+                if observer:
+                    observer.stopListening()
+
+    t = threading.Thread(target=_run_loop, args=(on_change_callback,), daemon=True, name="DistributedCalMonitor")
+    t.start()
+    return t
+
+```
+
+---
+## File: src/external/log_sentinel.py
+```py
+import subprocess
+import threading
+import time
+import signal
+import os
+
+class LogSentinel:
+    """
+    Broad-Spectrum Calendar Change Detector (Shotgun Mode).
+    Monitors all non-debug CalendarAgent logs to reliably detect changes.
+    """
+    
+    def __init__(self, callback):
+        self.callback = callback
+        self.process = None
+        self.stop_event = threading.Event()
+        self.thread = None
+
+    def start(self):
+        """Spawns the log monitoring daemon thread."""
+        if self.thread and self.thread.is_alive():
+            return
+        
+        self.stop_event.clear()
+        self.thread = threading.Thread(target=self._monitor_logs, daemon=True, name="LogSentinelOps")
+        self.thread.start()
+
+    def stop(self):
+        """Stops the subprocess and the monitoring thread."""
+        self.stop_event.set()
+        if self.process:
+            try:
+                os.kill(self.process.pid, signal.SIGTERM)
+            except Exception:
+                pass
+            self.process = None
+
+    def _monitor_logs(self):
+        # [修改点 1] 移除具体的 Message 过滤，只看进程名
+        # type != debug 用于过滤掉过于频繁的调试信息，只看默认和错误信息
+        cmd = [
+            "/usr/bin/log", "stream",
+            "--style", "syslog",
+            "--predicate", 'process == "CalendarAgent" && type != debug'
+        ]
+        
+        try:
+            self.process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                bufsize=1
+            )
+
+            print("🕵️ [LogSentinel] 哨兵已启动 (广谱监听模式)...")
+
+            # [修改点 2] 引入冷却时间，防止日志刷屏导致触发太多
+            last_trigger_time = 0
+            COOLDOWN = 1.0  # 1秒内只触发一次
+
+            while not self.stop_event.is_set():
+                line = self.process.stdout.readline()
+                if not line:
+                    if self.process.poll() is not None:
+                        break
+                    continue
+                
+                # [调试用] 打印出来看看你的系统到底输出了什么日志
+                # print(f"捕获日志: {line.strip()}") 
+
+                # 只要有日志输出，就说明 CalendarAgent 在工作
+                # 我们可以做一个简单的反向过滤，忽略掉 "Fetching" (读取) 这种操作
+                if "Fetching" in line or "Reading" in line:
+                    continue
+
+                current_time = time.time()
+                if current_time - last_trigger_time > COOLDOWN:
+                    print(f"⚡ [LogSentinel] 捕获活动，触发同步！")
+                    if self.callback:
+                        self.callback()
+                    last_trigger_time = current_time
+                    
+        except Exception as e:
+            print(f"⚠️ [LogSentinel] 监听失败: {e}")
+        finally:
+            self.stop()
+
+def start_log_sentinel(callback):
+    """Helper to start the sentinel quickly."""
+    sentinel = LogSentinel(callback)
+    sentinel.start()
+    return sentinel
 
 ```
 
@@ -3378,6 +5701,7 @@ import os
 from datetime import datetime, timedelta
 from config import Config
 from .utils import calculate_duration_minutes
+from dailynotes.utils import FileUtils
 from .calendar_service import get_all_calendars_state, BatchExecutor
 from .obsidian_service import get_obsidian_state
 
@@ -3456,46 +5780,104 @@ def perform_bidirectional_sync(date_str, obs_path, state_manager, target_dt):
                     found_old_key = old_k
                     break
             if found_old_key:
-                print(f"🕵️ [Rename C->O] 日历改名: {last_cal[found_old_key]['name']} -> {c_data['name']}")
+                print(f"🕵️ [Move/Rename C->O] 捕捉变动: {last_cal[found_old_key]['name']}@{last_cal[found_old_key]['start_time']} -> {c_data['name']}@{c_data['start_time']}")
+                rename_success = False
                 if found_old_key in current_obs:
                     line_idx = current_obs[found_old_key]['line_index']
-                    old_o_data = current_obs[found_old_key]
                     tag_suffix = CAL_TO_TAG.get(c_data['current_calendar'], "")
                     if tag_suffix == "#D":
                         tag_suffix = ""
                     tag_part = f"{tag_suffix} " if tag_suffix else ""
+                    
+                    # Calculate new end time based on duration
                     end_time_str = ""
-                    if old_o_data['end_time']:
-                        end_time_str = f" - {old_o_data['end_time']}"
-                    status_char = old_o_data['status']
-                    new_line = f"- [{status_char}] {old_o_data['start_time']}{end_time_str} {tag_part}{c_data['name']}\n"
+                    if c_data['duration'] != 30:
+                        end_t = datetime.strptime(c_data['start_time'], "%H:%M") + timedelta(minutes=c_data['duration'])
+                        end_time_str = f" - {end_t.strftime('%H:%M')}"
+                    
+                    status_char = current_obs[found_old_key]['status']
+                    new_line = f"- [{status_char}] {c_data['start_time']}{end_time_str} {tag_part}{c_data['name']}\n"
                     lines_to_modify[line_idx] = new_line
                     file_dirty = True
+                    
+                    # [v1.7.2/v1.7.4] Critical State Update (Name AND Time):
+                    new_obs_key = f"{c_data['name']}_{c_data['start_time']}"
+                    new_o_data = current_obs[found_old_key].copy()
+                    new_o_data['name'] = c_data['name']
+                    new_o_data['start_time'] = c_data['start_time']
+                    new_o_data['end_time'] = end_t.strftime('%H:%M') if c_data['duration'] != 30 else None
+                    
+                    del current_obs[found_old_key]
+                    current_obs[new_obs_key] = new_o_data
+                    
                     handled_obs_keys.add(found_old_key)
-                    handled_cal_keys.add(c_key)
+                    handled_obs_keys.add(new_obs_key)
+                    rename_success = True
+                # [v1.7.1] Fix: Always mark as handled if rename detected to prevent duplicate append
+                handled_cal_keys.add(c_key)
+                if not rename_success:
+                    print(f"⚠️ [Rename] Obsidian 中未找到旧任务 {found_old_key}，跳过本地重命名，但阻止重复写入")
 
     last_obs_time_map = {}
+    last_obs_name_map = {}
     for k, v in last_obs.items():
+        # Map by time
         if v['start_time'] not in last_obs_time_map:
             last_obs_time_map[v['start_time']] = []
         last_obs_time_map[v['start_time']].append(k)
+        # Map by name
+        if v['name'] not in last_obs_name_map:
+            last_obs_name_map[v['name']] = []
+        last_obs_name_map[v['name']].append(k)
 
     for o_key, o_data in current_obs.items():
         if o_key in handled_obs_keys:
             continue
         if o_key not in last_obs:
-            candidates = last_obs_time_map.get(o_data['start_time'], [])
-            for old_key in candidates:
-                if old_key not in current_obs:
-                    if old_key in current_cal:
-                        c_data = current_cal[old_key]
-                        print(f"🕵️ [Rename O->C] 笔记改名: {last_obs[old_key]['name']} -> {o_data['name']}")
-                        o_is_completed = (o_data['status'] == 'x')
+            # [Detection] Rename? (Same time, different name)
+            candidates_time = last_obs_time_map.get(o_data['start_time'], [])
+            found_move = False
+            for old_key in candidates_time:
+                if old_key not in current_obs and old_key in current_cal:
+                    c_data = current_cal[old_key]
+                    print(f"🕵️ [Rename O->C] 笔记改名: {last_obs[old_key]['name']} -> {o_data['name']}")
+                    o_is_completed = (o_data['status'] == 'x')
+                    dur = calculate_duration_minutes(o_data['start_time'], o_data['end_time'])
+                    
+                    if o_data['target_calendar'] != c_data['current_calendar']:
+                        batch.add_delete(c_data['id'], c_data['current_calendar'])
+                        batch.add_create(o_data['name'], o_data['start_time'], dur, o_data['target_calendar'], o_is_completed)
+                    else:
                         batch.add_update(c_data['id'], c_data['current_calendar'], o_data['name'], o_data['start_time'],
-                                         c_data['duration'], o_is_completed)
-                        handled_obs_keys.add(o_key)      # Current key (prevent duplicate create)
-                        handled_obs_keys.add(old_key)    # Old key (prevent delete)
+                                         dur, o_is_completed)
+                    
+                    handled_obs_keys.add(o_key)
+                    handled_obs_keys.add(old_key)
+                    handled_cal_keys.add(old_key)
+                    found_move = True
+                    break
+            
+            if not found_move:
+                # [Detection] Move? (Same name, different time)
+                candidates_name = last_obs_name_map.get(o_data['name'], [])
+                for old_key in candidates_name:
+                    if old_key not in current_obs and old_key in current_cal:
+                        c_data = current_cal[old_key]
+                        print(f"🕵️ [Move O->C] 笔记移动: {last_obs[old_key]['start_time']} -> {o_data['start_time']} ({o_data['name']})")
+                        o_is_completed = (o_data['status'] == 'x')
+                        dur = calculate_duration_minutes(o_data['start_time'], o_data['end_time'])
+                        
+                        if o_data['target_calendar'] != c_data['current_calendar']:
+                            batch.add_delete(c_data['id'], c_data['current_calendar'])
+                            batch.add_create(o_data['name'], o_data['start_time'], dur, o_data['target_calendar'], o_is_completed)
+                        else:
+                            batch.add_update(c_data['id'], c_data['current_calendar'], o_data['name'], o_data['start_time'],
+                                             dur, o_is_completed)
+                        
+                        handled_obs_keys.add(o_key)
+                        handled_obs_keys.add(old_key)
                         handled_cal_keys.add(old_key)
+                        found_move = True
                         break
 
     # Phase A: O -> C
@@ -3511,6 +5893,11 @@ def perform_bidirectional_sync(date_str, obs_path, state_manager, target_dt):
             if (o_data['target_calendar'] != last_data['target_calendar'] or
                     abs(o_dur - l_dur) > 2 or
                     o_data['status'] != last_data.get('status', ' ')):
+                
+                print(f"🐛 [Debug] is_modified=True for {key}:")
+                print(f"    Cal: {o_data['target_calendar']} vs {last_data['target_calendar']}")
+                print(f"    Dur: {o_dur} vs {l_dur}")
+                print(f"    Sts: '{o_data['status']}' vs '{last_data.get('status', ' ')}'")
                 is_modified = True
 
         if is_new or is_modified:
@@ -3536,7 +5923,9 @@ def perform_bidirectional_sync(date_str, obs_path, state_manager, target_dt):
         if key not in current_obs and key not in handled_obs_keys:
             if key in current_cal:
                 c_data = current_cal[key]
+                print(f"🗑️ [O->C] 触发日历删除: {key}")
                 batch.add_delete(c_data['id'], c_data['current_calendar'])
+                handled_cal_keys.add(key)
 
     # Phase B: C -> O
     for key, c_data in current_cal.items():
@@ -3556,6 +5945,20 @@ def perform_bidirectional_sync(date_str, obs_path, state_manager, target_dt):
             new_line = f"- [{status_char}] {c_data['start_time']}{end_time_str} {tag_part}{c_data['name']}\n"
             lines_to_append.append(new_line)
             file_dirty = True
+            
+            # [v1.7.2] Snapshot Consistency: Add to current_obs so snapshot saves it
+            new_key = key # key is already name_time
+            # Construct minimal data for snapshot
+            current_obs[new_key] = {
+                'name': c_data['name'],
+                'start_time': c_data['start_time'],
+                'end_time': end_t.strftime('%H:%M') if c_data['duration'] != 30 else None,
+                'target_calendar': c_data['current_calendar'],
+                'tag': tag_suffix,
+                'status': status_char,
+                'line_index': -1 # Placeholder, won't be used next run (re-parsed)
+            }
+
         elif key in last_cal and key in current_obs:
             last_c_data = last_cal[key]
             is_cal_modified = False
@@ -3581,17 +5984,32 @@ def perform_bidirectional_sync(date_str, obs_path, state_manager, target_dt):
                 new_line = f"- [{status_char}] {c_data['start_time']}{end_time_str} {tag_part}{c_data['name']}\n"
                 lines_to_modify[line_idx] = new_line
                 file_dirty = True
+                
+                # [v1.7.2] Snapshot Consistency: Update current_obs
+                current_obs[key]['target_calendar'] = c_data['current_calendar']
+                current_obs[key]['tag'] = tag_suffix
+                current_obs[key]['status'] = status_char
+                current_obs[key]['end_time'] = end_t.strftime('%H:%M') if c_data['duration'] != 30 else None
 
     for key in last_cal:
         if key not in current_cal and key not in handled_obs_keys:
             if key in current_obs:
                 line_idx = current_obs[key]['line_index']
-                print(f"✂️ [C->O] 日历删除: {current_obs[key]['name']}")
+                print(f"✂️ [C->O] 检测到日历端删除 (同步删除本地): {current_obs[key]['name']}")
                 lines_to_delete_indices.append(line_idx)
                 file_dirty = True
+                
+                # [v1.7.2] Snapshot Consistency: Remove from current_obs
+                del current_obs[key]
 
     # 4. Execute AppleScript batch
     batch.execute()
+
+    # [v1.7.3] State Stabilization:
+    # If any creations occurred, re-fetch calendar state immediately to capture IDs.
+    # This prevents duplication if a renamed/modified version appears in the next run.
+    if len(batch.creates) > 0:
+        current_cal = get_all_calendars_state(target_dt)
 
     # Phase C: Atomic Write
     if file_dirty or len(lines_to_append) > 0 or len(lines_to_delete_indices) > 0:
@@ -3599,7 +6017,7 @@ def perform_bidirectional_sync(date_str, obs_path, state_manager, target_dt):
             current_mtime_now = os.path.getmtime(obs_path)
             if current_mtime_now != initial_mtime:
                 print(f"⚠️ [Concurrency] 放弃写入 {date_str}：文件在计算期间已被修改")
-                return
+                return False, False
 
             if insert_idx == len(file_lines):
                 has_header = False
@@ -3630,17 +6048,16 @@ def perform_bidirectional_sync(date_str, obs_path, state_manager, target_dt):
                 file_lines.insert(insert_idx, line)
                 insert_idx += 1
 
-            temp_path = obs_path + ".tmp"
+            # [v1.7] Atomic Write with Hash Registration
+            # Use FileUtils to write file and register its hash so manager.py ignores this event
             try:
-                with open(temp_path, 'w', encoding='utf-8') as f:
-                    f.writelines(file_lines)
-                os.replace(temp_path, obs_path)
-                print(f"💾 Obsidian 文件已更新: {date_str}")
+                if FileUtils.write_file(obs_path, file_lines):
+                    print(f"💾 Obsidian 文件已更新 (C->O): {date_str}")
+                else:
+                    print(f"⚠️ Obsidian 文件写入被跳过 (无变动?): {date_str}")
             except Exception as e:
                 print(f"❌ 文件写入失败: {e}")
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
-                return
+                return False, False
 
     state_manager.update_snapshot(date_str, current_obs, current_cal)
     

@@ -1,4 +1,5 @@
 import os
+import sys
 import datetime
 import time
 import tempfile
@@ -16,6 +17,16 @@ except ImportError:
 
 class Logger:
     _shown_errors = set()
+    _countdown_active = False  # 跟踪倒计时行是否正在显示
+
+    @classmethod
+    def _clear_countdown_line(cls):
+        """清除倒计时行，为正常日志输出腾出空间"""
+        if cls._countdown_active:
+            # 回车 + 清行 + 换行
+            sys.stdout.write("\r" + " " * 50 + "\r")
+            sys.stdout.flush()
+            cls._countdown_active = False
 
     @staticmethod
     def _get_caller_info():
@@ -33,36 +44,40 @@ class Logger:
         except Exception:
             return "[Unknown:Unknown]"
 
-    @staticmethod
-    def error_once(key, message):
-        if key not in Logger._shown_errors:
-            caller = Logger._get_caller_info()
+    @classmethod
+    def error_once(cls, key, message):
+        if key not in cls._shown_errors:
+            cls._clear_countdown_line()
+            caller = cls._get_caller_info()
             print(f"\033[91m[ERROR] {caller} {message}\033[0m")
-            Logger._shown_errors.add(key)
+            cls._shown_errors.add(key)
 
-    @staticmethod
-    def info(message, date_tag=None):
+    @classmethod
+    def info(cls, message, date_tag=None):
         # [特性] 聚焦日志：仅显示今天的日志（当前文件）
         t = datetime.datetime.now().strftime('%H:%M:%S')
         today_str = datetime.date.today().strftime('%Y-%m-%d')
         
         if date_tag and date_tag != today_str:
             return # 跳过历史日志以减少干扰
-            
+        
+        cls._clear_countdown_line()
         prefix = f"[{date_tag}] " if date_tag else ""
-        caller = Logger._get_caller_info()
+        caller = cls._get_caller_info()
         print(f"\033[92m[{t} INFO] {caller} {prefix}{message}\033[0m")
 
-    @staticmethod
-    def debug(message):
+    @classmethod
+    def debug(cls, message):
         if Config.DEBUG_MODE:
-            caller = Logger._get_caller_info()
+            cls._clear_countdown_line()
+            caller = cls._get_caller_info()
             print(f"\033[90m[DEBUG] {caller} {message}\033[0m")
 
-    @staticmethod
-    def debug_block(title, lines):
+    @classmethod
+    def debug_block(cls, title, lines):
         if Config.DEBUG_MODE:
-            caller = Logger._get_caller_info()
+            cls._clear_countdown_line()
+            caller = cls._get_caller_info()
             print(f"\033[96m--- [DEBUG] {caller} {title} ---\033[0m")
             for line in lines:
                 print(f"  | {line.rstrip()}")
@@ -175,6 +190,13 @@ class FileUtils:
     @staticmethod
     def is_excluded(path):
         path = os.path.normpath(path)
+        
+        # [白名单] DAILY_NOTE_DIR 及其文件不应被排除
+        daily_dir = os.path.normpath(Config.DAILY_NOTE_DIR)
+        if path == daily_dir or path.startswith(daily_dir + os.sep):
+            return False
+        
+        # [黑名单] 排除目录检查
         for exclude in Config.EXCLUDE_DIRS:
             exclude = os.path.normpath(exclude)
             if path == exclude or path.startswith(exclude + os.sep):

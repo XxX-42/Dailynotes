@@ -2,14 +2,14 @@ import os
 
 
 class Config:
-    VERSION = "v1.5"    # [2026-01-21] Exponential Dynamic Scheduling
+    VERSION = "v1.8.2 (Clean Architecture)"    # [2026-01-21] Removed ingestion.py redundancy
     
     # ==========================
     # 1. 基础路径配置 (来自 Dailynotes)
     # ==========================
     VAULT_ROOT = r'/Users/user999/Documents/【Liang_project】/远程仓库1'
     REL_ATTACHMENT_DIR = r'【ATTACHMENT】'
-    REL_TEMPLATE_FILE = r'DayPlanTemplate.md'
+    REL_TEMPLATE_FILE = r'【002_Infobox】/Templates/DayPlanTemplate.md'
 
     # 自动拼接
     DAILY_NOTE_DIR = os.path.join(VAULT_ROOT, REL_ATTACHMENT_DIR, r'【DAILYNOTE】')
@@ -52,6 +52,10 @@ class Config:
     EXP_BASE = 240      # 基础系数
     EXP_COEFF = 0.0068  # 指数系数
     EXP_OFFSET = 60     # 偏移量
+    
+    # [v1.7] 日历数据库监听参数 (macOS)
+    CALENDAR_WATCH_PATH = os.path.expanduser("~/Library/Calendars")
+    CALENDAR_DEBOUNCE_SECONDS = 2.0  # 日历写入非常频繁，需要较大防抖
 
 
     # 范围限制

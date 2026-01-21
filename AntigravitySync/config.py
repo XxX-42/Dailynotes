@@ -2,7 +2,7 @@ import os
 
 
 class Config:
-    VERSION = "v2.0.2 (Stable)"    # [2026-01-22] Stable release after major refactor
+    VERSION = "v3.0.0 (Chronos Mode)"    # [2026-01-22] Pure event-driven, no polling
     
     # ==========================
     # 1. 基础路径配置 (来自 Dailynotes)
@@ -32,27 +32,19 @@ class Config:
 
     # 运行参数
     SYNC_START_DATE = "2025-12-08"
-    TICK_INTERVAL = 3
     TYPING_COOLDOWN_SECONDS = 6
     IMAGE_PARAM_SUFFIX = "|L|200"
     DEBUG_MODE = True
     
-    # [NEW] Tick-based scheduling parameters
-    DAY_START = -1   # -1 = 昨天
-    DAY_END = 90     # [v1.5.1] 释放野兽：指数算法完全可以支撑这个范围
-    COMPLETE_TASKS_SYNC_INTERVAL = 60  # [v1.3] 全量扫描从每 30 秒降为每 3 分钟
-    
     # [v1.4] 事件驱动模式参数
     EVENT_DEBOUNCE_SECONDS = 0.5   # 事件触发防抖时间（秒）
     
-    # [v1.5] 指数动态调度参数
-    # 公式: I(d) = EXP_BASE * exp(EXP_COEFF * d) + EXP_OFFSET
-    # d=0 时约 300 秒 (5分钟), d=30 时约 348 秒 (5.8分钟)
-    DYNAMIC_SYNC_MAX_INTERVAL = 3600  # 强制上限 1 小时
-    EXP_BASE = 240      # 基础系数
-    EXP_COEFF = 0.0068  # 指数系数
-    EXP_OFFSET = 60     # 偏移量
-    
+    # [v3.0] Chronos Mode - 全事件驱动架构
+    CHRONOS_SYNC_WINDOW_DAYS = 30      # 日历变更时同步的窗口大小（前后各15天）
+    CHRONOS_FULL_RANGE_PAST_YEARS = 1  # 全量同步：过去N年
+    CHRONOS_FULL_RANGE_FUTURE_YEARS = 10  # 全量同步：未来N年
+    CHRONOS_EVENTKIT_BATCH_DAYS = 1460  # EventKit批次大小（约4年，系统限制）
+    CHRONOS_LOOP_INTERVAL = 60.0       # 主循环间隔（秒）
     
     # [v2.0] EventKit Sync
     # No file watching required for calendar

@@ -1,17 +1,16 @@
 """
-Fusion Manager - Antigravity Architecture v1.5
-Event-Driven Sync Engine with Exponential Dynamic Scheduling.
+Fusion Manager - Antigravity Architecture v3.0 (Chronos Mode)
+Pure Event-Driven Sync Engine - No Polling Required.
 
 Key Features:
-- [v1.4] Event-Driven: Uses watchdog to monitor file changes
-- [v1.4] Self-Write Detection: Ignores events triggered by script's own writes
-- [v1.5] Exponential Scheduling: I(d) = 240 * exp(0.0068 * d) + 60
-- Content-Hash Self-Awareness: Uses content identity instead of mtime
+- [v3.0] Chronos Mode: Full event-driven, no polling
+- [v3.0] Startup Full Sync: Scans past 1 year to future 10 years
+- [v3.0] Event-Triggered Window Sync: Only syncs affected window on calendar change
+- [v2.0] CFRunLoop Integration: Instant notification delivery
 """
 import os
 import sys
 import re
-import math
 import time
 import datetime
 import signal
@@ -39,49 +38,30 @@ try:
 except ImportError:
     WATCHDOG_AVAILABLE = False
     Observer = None
-    # 提供空基类以避免继承错误
     class FileSystemEventHandler:
         pass
-    Logger.error_once("watchdog_import", "⚠️ watchdog 库未安装，将使用轮询模式")
+    Logger.error_once("watchdog_import", "⚠️ watchdog 库未安装")
 
 
 class ObsidianEventHandler(FileSystemEventHandler):
     """
     [v1.6] 文件变更事件处理器 - 支持原子写入
-    监听 Obsidian Vault 中的 .md 文件变动，触发同步逻辑。
-    
-    关键修复：Obsidian 使用"原子写入"模式保存文件：
-    1. 写入临时文件 (e.g., .md.tmp)
-    2. 重命名临时文件覆盖目标文件 (rename/move)
-    
-    因此必须同时监听 on_modified 和 on_moved 事件。
     """
     
     def __init__(self, manager):
         super().__init__()
         self.manager = manager
-        self._last_event_time = {}  # 防抖追踪: {filepath: timestamp}
-    
+        self._last_event_time = {}
+
     def _process_event(self, filepath, event_type):
-        """
-        统一的事件处理逻辑（供 on_modified 和 on_moved 调用）
-        
-        Args:
-            filepath: 目标文件路径
-            event_type: 事件类型字符串 ("MODIFIED" 或 "MOVED")
-        """
-        # [过滤] 仅处理 .md 文件
         if not filepath.endswith('.md'):
             return
         
-        # [过滤] 排除目录检查
         if FileUtils.is_excluded(filepath):
             return
 
-        # [底层日志] 立即输出，这是调试的关键
         Logger.info(f"🔎 [Watchdog] 捕获底层事件 ({event_type}): {os.path.basename(filepath)}")
         
-        # [防抖] 避免短时间内重复触发
         now = time.time()
         last_time = self._last_event_time.get(filepath, 0)
         if now - last_time < Config.EVENT_DEBOUNCE_SECONDS:
@@ -89,7 +69,6 @@ class ObsidianEventHandler(FileSystemEventHandler):
             return
         self._last_event_time[filepath] = now
         
-        # [哈希自省] 检测是否为脚本自身的写入
         try:
             content = FileUtils.read_content(filepath)
             if content is None:
@@ -97,72 +76,44 @@ class ObsidianEventHandler(FileSystemEventHandler):
             
             content_hash = FileUtils.calculate_hash(content)
             
-            # 如果这是脚本自己的写入，立即丢弃事件
             if FileUtils.is_system_write(content_hash):
                 Logger.debug(f"[Event] 忽略自写入事件: {os.path.basename(filepath)}")
                 return
             
-            # [触发] 用户编辑事件，触发同步
             Logger.info(f"📝 [Event] 检测到用户变更: {os.path.basename(filepath)}")
             self.manager.on_file_changed(filepath)
             
         except Exception as e:
             Logger.error_once(f"event_err_{filepath}", f"事件处理异常: {e}")
-    
+
     def on_modified(self, event):
-        """处理文件修改事件（传统编辑器直接写入）"""
         if event.is_directory:
             return
         self._process_event(event.src_path, "MODIFIED")
-    
+
     def on_moved(self, event):
-        """
-        处理文件移动/重命名事件（原子写入的核心）
-        
-        Obsidian 保存流程：
-        1. 写入 .md.tmp 临时文件
-        2. rename(".md.tmp", ".md") 覆盖目标
-        
-        关键：必须使用 dest_path (重命名后的目标路径)
-        """
         if event.is_directory:
             return
-        # 注意：使用 dest_path，这是重命名后的新文件名
         self._process_event(event.dest_path, "MOVED")
-
-
-
 
 
 class FusionManager:
     """
-    Unified sync manager implementing Antigravity Architecture.
+    [v3.0] Chronos Mode - Pure Event-Driven Sync Manager
     
-    Core Logic:
-    - 主权在内 (Sovereignty Inside): Dailynotes runs first
-    - 脏标志阻断 (Dirty Flag): If internal modified, skip external
-    - [v1.4] 事件驱动 (Event-Driven): watchdog 监听文件变更
-    - [v1.5] 指数动态调度 (Exponential Scheduling): 非线性日期冷却
+    Architecture:
+    - Startup: Full range sync (past 1 year to future 10 years)
+    - Runtime: Pure event-driven, no polling
+    - Calendar events trigger window sync (±15 days)
+    - Midnight crossing triggers next day's note creation
     """
     
     def __init__(self):
         self.sm = StateManager()
         self.sync_core = SyncCore(self.sm)
-        
-        # [NEW] Initialize Apple Sync adapter (lazy, platform-safe)
         self.apple_sync = AppleSyncAdapter()
         
-        # State tracking
-        self.last_active_time = time.time()
-        
-        # [NEW] Tick-based scheduling for full date range scan
-        self.tick_counter = 0  # Counts ticks since last full scan
-        self.today_last_hash = None  # Track today's diary hash for change detection
-        
-        # [NEW] Track the date when tomorrow's note was last created (to avoid duplicates)
-        self._tomorrow_note_created_date = None
-        
-        # [v1.4] Observer 实例
+        # Observer instances
         self._observer = None
         self._ek_client = None
         if EK_AVAILABLE:
@@ -171,143 +122,19 @@ class FusionManager:
             except Exception as e:
                 Logger.error_once("ek_init_fail", f"EventKitClient init failed: {e}")
                 self._ek_client = None
+        
         self._running = False
-        
-        # [v1.5] 动态调度状态：记录每个日期的上次同步时间戳
-        self._last_full_sync_registry = {}  # {date_str: timestamp}
-        
-        # [v1.8] Lazy initialization flag for TaskRegistry
         self._registry_warmup_done = False
-
-        # [v2.0 REFACTOR] Thread-Safety Flag for Calendar Sync
-        # The background thread sets this to True, Main Loop checks and executes sync
+        
+        # [v3.0] Chronos Mode
         self._calendar_dirty_flag = False
-
-    def check_debounce(self, filepath):
-        """
-        Check if file is stable for processing.
-        [REFACTORED] Uses content-hash to distinguish system writes from user edits.
-        """
-        if not os.path.exists(filepath):
-            return False
-        
-        # Read current content and calculate its hash
-        content = FileUtils.read_content(filepath)
-        if content is None:
-            return False
-        
-        content_hash = FileUtils.calculate_hash(content)
-        
-        # If hash matches a system write, file is "self-owned" -> stable
-        # Note: is_system_write() consumes the hash (one-time use)
-        if FileUtils.is_system_write(content_hash):
-            return True
-        
-        # Otherwise, check mtime-based cooldown (user is typing)
-        mtime = FileUtils.get_mtime(filepath)
-        idle = time.time() - mtime
-        return idle >= Config.TYPING_COOLDOWN_SECONDS
-
-    def is_user_active(self):
-        """
-        [Activity Detection] Check for "hot" files.
-        """
-        today_str = datetime.date.today().strftime('%Y-%m-%d')
-        daily_path = os.path.join(Config.DAILY_NOTE_DIR, f"{today_str}.md")
-
-        if os.path.exists(daily_path):
-            content = FileUtils.read_content(daily_path)
-            if content:
-                content_hash = FileUtils.calculate_hash(content)
-                if FileUtils.check_system_write(content_hash):
-                    return False
-
-            mtime = FileUtils.get_mtime(daily_path)
-            if time.time() - mtime < 60:
-                return True
-
-        return False
-
-    def check_today_changed(self) -> bool:
-        """
-        Check if today's diary content has changed since last check.
-        """
-        today_str = datetime.date.today().strftime('%Y-%m-%d')
-        daily_path = os.path.join(Config.DAILY_NOTE_DIR, f"{today_str}.md")
-        
-        if not os.path.exists(daily_path):
-            return False
-        
-        content = FileUtils.read_content(daily_path)
-        if content is None:
-            return False
-        
-        current_hash = FileUtils.calculate_hash(content)
-        
-        if self.today_last_hash is None:
-            self.today_last_hash = current_hash
-            return False
-        
-        if current_hash != self.today_last_hash:
-            self.today_last_hash = current_hash
-            return True
-        
-        return False
-
-    def _maybe_create_tomorrow_note(self):
-        """
-        [NEW] Auto-create tomorrow's diary at 23:30.
-        """
-        now = datetime.datetime.now()
-        today_str = now.strftime('%Y-%m-%d')
-        
-        if self._tomorrow_note_created_date == today_str:
-            return
-        
-        if now.hour != 23 or now.minute < 30:
-            return
-        
-        tomorrow = now.date() + datetime.timedelta(days=1)
-        tomorrow_str = tomorrow.strftime('%Y-%m-%d')
-        tomorrow_path = os.path.join(Config.DAILY_NOTE_DIR, f"{tomorrow_str}.md")
-        
-        if os.path.exists(tomorrow_path):
-            Logger.info(f"📅 [预创建] 明天的日记已存在，跳过: {tomorrow_str}.md")
-            self._tomorrow_note_created_date = today_str
-            return
-        
-        if os.path.exists(Config.TEMPLATE_FILE):
-            try:
-                tmpl_lines = FileUtils.read_file(Config.TEMPLATE_FILE)
-                if tmpl_lines:
-                    Logger.info(f"📅 [预创建] 23:30 定时任务 - 从模板创建明天的日记: {tomorrow_str}.md")
-                    FileUtils.write_file(tomorrow_path, tmpl_lines)
-                    self._tomorrow_note_created_date = today_str
-            except Exception as e:
-                Logger.error_once(f"pre_create_fail_{tomorrow_str}", f"预创建明天日记失败: {e}")
-        else:
-            Logger.info(f"📅 [预创建] 未找到模版，创建基础骨架: {tomorrow_str}.md")
-            base_scaffold = ["# Day planner\n", "\n", "# Journey\n", "\n"]
-            FileUtils.write_file(tomorrow_path, base_scaffold)
-            self._tomorrow_note_created_date = today_str
-
-    def get_date_range(self) -> list:
-        """
-        Generate date strings from DAY_START to DAY_END relative to today.
-        """
-        today = datetime.date.today()
-        dates = []
-        for delta in range(Config.DAY_START, Config.DAY_END + 1):
-            target_date = today + datetime.timedelta(days=delta)
-            date_str = target_date.strftime('%Y-%m-%d')
-            if date_str >= Config.SYNC_START_DATE:
-                dates.append(date_str)
-        return dates
+        self._last_midnight_check = datetime.date.today()
+        self._startup_sync_done = False
 
     def process_single_date(self, date_str, is_event_trigger=False):
         """
         Process a single date: internal sync + formatting + Apple sync.
-        Returns detailed result dict.
+        [v3.0] Only creates note if calendar has events for that date.
         """
         results = {
             "internal_mod": False,
@@ -327,26 +154,23 @@ class FusionManager:
                 is_system_edit = FileUtils.check_system_write(content_hash)
             
             if not is_system_edit:
-                # [v1.5.2] 允许事件驱动绕过防抖冷却
                 idle_duration = time.time() - FileUtils.get_mtime(daily_path)
                 if not is_event_trigger and idle_duration < Config.TYPING_COOLDOWN_SECONDS:
                     results["skipped"] = True
                     return results
 
         # --- [PRIORITY 1] Obsidian Internal Processing ---
-        if is_event_trigger or self.check_debounce(daily_path) or not os.path.exists(daily_path):
-            try:
-                # [v1.8] Use registry's O(1) lookup instead of full scan
-                tasks_for_date = self.sync_core.get_tasks_for_date(date_str)
-                self.sync_core.process_date(date_str, tasks_for_date)
+        try:
+            tasks_for_date = self.sync_core.get_tasks_for_date(date_str)
+            self.sync_core.process_date(date_str, tasks_for_date)
 
-                if os.path.exists(daily_path):
-                    if FormatCore.execute(daily_path):
-                        results["internal_mod"] = True
-                        Logger.info(f"   ✨ [Internal] 格式化完成: {date_str}")
+            if os.path.exists(daily_path):
+                if FormatCore.execute(daily_path):
+                    results["internal_mod"] = True
+                    Logger.info(f"   ✨ [Internal] 格式化完成: {date_str}")
 
-            except Exception as e:
-                Logger.error_once(f"sync_fail_{date_str}", f"内部同步异常 [{date_str}]: {e}")
+        except Exception as e:
+            Logger.error_once(f"sync_fail_{date_str}", f"内部同步异常 [{date_str}]: {e}")
 
         # --- [PRIORITY 2] Apple Calendar Sync ---
         should_sync_apple = False
@@ -354,7 +178,7 @@ class FusionManager:
         if results["internal_mod"]:
             should_sync_apple = True
             Logger.info(f"   ⚡ [Trigger] 内部修改触发立即同步: {date_str}")
-        elif os.path.exists(daily_path) and (is_event_trigger or self.check_debounce(daily_path)):
+        elif os.path.exists(daily_path):
             should_sync_apple = True
 
         if should_sync_apple:
@@ -372,31 +196,22 @@ class FusionManager:
 
     def on_file_changed(self, filepath):
         """
-        [v1.8 REFACTORED] 事件驱动入口：文件变更时调用
-        
-        改进内容:
-        - 日记文件: 直接触发该日期的同步
-        - 项目文件: 使用 process_file_event 增量更新，只同步受影响的日期
+        [v3.0] 事件驱动入口：文件变更时调用
         """
         filename = os.path.basename(filepath)
         
-        # [v1.8] Lazy warmup: ensure registry is initialized on first event
         if not self._registry_warmup_done:
             Logger.info("🔄 [Manager] Warming up TaskRegistry...")
             self.sync_core.initialize_registry()
             self._registry_warmup_done = True
         
-        # 尝试从文件名提取日期 (格式: YYYY-MM-DD.md)
         date_match = re.match(r'^(\d{4}-\d{2}-\d{2})\.md$', filename)
         
         if date_match:
-            # 这是一个日记文件 - 直接触发该日期同步
             date_str = date_match.group(1)
             Logger.info(f"   🔄 [Sync] 触发日期同步: {date_str}")
             self.process_single_date(date_str, is_event_trigger=True)
         else:
-            # [v1.8] 项目文件 - 使用增量同步
-            # 只扫描这ONE个文件，然后只同步受影响的日期
             affected_dates = self.sync_core.process_file_event(filepath)
             
             if affected_dates:
@@ -404,126 +219,100 @@ class FusionManager:
                 for date_str in affected_dates:
                     self.process_single_date(date_str, is_event_trigger=True)
             else:
-                # Fallback: 如果文件中没有任务，仍然同步今天
                 today_str = datetime.date.today().strftime('%Y-%m-%d')
                 Logger.info(f"   🔄 [Sync] 项目文件变更（无任务），触发今日同步")
                 self.process_single_date(today_str, is_event_trigger=True)
 
-    def trigger_immediate_sync_for_today(self):
-        """
-        [v1.7] 由日历事件触发的立即同步
-        """
-        today_str = datetime.date.today().strftime('%Y-%m-%d')
-        Logger.info(f"   🔄 [Sync] Calendar 变动触发今日同步: {today_str}")
-        self.process_single_date(today_str, is_event_trigger=True)
-
     def _on_calendar_push_event(self):
         """
-        [v1.9] Callback for Distributed Notification (Zero Latency).
-        Runs in a background thread.
-        [v2.0 THREAD-SAFETY] Do NOT run sync here! Just set a flag.
+        [v3.0] Callback for EventKit notification.
+        Thread-safe: Just sets a flag.
         """
-        # Logger.info(f"⚡ [Distributed] 检测到系统日历数据库物理变更！")
-        # 仅设置脏标志，不执行耗时 IO
         self._calendar_dirty_flag = True
 
-    def _calculate_dynamic_interval(self, date_str) -> float:
+    def sync_recent_window(self):
         """
-        [v1.5] 计算指定日期的动态同步间隔
-        公式: I(d) = EXP_BASE * exp(EXP_COEFF * d) + EXP_OFFSET
+        [v3.0] 同步日历变更窗口（前后各15天）
+        """
+        today = datetime.date.today()
+        window_half = Config.CHRONOS_SYNC_WINDOW_DAYS // 2
         
-        Args:
-            date_str: 日期字符串 (YYYY-MM-DD)
-        Returns:
-            同步间隔（秒）
-        """
-        try:
-            target_date = datetime.datetime.strptime(date_str, '%Y-%m-%d').date()
-            today = datetime.date.today()
-            d = abs((target_date - today).days)  # 距离今天的天数
-            
-            # [v1.8.3] Privacy-aware Fast Polling for Today
-            # 由于 macOS TCC 权限限制，Watchdog 可能无法监听到日历数据库变化
-            # 对“今天”强制使用 30 秒的快速轮询，确保近似实时的体验
-            if d == 0:
-                return 30.0
-            
-            # 指数拟合公式
-            interval = Config.EXP_BASE * math.exp(Config.EXP_COEFF * d) + Config.EXP_OFFSET
-            
-            # 限制在最大值以内
-            return min(interval, Config.DYNAMIC_SYNC_MAX_INTERVAL)
-        except Exception:
-            return Config.EXP_BASE + Config.EXP_OFFSET  # 默认 300 秒
+        start_date = today - datetime.timedelta(days=window_half)
+        end_date = today + datetime.timedelta(days=window_half)
+        
+        Logger.info(f"🔄 [Chronos] 窗口同步: {start_date} ~ {end_date}")
+        
+        current = start_date
+        synced_count = 0
+        while current <= end_date:
+            date_str = current.strftime('%Y-%m-%d')
+            if date_str >= Config.SYNC_START_DATE:
+                result = self.process_single_date(date_str, is_event_trigger=True)
+                if result["apple_to_obsidian"] or result["obsidian_to_apple"]:
+                    synced_count += 1
+            current += datetime.timedelta(days=1)
+        
+        Logger.info(f"✅ [Chronos] 窗口同步完成: {synced_count} 天有变动")
 
-    def _do_smart_cleanup(self):
+    def sync_full_range(self):
         """
-        [v1.5] 智能巡检：根据日期距离动态调度同步
-        近距离日期高频扫描，远距离日期低频扫描
+        [v3.0] 全量同步：过去1年到未来10年
+        仅同步日历中实际有事件的日期，避免创建大量空白笔记
         """
-        # 修复全局格式问题（每次巡检都执行，轻量级操作）
-        FormatCore.fix_broken_tab_bullets_global()
+        if not self._ek_client:
+            Logger.info("⚠️ [Chronos] EventKit 不可用，跳过全量同步")
+            return
         
-        # [v2.0] Check Thread-Safe Dirty Flag
-        if self._calendar_dirty_flag:
-            Logger.info(f"⚡ [Distributed] 检测到系统日历变更标志 (Async Trigger)")
-            self.trigger_immediate_sync_for_today()
-            self._calendar_dirty_flag = False  # Reset flag
+        today = datetime.date.today()
+        start_date = today - datetime.timedelta(days=Config.CHRONOS_FULL_RANGE_PAST_YEARS * 365)
+        end_date = today + datetime.timedelta(days=Config.CHRONOS_FULL_RANGE_FUTURE_YEARS * 365)
         
-        # 检查是否需要预创建明天的日记
-        self._maybe_create_tomorrow_note()
+        # 确保不早于 SYNC_START_DATE
+        sync_start = datetime.datetime.strptime(Config.SYNC_START_DATE, '%Y-%m-%d').date()
+        if start_date < sync_start:
+            start_date = sync_start
         
-        # 遍历日期范围，根据冷却时间决定是否同步
-        now = time.time()
-        date_range = self.get_date_range()
+        Logger.info(f"🚀 [Chronos] 全量同步启动: {start_date} ~ {end_date}")
         
-        # [v1.5.1] 清理过期记录，防止内存缓慢泄漏
-        active_dates = set(date_range)
-        for recorded_date in list(self._last_full_sync_registry.keys()):
-            if recorded_date not in active_dates:
-                del self._last_full_sync_registry[recorded_date]
+        # 获取日历中有事件的日期
+        events_by_date = self._ek_client.fetch_range_events(
+            start_date, 
+            end_date, 
+            Config.CHRONOS_EVENTKIT_BATCH_DAYS
+        )
         
-        for date_str in date_range:
-            last_sync = self._last_full_sync_registry.get(date_str, 0)
-            interval = self._calculate_dynamic_interval(date_str)
-            
-            if now - last_sync >= interval:
-                # 冷却时间已到，执行同步
-                self.process_single_date(date_str)
-                self._last_full_sync_registry[date_str] = now
+        if not events_by_date:
+            Logger.info("📭 [Chronos] 日历范围内无事件")
+            return
+        
+        Logger.info(f"📅 [Chronos] 发现 {len(events_by_date)} 天有日历事件")
+        
+        # 只同步有事件的日期
+        synced_count = 0
+        for date_str in sorted(events_by_date.keys()):
+            if date_str >= Config.SYNC_START_DATE:
+                result = self.process_single_date(date_str, is_event_trigger=True)
+                if result["apple_to_obsidian"] or result["obsidian_to_apple"]:
+                    synced_count += 1
+        
+        Logger.info(f"✅ [Chronos] 全量同步完成: {synced_count} 天有变动")
 
-    def _print_countdown(self):
+    def _check_midnight_crossing(self):
         """
-        [v1.5.2] 实时输出下一次大检测的倒计时
-        在同一行更新秒数，使用回车符覆盖
+        [v3.0] 检查是否跨越午夜，创建新的今日笔记
         """
-        now = time.time()
-        date_range = self.get_date_range()
-        
-        min_countdown = float('inf')
-        next_date = None
-        
-        for date_str in date_range:
-            last_sync = self._last_full_sync_registry.get(date_str, 0)
-            interval = self._calculate_dynamic_interval(date_str)
-            remaining = interval - (now - last_sync)
+        today = datetime.date.today()
+        if today != self._last_midnight_check:
+            Logger.info(f"🌙 [Chronos] 检测到跨越午夜: {self._last_midnight_check} -> {today}")
+            self._last_midnight_check = today
             
-            if remaining > 0 and remaining < min_countdown:
-                min_countdown = remaining
-                next_date = date_str
-        
-        if next_date and min_countdown < float('inf'):
-            countdown_str = f"⏱️  下次检测 [{next_date}]: {int(min_countdown):>4}s"
-            # 使用 \r 回到行首，覆盖原内容
-            sys.stdout.write(f"\r{countdown_str}  ")
-            sys.stdout.flush()
-            # 标记倒计时行正在显示，让 Logger 知道需要先清行
-            Logger._countdown_active = True
+            # 同步今天的日历
+            today_str = today.strftime('%Y-%m-%d')
+            self.process_single_date(today_str, is_event_trigger=True)
 
     def run(self):
         """
-        [v1.5] 事件驱动主循环
-        混合动力模式：watchdog 事件 + 指数动态调度
+        [v3.0] Chronos Mode 主循环 - 纯事件驱动
         """
         def _term_handler(signum, frame):
             self._running = False
@@ -532,78 +321,67 @@ class FusionManager:
         signal.signal(signal.SIGTERM, _term_handler)
         self._running = True
 
-        Logger.info(f"🚀 事件驱动引擎启动: Watchdog (Vault & Calendar) + 指数动态调度")
-        Logger.info(f"   调度公式: I(d) = {Config.EXP_BASE} * exp({Config.EXP_COEFF} * d) + {Config.EXP_OFFSET}")
-        Logger.info(f"   冷却上限: {Config.DYNAMIC_SYNC_MAX_INTERVAL}s | 事件防抖: {Config.EVENT_DEBOUNCE_SECONDS}s")
-        Logger.info(f"   日期范围: DAY_START={Config.DAY_START} ~ DAY_END={Config.DAY_END}")
+        Logger.info(f"🚀 Chronos Mode 启动 - 全事件驱动架构")
+        Logger.info(f"   同步窗口: ±{Config.CHRONOS_SYNC_WINDOW_DAYS // 2} 天")
+        Logger.info(f"   全量范围: 过去 {Config.CHRONOS_FULL_RANGE_PAST_YEARS} 年 ~ 未来 {Config.CHRONOS_FULL_RANGE_FUTURE_YEARS} 年")
+        Logger.info(f"   循环间隔: {Config.CHRONOS_LOOP_INTERVAL} 秒")
 
-        # 初始化 watchdog Observer
+        # 初始化 Watchdog
         if WATCHDOG_AVAILABLE:
             try:
                 self._observer = Observer()
                 event_handler = ObsidianEventHandler(self)
-                
-                # 监听 Vault 根目录
                 self._observer.schedule(event_handler, Config.VAULT_ROOT, recursive=True)
                 self._observer.start()
                 Logger.info(f"👁️ [Watchdog] 开始监听: {Config.VAULT_ROOT}")
             except Exception as e:
                 Logger.error_once("observer_init", f"Watchdog 初始化失败: {e}")
                 self._observer = None
-            
-            # [v1.7] Start Calendar Observer
-            # [v2.0] EventKit 监听
+
+            # EventKit 监听
             if self._ek_client:
                 try:
                     Logger.info("📅 [Watchdog] 启动 EventKit 监听...")
                     self._ek_client.start_watching(self._on_calendar_push_event)
                 except Exception as e:
                     Logger.error_once("cal_ek_fail", f"无法启动日历监听: {e}")
-            else:
-                Logger.info("⚠️ [Watchdog] EventKit 客户端不可用，将使用纯轮询。")
 
-        else:
-            Logger.info("⚠️ [Watchdog] 不可用，使用纯轮询模式")
-
-        # 启动时执行一次智能巡检
-        self._do_smart_cleanup()
+        # [v3.0] 启动时全量同步
+        if not self._startup_sync_done:
+            Logger.info("🌅 [Chronos] 执行启动全量同步...")
+            self.sync_core.initialize_registry()
+            self._registry_warmup_done = True
+            self.sync_full_range()
+            self._startup_sync_done = True
 
         # 主循环
         try:
-            # [v2.0] 导入 CFRunLoop 相关 API，用于在主线程处理 Cocoa 通知
             from CoreFoundation import CFRunLoopRunInMode, kCFRunLoopDefaultMode
             
             while self._running:
-                # 计算并显示下一次同步倒计时
-                self._print_countdown()
+                # [v3.0] 纯事件驱动：仅处理标志位
+                if self._calendar_dirty_flag:
+                    Logger.info(f"⚡ [Chronos] 检测到日历变更")
+                    self.sync_recent_window()
+                    self._calendar_dirty_flag = False
                 
-                # [v2.0 CRITICAL FIX] 使用 CFRunLoopRunInMode 替代 time.sleep()
-                # 这使得 NSNotificationCenter 的通知可以在等待期间被投递
-                # 参数: (mode, seconds, returnAfterSourceHandled)
-                # - kCFRunLoopDefaultMode: 默认模式，处理所有通知
-                # - 1.0: 等待 1 秒
-                # - False: 即使有事件也等满 1 秒（保持稳定的轮询节奏）
-                CFRunLoopRunInMode(kCFRunLoopDefaultMode, 1.0, False)
+                # 检查午夜跨越
+                self._check_midnight_crossing()
                 
-                # 每秒执行智能巡检（轻量级时间戳比对）
-                self._do_smart_cleanup()
+                # 保持 RunLoop 唤醒
+                CFRunLoopRunInMode(kCFRunLoopDefaultMode, Config.CHRONOS_LOOP_INTERVAL, False)
                 
         except KeyboardInterrupt:
             Logger.info("\n⏹️ 收到中断信号...")
         finally:
-            # 优雅停止 Observer
             if self._observer:
                 Logger.info("🛑 [Watchdog] 停止监听 Vault...")
                 self._observer.stop()
                 self._observer.join(timeout=3)
             
-            # [v2.0] 停止日历监听
             if self._ek_client:
-                 Logger.info("🛑 [Watchdog] 停止监听 Calendar...")
-                 self._ek_client.stop_watching()
-            
-
+                Logger.info("🛑 [Watchdog] 停止监听 Calendar...")
+                self._ek_client.stop_watching()
             
             self.sm.save()
-            Logger.info("✅ 状态已保存，引擎已停止")
-
+            Logger.info("✅ 状态已保存，Chronos 引擎已停止")

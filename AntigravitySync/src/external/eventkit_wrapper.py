@@ -272,6 +272,116 @@ class EventKitClient:
             
         return result
 
+    def fetch_range_events(self, start_date, end_date, batch_days=1460):
+        """
+        [v3.0 Chronos Mode] 获取日期范围内的所有事件
+        
+        由于 EventKit 对超长时间范围有限制（约4年），此方法自动将大范围拆分为多个批次。
+        
+        Args:
+            start_date: 起始日期 (date 或 datetime)
+            end_date: 结束日期 (date 或 datetime)
+            batch_days: 每批次的天数（默认1460天≈4年）
+        
+        Returns:
+            dict: {date_str: {key: event_data, ...}, ...}
+                  按日期分组的事件字典
+        """
+        if not self.access_granted:
+            if not self.check_access():
+                print("🚫 访问被拒绝：请在 '系统设置 > 隐私与安全性 > 日历' 中授权终端/Python。")
+                return {}
+
+        # 标准化日期
+        if isinstance(start_date, datetime.datetime):
+            start_date = start_date.date()
+        if isinstance(end_date, datetime.datetime):
+            end_date = end_date.date()
+        
+        from Foundation import NSCalendar, NSCalendarUnitHour, NSCalendarUnitMinute, NSCalendarUnitYear, NSCalendarUnitMonth, NSCalendarUnitDay
+        calendar = NSCalendar.currentCalendar()
+        
+        # 计算总天数
+        total_days = (end_date - start_date).days + 1
+        
+        # 按日期分组的结果
+        result_by_date = {}  # {date_str: {key: event_data}}
+        
+        # 分批获取
+        current_start = start_date
+        batch_count = 0
+        
+        while current_start <= end_date:
+            batch_count += 1
+            current_end = min(current_start + datetime.timedelta(days=batch_days - 1), end_date)
+            
+            # 构建时间范围
+            start_dt = datetime.datetime.combine(current_start, datetime.time.min)
+            end_dt = datetime.datetime.combine(current_end, datetime.time.max)
+            
+            ns_start = NSDate.dateWithTimeIntervalSince1970_(start_dt.timestamp())
+            ns_end = NSDate.dateWithTimeIntervalSince1970_(end_dt.timestamp())
+            
+            # 创建查询谓词
+            predicate = self.store.predicateForEventsWithStartDate_endDate_calendars_(
+                ns_start, ns_end, None
+            )
+            
+            # 执行查询
+            events = self.store.eventsMatchingPredicate_(predicate)
+            
+            if events:
+                for event in events:
+                    try:
+                        title = event.title() or "无标题"
+                        is_completed = any(title.startswith(prefix) for prefix in ["✅", "✓"])
+                        clean_name = title.lstrip("✅✓").strip()
+                        
+                        cal_title = event.calendar().title() if event.calendar() else "Unknown"
+                        
+                        # 提取开始日期和时间
+                        event_start = event.startDate()
+                        components = calendar.components_fromDate_(
+                            NSCalendarUnitYear | NSCalendarUnitMonth | NSCalendarUnitDay | NSCalendarUnitHour | NSCalendarUnitMinute,
+                            event_start
+                        )
+                        
+                        event_date_str = f"{components.year():04d}-{components.month():02d}-{components.day():02d}"
+                        start_time_str = f"{components.hour():02d}:{components.minute():02d}"
+                        
+                        # 计算持续时长
+                        duration_seconds = event.endDate().timeIntervalSinceDate_(event_start)
+                        duration_minutes = int(duration_seconds / 60)
+                        
+                        # 生成唯一 Key
+                        event_id = event.eventIdentifier() or ""
+                        id_tail = event_id[-6:] if len(event_id) >= 6 else event_id
+                        key = f"{clean_name}_{start_time_str}_{id_tail}"
+                        semantic_key = f"{clean_name}_{start_time_str}"
+                        
+                        # 初始化日期分组
+                        if event_date_str not in result_by_date:
+                            result_by_date[event_date_str] = {}
+                        
+                        result_by_date[event_date_str][key] = {
+                            'name': clean_name,
+                            'id': event_id,
+                            'is_completed': is_completed,
+                            'raw_name': title,
+                            'current_calendar': cal_title,
+                            'start_time': start_time_str,
+                            'duration': duration_minutes,
+                            'semantic_key': semantic_key
+                        }
+                    except Exception as e:
+                        print(f"⚠️ 处理事件失败: {e}")
+                        continue
+            
+            # 移动到下一批次
+            current_start = current_end + datetime.timedelta(days=1)
+        
+        print(f"📅 [EventKit] 范围查询完成: {start_date} ~ {end_date} ({total_days}天, {batch_count}批次, {len(result_by_date)}天有事件)")
+        return result_by_date
 if __name__ == "__main__":
     # 简单的测试桩
     from Foundation import NSBundle

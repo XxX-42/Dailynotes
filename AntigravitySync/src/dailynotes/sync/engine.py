@@ -569,15 +569,39 @@ class SyncCore:
                         self.sm.update_task(bid, dd['hash'], sd['path'], target_date)
                     elif s_changed and d_changed:
                         if sd['hash'] != dd['hash']:
-                            Logger.info(f"   ⚔️ 冲突 ({bid}): Daily 覆盖 Source")
-                            n_l = format_line(sd['indent'], dd['status'], dd['pure'], target_date, sd['fname'],
-                                                   bid, False)
-                            # [MODIFIED] Conflict resolution using Daily structure
-                            blk = [n_l] + normalize_child_lines(dd['raw'][1:], sd['indent'],
-                                                                     source_parent_indent=dd['indent'], as_quoted=False)
-                            if sd['path'] not in src_updates: src_updates[sd['path']] = {}
-                            src_updates[sd['path']][bid] = blk
-                            self.sm.update_task(bid, dd['hash'], sd['path'], target_date)
+                            # [FIX] 冲突仲裁：基于 mtime 的最后修改优先
+                            target_mtime = 0
+                            daily_mtime = 0
+                            try:
+                                if os.path.exists(sd['path']): target_mtime = os.path.getmtime(sd['path'])
+                                if os.path.exists(daily_path): daily_mtime = os.path.getmtime(daily_path)
+                            except Exception as e:
+                                Logger.error(f"   ⚠️ 无法获取文件时间: {e}")
+
+                            # 容差 1秒
+                            if target_mtime > daily_mtime + 1.0:
+                                # Source Wins
+                                Logger.info(f"   ⚔️ 冲突 ({bid}): Source 覆盖 Daily (Source is newer, Δ={target_mtime - daily_mtime:.1f}s)")
+                                # S->D Logic
+                                old_daily_line = dd['raw'][0]
+                                time_match = re.search(r'(\d{1,2}:\d{2}(?:\s*-\s*\d{1,2}:\d{2})?)', old_daily_line)
+                                preserved_time = time_match.group(1) if time_match else None
+                                blk = reconstruct_daily_block(sd, target_date, preserved_time=preserved_time)
+                                dn_lines[dd['idx']:dd['idx'] + dd['len']] = blk
+                                dn_mod = True
+                                self.sm.update_task(bid, sd['hash'], sd['path'], target_date)
+                            else:
+                                # Daily Wins (Default if close or Daily newer)
+                                reason = "Daily is newer" if daily_mtime > target_mtime else "Default Policy"
+                                Logger.info(f"   ⚔️ 冲突 ({bid}): Daily 覆盖 Source ({reason})")
+                                n_l = format_line(sd['indent'], dd['status'], dd['pure'], target_date, sd['fname'],
+                                                       bid, False)
+                                # [MODIFIED] Conflict resolution using Daily structure
+                                blk = [n_l] + normalize_child_lines(dd['raw'][1:], sd['indent'],
+                                                                         source_parent_indent=dd['indent'], as_quoted=False)
+                                if sd['path'] not in src_updates: src_updates[sd['path']] = {}
+                                src_updates[sd['path']][bid] = blk
+                                self.sm.update_task(bid, dd['hash'], sd['path'], target_date)
 
                         else:
                             # [Fixed] 状态稳定时仅更新心跳，不触发文件写入
@@ -585,12 +609,49 @@ class SyncCore:
                             # src_updates[sd['path']][bid] = sd['raw']
                             self.sm.update_task(bid, sd['hash'], sd['path'], target_date)
                 else:
-                    if last_date == target_date:
-                        Logger.info(f"   🗑️ 删除 Source ({bid}): 因 Daily 移除")
-                        if sd['path'] not in src_deletes: src_deletes[sd['path']] = {}
-                        src_deletes[sd['path']][bid] = sd['path']
-                        self.sm.remove_task(bid)
-                    else:
+                    # ======================================================
+                    # [BRANCH B] 源文件有，但日记无
+                    # 场景判断：是用户在源文件新加了任务（应追加日记），
+                    # 还是用户在日记删除了任务（应删源文件）？
+                    # ======================================================
+                    
+                    # 获取历史状态
+                    has_history = bid in self.sm.state
+                    
+                    if has_history and last_date == target_date:
+                        # ============================
+                        # 情况 1：历史存在且日期匹配
+                        # 需要用 mtime 仲裁
+                        # ============================
+                        daily_mtime = FileUtils.get_mtime(daily_path) if os.path.exists(daily_path) else 0
+                        source_mtime = FileUtils.get_mtime(sd['path']) if os.path.exists(sd['path']) else 0
+                        
+                        # 容差判定：如果时间差 <= 1秒，倾向于保活
+                        time_delta = daily_mtime - source_mtime
+                        
+                        if time_delta > 1:
+                            # 日记更新更近，但任务消失了 -> 用户在日记删除了任务
+                            Logger.info(f"   🗑️ 删除 Source ({bid}): 日记较新且已移除 (Daily Deletion, Δ={int(time_delta)}s)")
+                            if sd['path'] not in src_deletes: src_deletes[sd['path']] = {}
+                            src_deletes[sd['path']][bid] = sd['path']
+                            self.sm.remove_task(bid)
+                        elif time_delta < -1:
+                            # 源文件更新更近 -> 用户在源文件恢复/新增了任务 (Ctrl+Z)
+                            Logger.info(f"   ➕ 追加 Daily ({bid}): 源文件 Ctrl+Z 恢复 (Source Restore, Δ={int(-time_delta)}s)")
+                            if sd['proj'] not in append_to_dn: append_to_dn[sd['proj']] = []
+                            append_to_dn[sd['proj']].append(sd)
+                            self.sm.update_task(bid, sd['hash'], sd['path'], target_date)
+                        else:
+                            # 时间极其接近，倾向于删除（因为历史存在说明之前同步过）
+                            Logger.info(f"   🗑️ 删除 Source ({bid}): 因 Daily 移除 (时间接近，按历史判定)")
+                            if sd['path'] not in src_deletes: src_deletes[sd['path']] = {}
+                            src_deletes[sd['path']][bid] = sd['path']
+                            self.sm.remove_task(bid)
+                    elif has_history and last_date != target_date:
+                        # ============================
+                        # 情况 2：历史存在但日期不匹配
+                        # 可能是跨日期的归档任务，需要谨慎处理
+                        # ============================
                         task_dates_str = sd.get('dates', '')
                         linked_dates = re.findall(r'(\d{4}-\d{2}-\d{2})', task_dates_str)
                         is_misjudged = False
@@ -598,7 +659,23 @@ class SyncCore:
                         if is_misjudged:
                             Logger.info(f"   🛡️ 拦截追加 ({bid}): 归属 {linked_dates} != 当前 {target_date}")
                             continue
-                        Logger.info(f"   ➕ 追加 Daily ({bid}): 来自 {sd['fname']}")
+                        Logger.info(f"   ➕ 追加 Daily ({bid}): 来自 {sd['fname']} (跨日期)")
+                        if sd['proj'] not in append_to_dn: append_to_dn[sd['proj']] = []
+                        append_to_dn[sd['proj']].append(sd)
+                        self.sm.update_task(bid, sd['hash'], sd['path'], target_date)
+                    else:
+                        # ============================
+                        # 情况 3：无历史记录 (全新任务)
+                        # 无论如何都追加到日记
+                        # ============================
+                        task_dates_str = sd.get('dates', '')
+                        linked_dates = re.findall(r'(\d{4}-\d{2}-\d{2})', task_dates_str)
+                        is_misjudged = False
+                        if linked_dates and target_date not in linked_dates: is_misjudged = True
+                        if is_misjudged:
+                            Logger.info(f"   🛡️ 拦截追加 ({bid}): 归属 {linked_dates} != 当前 {target_date}")
+                            continue
+                        Logger.info(f"   ➕ 追加 Daily ({bid}): 新任务来自 {sd['fname']}")
                         if sd['proj'] not in append_to_dn: append_to_dn[sd['proj']] = []
                         append_to_dn[sd['proj']].append(sd)
                         self.sm.update_task(bid, sd['hash'], sd['path'], target_date)
@@ -636,7 +713,11 @@ class SyncCore:
                             last_hash = self.sm.get_task_hash(bid)
                             if sd['hash'] != last_hash:
                                 Logger.info(f"    🔄 S->D 补差同步 ({bid}): 来自磁盘校验")
-                                blk = reconstruct_daily_block(sd, target_date)
+                                # [FIX] 提取当前日记行中的时间，防止被源文件覆盖
+                                old_daily_line = dd['raw'][0]
+                                time_match = re.search(r'(\d{1,2}:\d{2}(?:\s*-\s*\d{1,2}:\d{2})?)', old_daily_line)
+                                preserved_time = time_match.group(1) if time_match else None
+                                blk = reconstruct_daily_block(sd, target_date, preserved_time=preserved_time)
                                 dn_lines[dd['idx']:dd['idx'] + dd['len']] = blk
                                 dn_mod = True
                                 self.sm.update_task(bid, sd['hash'], sd['path'], target_date)
@@ -655,10 +736,71 @@ class SyncCore:
                 # 增加 Header Context 救命稻草：如果任务在有效的 ## [[项目]] 标题下，也视为有效
                 has_valid_header_context = (implied_target and os.path.exists(implied_target))
 
-                should_push = (bid in organized_bids) or \
-                              is_daily_native or \
-                              (target_file_direct and os.path.exists(target_file_direct) and not is_deleted_from_source) or \
-                              has_valid_header_context
+                # ======================================================
+                # [NEW] 基于文件修改时间的仲裁机制 (Last Writer Wins)
+                # 解决"幽灵复活"问题：当源文件删除任务后，日记不应强制恢复
+                # ======================================================
+                
+                # 确定用于比对的目标文件路径
+                arbitration_target = target_file_direct or implied_target or last_path
+                
+                # 默认行为：如果有历史记录，倾向于删除；如果是全新任务，倾向于 Push
+                should_push = False
+                deletion_reason = "确认 Source 已移除"
+                
+                if not db_data:
+                    # 情况 3：新任务 (无历史记录)，默认 Push
+                    should_push = True
+                    Logger.debug(f"    [ARBITRATE] {bid}: 新任务，无历史记录 -> Push")
+                elif bid in organized_bids:
+                    # 刚刚被 dispatch_project_tasks 归档的任务，必须 Push
+                    should_push = True
+                    Logger.debug(f"    [ARBITRATE] {bid}: 刚归档的任务 -> Push")
+                elif is_daily_native:
+                    # 日记原生任务，不应删除
+                    should_push = True
+                    Logger.debug(f"    [ARBITRATE] {bid}: 日记原生任务 -> Push")
+                elif arbitration_target and os.path.exists(arbitration_target):
+                    # 核心仲裁：比较文件修改时间
+                    daily_mtime = FileUtils.get_mtime(daily_path)
+                    target_mtime = FileUtils.get_mtime(arbitration_target)
+                    
+                    # 容差判定：时间差 > 1秒才认为有明确先后
+                    time_delta = target_mtime - daily_mtime
+                    
+                    if time_delta > 1:
+                        # 情况 1：源文件更新 (Source Deletion)
+                        # 用户在源文件中删除了任务，源文件比日记新
+                        should_push = False
+                        deletion_reason = f"源文件较新且已移除该任务 (Source Deletion, Δ={int(time_delta)}s)"
+                        Logger.debug(f"    [ARBITRATE] {bid}: target_mtime({target_mtime:.0f}) > daily_mtime({daily_mtime:.0f}) -> Delete")
+                    elif time_delta < -1:
+                        # 情况 2：日记更新 (Daily Restore / New)
+                        # 用户在日记中恢复或新增了任务 (Ctrl+Z 或粘贴)
+                        if has_valid_header_context:
+                            should_push = True
+                            Logger.debug(f"    [ARBITRATE] {bid}: daily_mtime({daily_mtime:.0f}) > target_mtime({target_mtime:.0f}) + valid_context -> Push/Resurrect")
+                        else:
+                            # 没有有效上下文，无法确定目标，不推送
+                            should_push = False
+                            deletion_reason = "日记较新但无有效项目上下文"
+                            Logger.debug(f"    [ARBITRATE] {bid}: daily newer but no valid context -> Delete")
+                    else:
+                        # 时间接近 (|Δ| <= 1s)，倾向于保活
+                        if has_valid_header_context:
+                            should_push = True
+                            Logger.debug(f"    [ARBITRATE] {bid}: 时间接近，有上下文 -> Push (保活)")
+                        else:
+                            should_push = False
+                            deletion_reason = "时间接近且无有效上下文"
+                            Logger.debug(f"    [ARBITRATE] {bid}: 时间接近，无上下文 -> Delete")
+                elif target_file_direct and os.path.exists(target_file_direct) and not is_deleted_from_source:
+                    # 有直接路由且目标存在
+                    should_push = True
+                else:
+                    # 其他情况：无法确定，执行删除
+                    should_push = False
+                    deletion_reason = "无法确定目标文件"
 
                 if should_push:
                     target_file = None
@@ -667,7 +809,12 @@ class SyncCore:
                     else:
                         target_file = self.project_path_map.get(p_name)
                     if target_file and os.path.exists(target_file):
-                        Logger.info(f"   🚀 [GRADUATE] 归档任务晋升上行 ({bid}) -> {os.path.basename(target_file)}")
+                        # [FIX] 区分复活请求与晋升：如果任务曾存在于源文件但现在不在了，是复活
+                        is_resurrection = has_valid_header_context and not target_file_direct and not (bid in organized_bids)
+                        if is_resurrection:
+                            Logger.info(f"   🔄 [RESURRECT] 检测到复活请求 ({bid}) -> {os.path.basename(target_file)}")
+                        else:
+                            Logger.info(f"   🚀 [GRADUATE] 归档任务晋升上行 ({bid}) -> {os.path.basename(target_file)}")
                         fname = os.path.splitext(os.path.basename(target_file))[0]
                         clean = dd['pure']
                         raw_no_quote = re.sub(r'^>\s?', '', raw_first)
@@ -687,9 +834,59 @@ class SyncCore:
                     else:
                         Logger.info(f"   ⚠️ [ORPHAN] 无法同步，找不到目标文件")
                 else:
-                    # 只有所有的救命稻草都断了，才执行删除
-                    Logger.info(f"   🗑️ 删除 Daily ({bid}): 经过磁盘校验，确认 Source 已移除")
+                    # 执行删除
+                    Logger.info(f"   🗑️ 删除 Daily ({bid}): {deletion_reason}")
                     for k in range(dd['idx'], dd['idx'] + dd['len']): dn_lines[k] = None
+                    dn_mod = True
+                    self.sm.remove_task(bid)  # [NEW] 清理状态记录
+
+        # ======================================================
+        # [FIX] 处理 append_to_dn - 将源文件任务追加到日记
+        # ======================================================
+        if append_to_dn:
+            # 找到 Journey 区域中对应项目的 header 位置
+            j_idx = -1
+            for idx, line in enumerate(dn_lines):
+                if line and line.strip() == "# Journey":
+                    j_idx = idx
+                    break
+            
+            if j_idx == -1:
+                # 如果没有 Journey 区域，在末尾添加
+                dn_lines.append("\n# Journey\n")
+                j_idx = len(dn_lines) - 1
+            
+            for proj_name, tasks in append_to_dn.items():
+                # 找到该项目的 header
+                target_header = f"## [[{proj_name}]]"
+                h_idx = -1
+                for idx in range(j_idx, len(dn_lines)):
+                    if dn_lines[idx] and dn_lines[idx].strip().startswith("## [[") and proj_name in dn_lines[idx]:
+                        h_idx = idx
+                        break
+                
+                if h_idx == -1:
+                    # 没有找到，创建新的 header
+                    insert_pos = len(dn_lines)
+                    for idx in range(j_idx + 1, len(dn_lines)):
+                        if dn_lines[idx] and dn_lines[idx].startswith("# "):
+                            insert_pos = idx
+                            break
+                    dn_lines.insert(insert_pos, f"\n{target_header}\n\n")
+                    h_idx = insert_pos
+                
+                # 在 header 后面插入任务
+                insert_pos = h_idx + 1
+                for idx in range(h_idx + 1, len(dn_lines)):
+                    if dn_lines[idx] and (dn_lines[idx].startswith("#") or dn_lines[idx].strip().startswith("## [[")):
+                        insert_pos = idx
+                        break
+                    insert_pos = idx + 1
+                
+                for sd in tasks:
+                    blk = reconstruct_daily_block(sd, target_date)
+                    for line in reversed(blk):
+                        dn_lines.insert(insert_pos, line)
                     dn_mod = True
 
         if dn_mod:

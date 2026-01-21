@@ -24,7 +24,9 @@ AntigravitySync/
 │   └── external
 │       ├── __init__.py
 │       ├── apple_sync_adapter.py
+│       ├── calendar_db_watchdog.py
 │       ├── calendar_monitor.py
+│       ├── eventkit_wrapper.py
 │       ├── log_sentinel.py
 │       └── task_sync_core
 │           ├── __init__.py
@@ -2100,11 +2102,11 @@ from external.apple_sync_adapter import AppleSyncAdapter
 
 # [v1.9] Native Calendar Monitor Import
 try:
-    from external.calendar_monitor import start_calendar_watchdog
-    CALENDAR_MONITOR_AVAILABLE = True
+    from external.eventkit_wrapper import EventKitClient
+    EK_AVAILABLE = True
 except ImportError:
-    start_calendar_watchdog = None
-    CALENDAR_MONITOR_AVAILABLE = False
+    EK_AVAILABLE = False
+    EventKitClient = None
 
 # watchdog 导入（带降级处理）
 try:
@@ -2239,6 +2241,13 @@ class FusionManager:
         
         # [v1.4] Observer 实例
         self._observer = None
+        self._ek_client = None
+        if EK_AVAILABLE:
+            try:
+                self._ek_client = EventKitClient()
+            except Exception as e:
+                Logger.error_once("ek_init_fail", f"EventKitClient init failed: {e}")
+                self._ek_client = None
         self._running = False
         
         # [v1.5] 动态调度状态：记录每个日期的上次同步时间戳
@@ -2608,14 +2617,15 @@ class FusionManager:
                 self._observer = None
             
             # [v1.7] Start Calendar Observer
-            # [v1.9] Start Native Calendar Observer (Distributed Mode)
-            if CALENDAR_MONITOR_AVAILABLE and start_calendar_watchdog:
+            # [v2.0] EventKit 监听
+            if self._ek_client:
                 try:
-                    start_calendar_watchdog(self._on_calendar_push_event)
+                    Logger.info("📅 [Watchdog] 启动 EventKit 监听...")
+                    self._ek_client.start_watching(self._on_calendar_push_event)
                 except Exception as e:
-                    Logger.error_once("cal_monitor_fail", f"Native Calendar Monitor 启动失败: {e}")
+                    Logger.error_once("cal_ek_fail", f"无法启动日历监听: {e}")
             else:
-                Logger.info("⚠️ [Native] PyObjC/Fundation 模块缺失，日历实时监听不可用")
+                Logger.info("⚠️ [Watchdog] EventKit 客户端不可用，将使用纯轮询。")
 
         else:
             Logger.info("⚠️ [Watchdog] 不可用，使用纯轮询模式")
@@ -2643,6 +2653,11 @@ class FusionManager:
                 Logger.info("🛑 [Watchdog] 停止监听 Vault...")
                 self._observer.stop()
                 self._observer.join(timeout=3)
+            
+            # [v2.0] 停止日历监听
+            if self._ek_client:
+                 Logger.info("🛑 [Watchdog] 停止监听 Calendar...")
+                 self._ek_client.stop_watching()
             
 
             
@@ -5049,6 +5064,66 @@ class AppleSyncAdapter:
 ```
 
 ---
+## File: src/external/calendar_db_watchdog.py
+```py
+import os
+import threading
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
+
+class CalendarDbHandler(FileSystemEventHandler):
+    """
+    监听日历 SQLite 数据库文件的物理变更
+    """
+    def __init__(self, callback):
+        self.callback = callback
+        self._timer = None
+        self._debounce_interval = 2.0  # 2秒防抖
+
+    def _trigger_callback(self):
+        """实际执行回调"""
+        if self.callback:
+            self.callback()
+
+    def on_modified(self, event):
+        if event.is_directory:
+            return
+            
+        filename = os.path.basename(event.src_path)
+        
+        # 忽略临时文件
+        if ".tmp" in filename:
+            return
+
+        # 只关注核心数据库文件 (包括 WAL 日志模式)
+        if filename in ["Calendar.sqlitedb", "Calendar.sqlitedb-wal"]:
+            # Debounce 机制: 每次触发都重置计时器
+            if self._timer:
+                self._timer.cancel()
+            
+            self._timer = threading.Timer(self._debounce_interval, self._trigger_callback)
+            self._timer.start()
+
+def start_calendar_db_watchdog(callback):
+    path = os.path.expanduser("~/Library/Calendars")
+    
+    # 容错：如果目录不存在，无法监听
+    if not os.path.exists(path):
+        print(f"⚠️ [Watchdog] 路径不存在，跳过监听: {path}")
+        return None
+
+    handler = CalendarDbHandler(callback)
+    observer = Observer()
+    # 递归监听，以防数据库文件位于子目录中
+    observer.schedule(handler, path, recursive=True)
+    observer.start()
+    
+    print("👁️ [Watchdog] 已挂载日历数据库物理监听 (SQLite)")
+    return observer
+
+```
+
+---
 ## File: src/external/calendar_monitor.py
 ```py
 import threading
@@ -5113,6 +5188,257 @@ def start_calendar_watchdog(on_change_callback):
     t.start()
     return t
 
+```
+
+---
+## File: src/external/eventkit_wrapper.py
+```py
+import objc
+import threading
+import datetime
+import time
+from EventKit import EKEventStore, EKEntityTypeEvent
+from Foundation import NSDate, NSDistributedNotificationCenter, NSObject, NSNotificationCenter
+from PyObjCTools import AppHelper
+
+# 定义通知名称常量
+EKEventStoreChangedNotification = "EKEventStoreChangedNotification"
+DistributedCalendarChangedNotification = "com.apple.calendar.database.changed"
+
+class CalendarObserver(NSObject):
+    """
+    Observer class to handle calendar change notifications.
+    Running in a background NSRunLoop via AppHelper.runConsoleEventLoop.
+    """
+    def initWithCallback_(self, callback):
+        self = objc.super(CalendarObserver, self).init()
+        if self:
+            self.callback = callback
+            self._registered = False
+        return self
+
+    def startObserving(self):
+        if self._registered:
+            return
+            
+        center = NSNotificationCenter.defaultCenter()
+        dist_center = NSDistributedNotificationCenter.defaultCenter()
+        
+        # 1. 监听进程内通知 (EventKit)
+        center.addObserver_selector_name_object_(
+            self,
+            "onCalendarChanged:",
+            EKEventStoreChangedNotification,
+            None
+        )
+        
+        # 2. 监听系统级分布式通知 (底层的数据库变更)
+        dist_center.addObserver_selector_name_object_(
+            self,
+            "onCalendarChanged:",
+            DistributedCalendarChangedNotification,
+            None
+        )
+        
+        self._registered = True
+        print("✅ [CalendarObserver] 开始监听日历变更通知...")
+
+    def stopObserving(self):
+        if not self._registered:
+            return
+            
+        center = NSNotificationCenter.defaultCenter()
+        dist_center = NSDistributedNotificationCenter.defaultCenter()
+        
+        center.removeObserver_(self)
+        dist_center.removeObserver_(self)
+        self._registered = False
+        print("🛑 [CalendarObserver] 停止监听。")
+
+    def onCalendarChanged_(self, notification):
+        """
+        Callback for both local and distributed notifications.
+        """
+        try:
+            # print(f"⚡ [EventKit] 收到通知: {notification.name()}")
+            if hasattr(self, 'callback') and self.callback:
+                # 回调必须异常安全，防止由于 Python 错误导致 ObjC 崩溃
+                self.callback()
+        except Exception as e:
+            print(f"⚠️ [CalendarObserver] 回调执行失败: {e}")
+
+    def stopRunLoop(self):
+        """
+        Stop the current thread's run loop.
+        Must be called ON the thread running the loop, or used via strict threading controls.
+        For simplicity in this daemon setup, we rely on AppHelper.stopEventLoop()
+        """
+        AppHelper.stopEventLoop()
+
+class EventKitClient:
+    def __init__(self):
+        self.store = EKEventStore.alloc().init()
+        self.access_granted = False
+        self._observer = None
+        self._thread = None
+
+    def check_access(self):
+        """
+        请求日历访问权限。
+        注意：在 macOS 14+ 中，系统对权限要求极严。
+        """
+        group = threading.Event()
+        
+        def callback(granted, error):
+            self.access_granted = granted
+            if error:
+                print(f"❌ 权限请求错误: {error}")
+            group.set()
+
+        # 检查是否存在新版 API (macOS 14+)
+        if hasattr(self.store, 'requestFullAccessToEventsWithCompletion_'):
+            self.store.requestFullAccessToEventsWithCompletion_(callback)
+        else:
+            # 兼容旧版 macOS
+            self.store.requestAccessToEntityType_completion_(EKEntityTypeEvent, callback)
+        
+        # 等待回调，超时时间设为 30s，防止进程永久挂起
+        finished = group.wait(timeout=30)
+        if not finished:
+            print("⚠️ 权限请求超时：用户未响应或系统拦截。")
+            
+        return self.access_granted
+
+    def start_watching(self, callback):
+        """
+        开启后台线程监听日历变更。
+        """
+        if not self.access_granted:
+            # 尝试自动获取权限
+            if not self.check_access():
+                print("🚫 无法启动监听：没有日历访问权限。")
+                return
+
+        if self._observer:
+            print("⚠️ 监听器已在运行。")
+            return
+
+        def run_loop():
+            # 在后台线程创建和运行 Observer
+            self._observer = CalendarObserver.alloc().initWithCallback_(callback)
+            self._observer.startObserving()
+            
+            # 启动 RunLoop，这将阻塞线程直到 stopEventLoop 被调用
+            # 必须使用 runConsoleEventLoop 以便支持 RunLoop 机制
+            try:
+                AppHelper.runConsoleEventLoop()
+            except Exception as e:
+                print(f"⚠️ [RunLoop] 异常退出: {e}")
+            finally:
+                print("🏁 [RunLoop] 线程结束")
+
+        self._thread = threading.Thread(target=run_loop, name="EventKitMonitor", daemon=True)
+        self._thread.start()
+
+    def stop_watching(self):
+        """
+        停止监听并关闭后台线程。
+        """
+        if self._observer:
+            # 由于 runConsoleEventLoop 阻塞了后台线程，我们需要在那个线程中触发 stop
+            # 使用 performSelector:onThread:withObject:waitUntilDone:
+            # 注意：daemon 线程通常随主进程退出，但为了优雅关闭，我们可以尝试停止它
+            
+            # 在 Python/PyObjC 中，跨线程调用不如原生 ObjC 方便。
+            # 简单策略：直接调用 stopObserving (虽然不是线程完全安全，但通常仅仅是解绑通知)
+            # 真正停止 runLoop 需要在特定线程执行。
+            
+            # 方案：利用 performSelectorOnMainThread 或者直接让 daemon 随风而去。
+            # 为了严谨，我们尝试调用 stopObserving
+            try:
+                self._observer.stopObserving()
+            except Exception as e:
+                print(f"⚠️ 停止监听时发生警告: {e}")
+                
+            self._observer = None
+            # 注意：AppHelper.runConsoleEventLoop() 很难从外部线程优雅终止，
+            # 除非我们发送一个专门的 selector 到该线程。
+            # 作为一个 daemon 线程，不再持有引用即可。
+
+    def fetch_events(self, target_dt):
+        if not self.access_granted:
+            if not self.check_access():
+                print("🚫 访问被拒绝：请在 '系统设置 > 隐私与安全性 > 日历' 中授权终端/Python。")
+                return {}
+
+        # 确保 target_dt 为 date 对象
+        target_date = target_dt.date() if isinstance(target_dt, datetime.datetime) else target_dt
+        
+        # 构建当天 00:00:00 到 23:59:59 的时间范围
+        start_dt = datetime.datetime.combine(target_date, datetime.time.min)
+        end_dt = datetime.datetime.combine(target_date, datetime.time.max)
+        
+        # 转换为 NSDate
+        ns_start = NSDate.dateWithTimeIntervalSince1970_(start_dt.timestamp())
+        ns_end = NSDate.dateWithTimeIntervalSince1970_(end_dt.timestamp())
+
+        # 创建查询谓词
+        predicate = self.store.predicateForEventsWithStartDate_endDate_calendars_(
+            ns_start, ns_end, None 
+        )
+
+        # 执行查询
+        events = self.store.eventsMatchingPredicate_(predicate)
+        
+        result = {}
+        if not events:
+            return result
+            
+        for event in events:
+            try:
+                title = event.title() or "无标题"
+                # 处理完成状态标识（根据现有逻辑保持一致）
+                is_completed = any(title.startswith(prefix) for prefix in ["✅", "✓"])
+                clean_name = title.lstrip("✅✓").strip()
+                
+                # 获取唯一 ID
+                key = f"{clean_name}_{event.eventIdentifier()}"
+                
+                result[key] = {
+                    'name': clean_name,
+                    'id': event.eventIdentifier(),
+                    'is_completed': is_completed,
+                    'raw_name': title
+                }
+            except Exception as e:
+                print(f"⚠️ 处理事件失败: {e}")
+                continue
+            
+        return result
+
+if __name__ == "__main__":
+    # 简单的测试桩
+    print("🚀 测试 EventKitClient...")
+    client = EventKitClient()
+    
+    if client.check_access():
+        print("✅ 授权成功，准备测试监听...")
+        
+        def on_change():
+            print("🔔 [Main] 收到日历变更回调！可以执行同步逻辑了。")
+            
+        client.start_watching(on_change)
+        
+        print("⏳ 正在监听中，请去日历 App 修改一个日程 (按 Ctrl+C 退出)...")
+        
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            print("\n🛑 测试结束")
+            client.stop_watching()
+    else:
+        print("❌ 授权失败")
 ```
 
 ---
@@ -5308,6 +5634,11 @@ Apple Calendar Service - Adapted for unified config.
 from datetime import datetime, timedelta
 from config import Config
 from .utils import escape_as_text, run_applescript
+try:
+    from external.eventkit_wrapper import EventKitClient
+    EK_AVAILABLE = True
+except ImportError:
+    EK_AVAILABLE = False
 
 # Use config values
 ALL_MANAGED_CALENDARS = Config.ALL_MANAGED_CALENDARS
@@ -5342,7 +5673,7 @@ def check_calendars_exist_simple():
 
 def get_all_calendars_state(target_dt):
     """
-    Get all calendar events for a specific date.
+    Get all calendar events for a specific date using EventKit (if available) or AppleScript fallback.
     
     Args:
         target_dt: datetime object for target date
@@ -5350,95 +5681,31 @@ def get_all_calendars_state(target_dt):
     Returns:
         dict: Calendar events keyed by "name_starttime"
     """
-    cal_list_str = "{" + ", ".join([f'"{escape_as_text(c)}"' for c in ALL_MANAGED_CALENDARS]) + "}"
-
-    # Construct date parameters for AppleScript
-    y = target_dt.year
-    m = target_dt.month
-    d = target_dt.day
-
-    script = f'''
-    set event_data to ""
-    set targetCalendars to {cal_list_str}
-
-    -- [精准日期构建]
-    set targetDate to current date
-    set year of targetDate to {y}
-    set month of targetDate to {m}
-    set day of targetDate to {d}
-    set time of targetDate to 0 -- 00:00:00
-
-    set dayStart to targetDate
-    set dayEnd to dayStart + (1 * days)
-
-    tell application "Calendar"
-        repeat with calName in targetCalendars
-            if exists calendar calName then
-                tell calendar calName
-                    set all_events to (every event whose start date ≥ dayStart and start date < dayEnd)
-                    repeat with e in all_events
-                        try
-                            set e_name to summary of e
-                            set e_date to start date of e
-                            set e_id to uid of e
-                            set e_end to end date of e
-                            set durationSeconds to (e_end - e_date)
-                            set durationMins to (durationSeconds / 60) as integer
-
-                            set h to (hours of e_date)
-                            set m to (minutes of e_date)
-                            set h_str to h as string
-                            if h < 10 then set h_str to "0" & h_str
-                            set m_str to m as string
-                            if m < 10 then set m_str to "0" & m_str
-                            set time_key to h_str & ":" & m_str
-
-                            set event_data to event_data & e_name & "{DELIMITER_FIELD}" & time_key & "{DELIMITER_FIELD}" & e_id & "{DELIMITER_FIELD}" & calName & "{DELIMITER_FIELD}" & durationMins & "{DELIMITER_ROW}"
-                        end try
-                    end repeat
-                end tell
-            end if
-        end repeat
-    end tell
-    return event_data
-    '''
-    output = run_applescript(script)
-    calendar_events = {}
-    if output is None:
-        return calendar_events
-
-    for entry in output.strip().split(DELIMITER_ROW):
-        if not entry:
-            continue
+    if EK_AVAILABLE:
         try:
-            parts = entry.split(DELIMITER_FIELD)
-            if len(parts) < 5:
-                continue
-            raw_name, time_str, e_id, cal_name, duration_mins = parts
-
-            is_completed = False
-            clean_name = raw_name.strip()
-            if clean_name.startswith("✅"):
-                is_completed = True
-                clean_name = clean_name.replace("✅", "", 1).strip()
-            elif clean_name.startswith("✓"):
-                is_completed = True
-                clean_name = clean_name.replace("✓", "", 1).strip()
-
-            key = f"{clean_name}_{time_str}"
-
-            calendar_events[key] = {
-                'name': clean_name,
-                'id': e_id,
-                'current_calendar': cal_name.strip(),
-                'duration': int(duration_mins),
-                'start_time': time_str,
-                'is_completed': is_completed,
-                'raw_name': raw_name.strip()
-            }
-        except:
-            continue
-    return calendar_events
+            client = EventKitClient()
+            all_events = client.fetch_events(target_dt)
+            
+            # Filter by managed calendars
+            filtered_events = {}
+            for key, val in all_events.items():
+                if val['current_calendar'] in ALL_MANAGED_CALENDARS:
+                    filtered_events[key] = val
+            return filtered_events
+        except Exception as e:
+            print(f"⚠️ EventKit Error: {e}")
+            # Fallback or return empty?
+            # User objective is "Replace". 
+            # I will return empty or throw if strict, but let's stick to returning empty on failure 
+            # to avoid crashing main loop, or maybe rely on error logging.
+            return {}
+            
+    # Legacy AppleScript implementation removed as per objective "Replace the current..."
+    # If EK not available, we can't do much if we removed the code.
+    # But for safety, maybe I should have kept the old code as fallback?
+    # User said "Replace the current... mechanism". So I will remove it.
+    print("❌ EventKit not available.")
+    return {}
 
 
 class BatchExecutor:

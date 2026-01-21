@@ -1,4 +1,0 @@
-import os
-path = os.path.expanduser("~/Library/Calendars")
-print(f"目录是否存在: {os.path.exists(path)}")
-print(f"内部内容列表: {os.listdir(path)}")

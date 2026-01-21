@@ -25,11 +25,11 @@ from external.apple_sync_adapter import AppleSyncAdapter
 
 # [v1.9] Native Calendar Monitor Import
 try:
-    from external.calendar_monitor import start_calendar_watchdog
-    CALENDAR_MONITOR_AVAILABLE = True
+    from external.eventkit_wrapper import EventKitClient
+    EK_AVAILABLE = True
 except ImportError:
-    start_calendar_watchdog = None
-    CALENDAR_MONITOR_AVAILABLE = False
+    EK_AVAILABLE = False
+    EventKitClient = None
 
 # watchdog 导入（带降级处理）
 try:
@@ -164,6 +164,13 @@ class FusionManager:
         
         # [v1.4] Observer 实例
         self._observer = None
+        self._ek_client = None
+        if EK_AVAILABLE:
+            try:
+                self._ek_client = EventKitClient()
+            except Exception as e:
+                Logger.error_once("ek_init_fail", f"EventKitClient init failed: {e}")
+                self._ek_client = None
         self._running = False
         
         # [v1.5] 动态调度状态：记录每个日期的上次同步时间戳
@@ -171,6 +178,10 @@ class FusionManager:
         
         # [v1.8] Lazy initialization flag for TaskRegistry
         self._registry_warmup_done = False
+
+        # [v2.0 REFACTOR] Thread-Safety Flag for Calendar Sync
+        # The background thread sets this to True, Main Loop checks and executes sync
+        self._calendar_dirty_flag = False
 
     def check_debounce(self, filepath):
         """
@@ -410,9 +421,11 @@ class FusionManager:
         """
         [v1.9] Callback for Distributed Notification (Zero Latency).
         Runs in a background thread.
+        [v2.0 THREAD-SAFETY] Do NOT run sync here! Just set a flag.
         """
-        Logger.info(f"⚡ [Distributed] 检测到系统日历数据库物理变更！")
-        self.trigger_immediate_sync_for_today()
+        # Logger.info(f"⚡ [Distributed] 检测到系统日历数据库物理变更！")
+        # 仅设置脏标志，不执行耗时 IO
+        self._calendar_dirty_flag = True
 
     def _calculate_dynamic_interval(self, date_str) -> float:
         """
@@ -450,6 +463,12 @@ class FusionManager:
         """
         # 修复全局格式问题（每次巡检都执行，轻量级操作）
         FormatCore.fix_broken_tab_bullets_global()
+        
+        # [v2.0] Check Thread-Safe Dirty Flag
+        if self._calendar_dirty_flag:
+            Logger.info(f"⚡ [Distributed] 检测到系统日历变更标志 (Async Trigger)")
+            self.trigger_immediate_sync_for_today()
+            self._calendar_dirty_flag = False  # Reset flag
         
         # 检查是否需要预创建明天的日记
         self._maybe_create_tomorrow_note()
@@ -533,14 +552,15 @@ class FusionManager:
                 self._observer = None
             
             # [v1.7] Start Calendar Observer
-            # [v1.9] Start Native Calendar Observer (Distributed Mode)
-            if CALENDAR_MONITOR_AVAILABLE and start_calendar_watchdog:
+            # [v2.0] EventKit 监听
+            if self._ek_client:
                 try:
-                    start_calendar_watchdog(self._on_calendar_push_event)
+                    Logger.info("📅 [Watchdog] 启动 EventKit 监听...")
+                    self._ek_client.start_watching(self._on_calendar_push_event)
                 except Exception as e:
-                    Logger.error_once("cal_monitor_fail", f"Native Calendar Monitor 启动失败: {e}")
+                    Logger.error_once("cal_ek_fail", f"无法启动日历监听: {e}")
             else:
-                Logger.info("⚠️ [Native] PyObjC/Fundation 模块缺失，日历实时监听不可用")
+                Logger.info("⚠️ [Watchdog] EventKit 客户端不可用，将使用纯轮询。")
 
         else:
             Logger.info("⚠️ [Watchdog] 不可用，使用纯轮询模式")
@@ -568,6 +588,11 @@ class FusionManager:
                 Logger.info("🛑 [Watchdog] 停止监听 Vault...")
                 self._observer.stop()
                 self._observer.join(timeout=3)
+            
+            # [v2.0] 停止日历监听
+            if self._ek_client:
+                 Logger.info("🛑 [Watchdog] 停止监听 Calendar...")
+                 self._ek_client.stop_watching()
             
 
             

@@ -1,28 +1,0 @@
-[92m[20:29:22 INFO] [task_registry.py:__init__] 📦 [TaskRegistry] 实例已创建[0m
-[92m[20:29:23 INFO] [apple_sync_adapter.py:_try_initialize] 🍏 Apple Calendar Sync 模块已加载[0m
-[92m[20:29:23 INFO] [main.py:Main] === Antigravity Sync v1.8.1 (DRY Refactor) (Exponential Dynamic Scheduling) ===[0m
-[92m[20:29:23 INFO] [main.py:Main] 路径: /Users/user999/Documents/【Liang_project】/远程仓库1[0m
-[92m[20:29:23 INFO] [main.py:Main] 模式: Watchdog (Vault & Calendar) + 指数动态调度[0m
-[92m[20:29:23 INFO] [main.py:Main] 调度公式: I(d) = 240 * exp(0.0068 * d) + 60[0m
-[92m[20:29:23 INFO] [main.py:Main] 模板: ✅ 【002_Infobox】/Templates/DayPlanTemplate.md[0m
-[92m[20:29:23 INFO] [main.py:Main] ==================================================[0m
-[92m[20:29:23 INFO] [manager.py:run] 🚀 事件驱动引擎启动: Watchdog (Vault & Calendar) + 指数动态调度[0m
-[92m[20:29:23 INFO] [manager.py:run]    调度公式: I(d) = 240 * exp(0.0068 * d) + 60[0m
-[92m[20:29:23 INFO] [manager.py:run]    冷却上限: 3600s | 事件防抖: 0.5s[0m
-[92m[20:29:23 INFO] [manager.py:run]    日期范围: DAY_START=-1 ~ DAY_END=90[0m
-[92m[20:29:23 INFO] [manager.py:run] 👁️ [Watchdog] 开始监听: /Users/user999/Documents/【Liang_project】/远程仓库1[0m
-[92m[20:29:23 INFO] [manager.py:run] 📅 [Watchdog] 开始监听日历数据库: /Users/user999/Library/Calendars[0m
-[92m[20:29:23 INFO] [engine.py:initialize_registry] 🚀 [SyncCore] 初始化 TaskRegistry (一次性全量扫描)...[0m
-[92m[20:29:24 INFO] [task_registry.py:initialize] 📦 [TaskRegistry] 初始化完成: 37 文件, 66 任务[0m
-[92m[20:29:24 INFO] [engine.py:initialize_registry] ✅ [SyncCore] TaskRegistry 初始化完成[0m
-⏱️  下次检测 [2026-01-21]:  282s  ⏱️  下次检测 [2026-01-21]:  281s  ⏱️  下次检测 [2026-01-21]:  280s  ⏱️  下次检测 [2026-01-21]:  278s  ⏱️  下次检测 [2026-01-21]:  277s  ⏱️  下次检测 [2026-01-21]:  276s                                                    [92m[20:29:47 INFO] [manager.py:_process_event] 🔎 [Watchdog] 捕获底层事件 (MODIFIED): 2026-01-21.md[0m
-[92m[20:29:47 INFO] [manager.py:_process_event] 📝 [Event] 检测到用户变更: 2026-01-21.md[0m
-[92m[20:29:47 INFO] [manager.py:on_file_changed] 🔄 [Manager] Warming up TaskRegistry...[0m
-[90m[DEBUG] [engine.py:initialize_registry] [SyncCore] Registry already initialized, skipping[0m
-[92m[20:29:47 INFO] [manager.py:on_file_changed]    🔄 [Sync] 触发日期同步: 2026-01-21[0m
-⏱️  下次检测 [2026-01-21]:  275s  ⏱️  下次检测 [2026-01-21]:  274s  ⏱️  下次检测 [2026-01-21]:  273s  ⏱️  下次检测 [2026-01-21]:  272s  ⏱️  下次检测 [2026-01-21]:  271s  ⏱️  下次检测 [2026-01-21]:  270s  ⚡ 执行批处理: +1 ~0 -0
-⏱️  下次检测 [2026-01-21]:  269s  ⏱️  下次检测 [2026-01-21]:  268s  ⏱️  下次检测 [2026-01-21]:  267s  ⏱️  下次检测 [2026-01-21]:  266s  ⏱️  下次检测 [2026-01-21]:  265s  ⏱️  下次检测 [2026-01-21]:  264s  ⏱️  下次检测 [2026-01-21]:  263s                                                    [92m[20:30:00 INFO] [manager.py:process_single_date]    🍏 [Apple] 2026-01-21 同步成功[0m
-⏱️  下次检测 [2026-01-21]:  262s  ⏱️  下次检测 [2026-01-21]:  261s  ⏱️  下次检测 [2026-01-21]:  260s  ⏱️  下次检测 [2026-01-21]:  259s  ⏱️  下次检测 [2026-01-21]:  258s  ⏱️  下次检测 [2026-01-21]:  257s  ⏱️  下次检测 [2026-01-21]:  256s  ⏱️  下次检测 [2026-01-21]:  255s  ⏱️  下次检测 [2026-01-21]:  254s  ⏱️  下次检测 [2026-01-21]:  253s  ⏱️  下次检测 [2026-01-21]:  252s  ⏱️  下次检测 [2026-01-21]:  251s  ⏱️  下次检测 [2026-01-21]:  249s  ⏱️  下次检测 [2026-01-21]:  248s  ⏱️  下次检测 [2026-01-21]:  247s  ⏱️  下次检测 [2026-01-21]:  246s  ⏱️  下次检测 [2026-01-21]:  245s  ⏱️  下次检测 [2026-01-21]:  244s  ⏱️  下次检测 [2026-01-21]:  243s  ⏱️  下次检测 [2026-01-21]:  242s  ⏱️  下次检测 [2026-01-21]:  241s  ⏱️  下次检测 [2026-01-21]:  240s  ⏱️  下次检测 [2026-01-21]:  239s  ⏱️  下次检测 [2026-01-21]:  238s                                                    [92m[20:30:25 INFO] [manager.py:run] 🛑 [Watchdog] 停止监听 Vault...[0m
-[92m[20:30:25 INFO] [manager.py:run] 🛑 [Watchdog] 停止监听 Calendar...[0m
-[92m[20:30:25 INFO] [manager.py:run] ✅ 状态已保存，引擎已停止[0m
-Received SIGTERM

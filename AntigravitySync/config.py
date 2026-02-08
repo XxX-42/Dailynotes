@@ -36,12 +36,21 @@ class Config:
     IMAGE_PARAM_SUFFIX = "|L|200"
     DEBUG_MODE = True
     
+    # [v3.7] Debug 日期范围模式
+    # 设为 1 时进入调试模式，日记范围只对今天的日记有效（加速测试）
+    DEBUG_TODAY_ONLY = 0
+    
     # [v1.4] 事件驱动模式参数
     EVENT_DEBOUNCE_SECONDS = 0.5   # 事件触发防抖时间（秒）
     
+    # [v3.6] 变更来源感知延迟
+    # 根据检测到的变更来源，在执行格式化/同步前等待不同时间
+    CHANGE_SOURCE_TYPING_DELAY = 6.0   # 用户打字：短延迟，减少打断感
+    CHANGE_SOURCE_SYNC_DELAY = 11.0    # 后台同步：长延迟，等待批量同步稳定
+    
     # [v3.0] Chronos Mode - 全事件驱动架构
     CHRONOS_SYNC_WINDOW_DAYS = 30      # 日历变更时同步的窗口大小（前后各15天）
-    CHRONOS_FULL_RANGE_PAST_DAYS = 2   # 全量同步：过去N天 (前天+昨天)
+    CHRONOS_FULL_RANGE_PAST_DAYS = 1   # 全量同步：过去N天 (前天+昨天)
     CHRONOS_FULL_RANGE_FUTURE_YEARS = 10  # 全量同步：未来N年
     CHRONOS_EVENTKIT_BATCH_DAYS = 1460  # EventKit批次大小（约4年，系统限制）
     CHRONOS_LOOP_INTERVAL = 60.0       # 主循环间隔（秒）

@@ -122,27 +122,45 @@ class FormatCore:
         sorted_blocks = sorted(blocks, key=cls._extract_sort_key)
 
         output = []
-        p_text = "\n".join(preamble).strip()
+        p_text = cls._safe_strip("\n".join(preamble))
         if p_text: output.append(p_text)
 
         for blk in sorted_blocks:
             # 块内部使用单换行拼接，保持紧凑
-            blk_text = "\n".join(blk).rstrip()
+            # [FIX] 使用 _safe_strip 而非 rstrip，保留行尾有意义的空格
+            blk_text = cls._safe_strip("\n".join(blk))
             output.append(blk_text)
 
         # 块之间使用双换行拼接 (顶层任务之间留空)
-        return "\n\n".join(output).strip()
+        return cls._safe_strip("\n\n".join(output))
+
+    @staticmethod
+    def _safe_strip(content: str) -> str:
+        """
+        [FIX] 安全的 strip：只移除首尾的空白行，不移除行内尾部空格
+        这样可以保留 Obsidian 列表语法 "- " 中的空格
+        """
+        if not content:
+            return content
+        lines = content.split('\n')
+        # 移除首部空行
+        while lines and not lines[0].strip():
+            lines.pop(0)
+        # 移除尾部空行
+        while lines and not lines[-1].strip():
+            lines.pop()
+        return '\n'.join(lines)
 
     @classmethod
     def sort_markdown_sections(cls, text: str, filename: str = "") -> str:
         if not text.strip(): return text
 
-        sections = re.split(r'^(#\s.*)$', text.strip(), flags=re.MULTILINE)
+        sections = re.split(r'^(#\s.*)$', cls._safe_strip(text), flags=re.MULTILINE)
         output = []
 
         start_idx = 0
         if sections and not sections[0].startswith('#'):
-            output.append(sections[0].strip())
+            output.append(cls._safe_strip(sections[0]))
             start_idx = 1
 
         i = start_idx
@@ -158,7 +176,7 @@ class FormatCore:
 
             processed_sub_sections = []
 
-            pre_l2 = sub_blocks[0].strip()
+            pre_l2 = cls._safe_strip(sub_blocks[0])
             if pre_l2:
                 if is_target_section:
                     processed_sub_sections.append(cls.sort_day_planner_content(pre_l2))
@@ -168,7 +186,7 @@ class FormatCore:
             j = 1
             while j < len(sub_blocks):
                 l2_title = sub_blocks[j].strip()
-                l2_content = sub_blocks[j + 1].strip() if j + 1 < len(sub_blocks) else ""
+                l2_content = cls._safe_strip(sub_blocks[j + 1]) if j + 1 < len(sub_blocks) else ""
 
                 final_l2_content = ""
                 if l2_content:
@@ -184,7 +202,7 @@ class FormatCore:
 
                 j += 2
 
-            full_section_content = "\n\n".join(processed_sub_sections).strip()
+            full_section_content = cls._safe_strip("\n\n".join(processed_sub_sections))
 
             if full_section_content:
                 output.append(f"{title}\n\n{full_section_content}")
@@ -193,7 +211,15 @@ class FormatCore:
 
             i += 2
 
-        return "\n\n".join(output).strip()
+        # [FIX] 智能拼接：如果第一个元素是 YAML frontmatter，则用单换行连接
+        # YAML frontmatter 以 "---" 开头，其后应紧跟标题而非空行
+        if output and len(output) >= 2 and output[0].strip().startswith('---'):
+            # Frontmatter + 单换行 + 其余内容（双换行分隔）
+            frontmatter = output[0]
+            rest = "\n\n".join(output[1:])
+            return cls._safe_strip(f"{frontmatter}\n{rest}")
+        
+        return cls._safe_strip("\n\n".join(output))
 
     @staticmethod
     def _log_diff(step_name: str, old_content: str, new_content: str):

@@ -12,7 +12,7 @@ def normalize_raw_tasks(lines, filename_stem):
     new_lines = []
     today_str = datetime.date.today().strftime("%Y-%m-%d")
     raw_pattern = re.compile(r'^(>\s*-\s*\[\s*\])(.*)$')
-    id_pattern = re.compile(r'\^[a-z0-9]{6}\s*$')
+    id_pattern = re.compile(r'(?:\^[a-z0-9]{6}|<span id="[a-z0-9]{6}"></span>)\s*$')
 
     def generate_id():
         return ''.join(random.choices(string.ascii_lowercase + string.digits, k=6))
@@ -25,10 +25,7 @@ def normalize_raw_tasks(lines, filename_stem):
 
             if not id_pattern.search(text_body):
                 new_id = generate_id()
-                formatted_body = f"[[{filename_stem}#^{new_id}|⮐]] [[{today_str}]]"
-                if text_body:
-                    formatted_body += f" {text_body}"
-                new_lines.append(f"{prefix} {formatted_body} ^{new_id}")
+                new_lines.append(f"{prefix} <span id=\"{new_id}\"></span>[[{filename_stem}#^{new_id}|⮐]] [[{today_str}]] {text_body}")
             else:
                 new_lines.append(line)
         else:
@@ -115,7 +112,7 @@ def inject_into_task_section(file_lines, block_lines, filename_stem=None):
     existing_structure_map = {}
     current_header_date = None
     header_pattern = re.compile(r'^#+\s*\[\[\s*(\d{4}-\d{2}-\d{2})\s*\]\]')
-    id_pattern = re.compile(r'\^([a-zA-Z0-9]{6,})\s*$')
+    id_pattern = re.compile(r'(?:\^([a-zA-Z0-9]{6,})|<span id="([a-zA-Z0-9]{6,})"></span>)')
 
     for line in existing_content:
         stripped = line.strip()
@@ -137,7 +134,7 @@ def inject_into_task_section(file_lines, block_lines, filename_stem=None):
         head = blk_lines[0]
         bid_m = id_pattern.search(head)
         if bid_m:
-            bid = bid_m.group(1)
+            bid = bid_m.group(1) or bid_m.group(2)  # group(1) for ^xxx, group(2) for span
             final_date = "0000-00-00"
             if bid in existing_structure_map:
                 final_date = existing_structure_map[bid]
@@ -268,14 +265,15 @@ def format_line(indent, status, text, dates, fname, bid, is_daily):
     indent_str = '\t' * tab_count
 
     if is_daily:
+        span_id = f'<span id="{bid}"></span>'
         link = f"[[{fname}#^{bid}|⮐]]"
         time_match = re.match(r'^(\d{1,2}:\d{2}(?:\s*-\s*\d{1,2}:\d{2})?)', text)
         if time_match:
             time_part = time_match.group(1)
             rest_part = text[len(time_part):].strip()
-            return f"{indent_str}- [{status}] {time_part} {link} {rest_part} ^{bid}\n"
+            return f"{indent_str}- [{status}] {time_part} {span_id}{link} {rest_part}\n"
         else:
-            return f"{indent_str}- [{status}] {link} {text} ^{bid}\n"
+            return f"{indent_str}- [{status}] {span_id}{link} {text}\n"
     else:
         clean_text = clean_task_text(text, bid, fname)
         creation_date = None
@@ -302,10 +300,10 @@ def format_line(indent, status, text, dates, fname, bid, is_daily):
         if done_date_match: processed_dates.append(f"✅ {done_date_match.group(1)}")
         meta_str = " ".join(processed_dates)
 
-        parts = [date_link]
+        span_id = f'<span id="{bid}"></span>'
+        parts = [span_id + date_link]
         if clean_text: parts.append(clean_text)
         if meta_str: parts.append(meta_str)
-        parts.append(f"^{bid}")
 
         return f"{indent_str}- [{status}] {' '.join(parts)}\n"
 
@@ -330,7 +328,8 @@ def normalize_child_lines(raw_lines, target_parent_indent, source_parent_indent=
 
     children = []
     for line in raw_lines:
-        content_cleaned = re.sub(r'^[>\s]+', '', line).strip()
+        # [FIX] 使用 lstrip() 而非 strip()，保留尾部空格以支持 Obsidian "- " 列表语法
+        content_cleaned = re.sub(r'^[>\s]+', '', line).lstrip()
         if not content_cleaned:
             children.append(("> \n" if as_quoted else "\n"))
             continue
@@ -387,11 +386,24 @@ def ensure_structure(lines):
         j_idx = next(i for i, l in enumerate(lines) if l.strip() == "# Journey")
     except StopIteration:
         pass
+    
+    # [FIX] 计算正确的插入位置：跳过 YAML frontmatter
+    # Frontmatter 格式: 第一行 "---"，然后在某行再遇到 "---" 结束
+    insert_pos = 0
+    if lines and lines[0].strip() == '---':
+        # 有 frontmatter，找到结束位置
+        for i in range(1, len(lines)):
+            if lines[i].strip() == '---':
+                insert_pos = i + 1
+                break
+    
     if not has_dp:
         if j_idx != -1:
-            lines.insert(j_idx, "# Day planner\n\n")
+            # [FIX] 使用单换行，避免多余空行
+            lines.insert(j_idx, "# Day planner\n")
         else:
-            lines.insert(0, "# Day planner\n\n");
+            # [FIX] 插入到 frontmatter 之后，而非索引 0
+            lines.insert(insert_pos, "# Day planner\n")
             lines.append("\n# Journey\n")
     if has_dp and j_idx == -1: lines.append("\n# Journey\n")
     return lines

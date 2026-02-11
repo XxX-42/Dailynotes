@@ -45,8 +45,8 @@ class Config:
     
     # [v3.6] 变更来源感知延迟
     # 根据检测到的变更来源，在执行格式化/同步前等待不同时间
-    CHANGE_SOURCE_TYPING_DELAY = 6.0   # 用户打字：短延迟，减少打断感
-    CHANGE_SOURCE_SYNC_DELAY = 11.0    # 后台同步：长延迟，等待批量同步稳定
+    CHANGE_SOURCE_TYPING_DELAY = 15.0   # 用户打字：短延迟，减少打断感
+    CHANGE_SOURCE_SYNC_DELAY = 25.0    # 后台同步：长延迟，等待批量同步稳定
     
     # [v3.0] Chronos Mode - 全事件驱动架构
     CHRONOS_SYNC_WINDOW_DAYS = 30      # 日历变更时同步的窗口大小（前后各15天）
@@ -102,3 +102,15 @@ class Config:
     # 安全分隔符
     DELIMITER_FIELD = "|#|"
     DELIMITER_ROW = "^@^"
+
+    # ==========================
+    # 3. 关键字映射 (Log Keyword Mapping)
+    # ==========================
+    # 用于 watch_today_note.py 将中文输入转换为英文记录
+    KEYWORD_MAPPING = {
+        "烟": "Cigarette",
+        "水": "Water",
+        "魔爪": "Monster",
+        "咖啡": "Coffee",
+        "吃饭": "Meal"
+    }

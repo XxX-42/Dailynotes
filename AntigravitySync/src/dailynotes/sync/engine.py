@@ -276,9 +276,13 @@ class SyncCore:
                             clean_pure = re.sub(r'^[\s>]*-\s*\[.\]\s?', '', raw_first)
                             clean_pure = re.sub(r'^\d{1,2}:\d{2}(?:\s*-\s*\d{1,2}:\d{2})?\s*', '', clean_pure)
                             clean_pure = re.sub(r'\^[a-zA-Z0-9]{6,}\s*$', '', clean_pure)
+                            clean_pure = re.sub(r'<span id="[a-zA-Z0-9]{6,}"></span>', '', clean_pure)
 
                             # [FIX] Remove existing return links to prevent duplication
                             clean_pure = re.sub(r'\[\[[^\]]*?\#\^[a-zA-Z0-9]{6,}\|[⚓\*🔗⮐📅]\]\]', '', clean_pure)
+
+                            # [FIX] Remove routing markers like "## [[ProjectName]]" - they're only for specifying target
+                            clean_pure = re.sub(r'##\s*\[\[[^\]]+\]\]', '', clean_pure)
 
                             clean_pure = re.sub(r'\s+', ' ', clean_pure).strip()
                             
@@ -289,11 +293,12 @@ class SyncCore:
                             if m_links:
                                 ret_target = m_links[0]
                             
-                            # Build return link
+                            # Build return link with span ID prefix
+                            span_id = f'<span id="{bid}"></span>'
                             ret_link = f"[[{ret_target}#^{bid}|⮐]]"
                             
-                            # Format final line: time + return link + preserved content + ID
-                            final_head_line = f"{indent_str}- [{status}] {time_part}{ret_link} {clean_pure} ^{bid}\n"
+                            # Format final line: time + span_id + return link + preserved content (no trailing ^id)
+                            final_head_line = f"{indent_str}- [{status}] {time_part}{span_id}{ret_link} {clean_pure}\n"
                             
                             Logger.info(f"   🚚 搬运任务 (保留原链接+时间): {bid}")
                             
@@ -334,7 +339,10 @@ class SyncCore:
                                 file_tag = f" {target_tag}"
                             
                             clean_pure = re.sub(r'\s+', ' ', clean_pure).strip()
-                            final_head_line = f"{indent_str}- [{status}] {time_part}{ret_link}{file_tag} {clean_pure} ^{bid}\n"
+                            
+                            # [FIX] Use span_id prefix instead of trailing ^bid
+                            span_id = f'<span id="{bid}"></span>'
+                            final_head_line = f"{indent_str}- [{status}] {time_part}{span_id}{ret_link}{file_tag} {clean_pure}\n"
 
                         content[0] = final_head_line
                         tasks_to_move.append({'idx': i, 'len': length, 'proj': target_p_name, 'raw': content})

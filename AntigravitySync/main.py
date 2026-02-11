@@ -11,6 +11,14 @@ from dailynotes.manager import FusionManager
 from config import Config
 from dailynotes.utils import ProcessLock, Logger
 
+# [v4.0] Apple Notes Monitor（带降级处理）
+try:
+    from external.note_sync_core.monitor import NoteMonitor
+    NOTE_MONITOR_AVAILABLE = True
+except ImportError as e:
+    NOTE_MONITOR_AVAILABLE = False
+    Logger.info(f"⚠️ [NoteMonitor] 模块加载失败（不影响主程序）: {e}")
+
 # [v2.0.1] Caffeinate 进程句柄（防休眠）
 _caffeinate_proc = None
 
@@ -46,6 +54,36 @@ def stop_caffeinate():
             pass
         _caffeinate_proc = None
 
+# [v4.0] NoteMonitor 全局实例（方便退出时清理）
+_note_monitor = None
+
+def _start_note_monitor():
+    """
+    [v4.0] 启动 Apple Notes 备忘录监听（daemon 线程）
+    独立于 FusionManager，互不干扰
+    """
+    global _note_monitor
+    if not NOTE_MONITOR_AVAILABLE:
+        Logger.info("ℹ️  [NoteMonitor] 模块不可用，跳过备忘录监听")
+        return
+
+    try:
+        _note_monitor = NoteMonitor(config=Config, logger=Logger)
+        _note_monitor.start()
+    except Exception as e:
+        Logger.info(f"⚠️ [NoteMonitor] 启动失败（不影响主程序）: {e}")
+        _note_monitor = None
+
+def _stop_note_monitor():
+    """[v4.0] 停止 NoteMonitor"""
+    global _note_monitor
+    if _note_monitor:
+        try:
+            _note_monitor.stop()
+        except Exception:
+            pass
+        _note_monitor = None
+
 def run_with_self_healing():
     """
     [v2.0.1] 带错误自愈的主循环
@@ -54,6 +92,9 @@ def run_with_self_healing():
     max_restarts = 5
     restart_count = 0
     restart_cooldown = 30  # 重启冷却时间（秒）
+    
+    # [v4.0] 在主循环之前启动备忘录监听
+    _start_note_monitor()
     
     while restart_count < max_restarts:
         try:
@@ -68,6 +109,12 @@ def run_with_self_healing():
                 Logger.info(f"模板: ✅ {Config.REL_TEMPLATE_FILE}")
             else:
                 Logger.info(f"⚠️ 模板文件不存在: {Config.REL_TEMPLATE_FILE} (将使用基础骨架)")
+            
+            # [v4.0] 备忘录监听状态
+            if _note_monitor and _note_monitor._running:
+                Logger.info(f"📝 备忘录: ✅ Apple Notes -> Obsidian ## #Water")
+            else:
+                Logger.info(f"📝 备忘录: ⚠️ 未启用")
             
             if restart_count > 0:
                 Logger.info(f"🔄 [Self-Healing] 自动重启成功 (第 {restart_count} 次)")
@@ -145,5 +192,6 @@ if __name__ == "__main__":
     try:
         run_with_self_healing()
     finally:
+        _stop_note_monitor()
         stop_caffeinate()
         ProcessLock.release()

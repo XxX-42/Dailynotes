@@ -137,8 +137,9 @@ class StateManager:
         text = re.sub(r'\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}', '', text)
         text = re.sub(r'\d{1,2}:\d{2}', '', text)
 
-        # 4. 移除 ID (^xxxxxx)
+        # 4. 移除 ID (^xxxxxx or <span id="xxx"></span>)
         text = re.sub(r'(?<=\s)\^[a-zA-Z0-9]{6,7}\s*$', '', text)
+        text = re.sub(r'<span id="[a-zA-Z0-9]{6,7}"></span>', '', text)
 
         # 5. 压缩空白
         text = re.sub(r'\s+', ' ', text).strip()

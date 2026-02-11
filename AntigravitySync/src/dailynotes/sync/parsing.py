@@ -6,7 +6,7 @@ _RE_QUOTE_PREFIX = re.compile(r'^>\s?')
 _RE_STATUS_INDENT = re.compile(r'^[\s>]*-\s*\[.\]')
 _RE_TIME_RANGE = re.compile(r'\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}')
 _RE_TIME_SINGLE = re.compile(r'\d{1,2}:\d{2}')
-_RE_BLOCK_ID = re.compile(r'\^[a-zA-Z0-9]{6,}\s*$')
+_RE_BLOCK_ID = re.compile(r'(?:\^[a-zA-Z0-9]{6,}|<span id="[a-zA-Z0-9]{6,}"></span>)\s*$')
 _RE_RETURN_LINK = re.compile(r'\[\[[^\]]*?\#\^[a-zA-Z0-9]{6,}\|[⚓\*🔗⮐📅]\]\]')
 _RE_DATE_LINK = re.compile(r'\[\[\d{4}-\d{2}-\d{2}]]')
 _RE_EMOJI_DATE = re.compile(r'📅\s?\[\[\d{4}-\d{2}-\d{2}]]')
@@ -41,11 +41,13 @@ def clean_task_text(line, block_id=None, context_name=None):
     clean_text = re.sub(r'\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}', '', clean_text)
     clean_text = re.sub(r'\d{1,2}:\d{2}', '', clean_text)
     
-    # 3. remove ID
+    # 3. remove ID (^xxxxxx or <span id="xxx"></span>)
     if block_id:
         clean_text = re.sub(r'\^' + re.escape(block_id) + r'\s*$', '', clean_text)
+        clean_text = re.sub(r'<span id="' + re.escape(block_id) + r'"></span>', '', clean_text)
     else:
         clean_text = re.sub(r'\^[a-zA-Z0-9]{6,}\s*$', '', clean_text)
+        clean_text = re.sub(r'<span id="[a-zA-Z0-9]{6,}"></span>', '', clean_text)
         
     # 4. remove return links
     clean_text = re.sub(r'\[\[[^\]]*?\#\^[a-zA-Z0-9]{6,}\|[⚓\*🔗⮐📅]\]\]', '', clean_text)
@@ -54,6 +56,9 @@ def clean_task_text(line, block_id=None, context_name=None):
     clean_text = re.sub(r'\[\[\d{4}-\d{2}-\d{2}]]', '', clean_text)
     # remove emoji date
     clean_text = re.sub(r'📅\s?\[\[\d{4}-\d{2}-\d{2}]]', '', clean_text)
+
+    # 5.5 [FIX] Remove routing markers like "## [[ProjectName]]"
+    clean_text = re.sub(r'##\s*\[\[[^\]]+\]\]', '', clean_text)
 
     # 6. [NEW] Remove self-referencing project links if context is known
     # If we are syncing to "ProjectA.md", remove "[[ProjectA]]" from the text
@@ -71,7 +76,8 @@ def clean_task_text(line, block_id=None, context_name=None):
 def normalize_block_content(block_lines):
     normalized = []
     for line in block_lines:
-        clean = re.sub(r'^[\s>]+', '', line).strip()
+        # [FIX] 使用 lstrip() 而非 strip()，保留尾部空格以支持 Obsidian "- " 列表语法
+        clean = re.sub(r'^[\s>]+', '', line).lstrip()
         if not clean or clean in ['-', '- ']: continue
         normalized.append(clean)
     return "\n".join(normalized) + "\n"
@@ -258,8 +264,8 @@ def parse_file_tasks(filepath: str, lines: list, project_name: str, sm,
         st = status_match.group(1) if status_match else ' '
         
         # Extract or generate block ID
-        id_m = re.search(r'\^([a-zA-Z0-9]{6,7})\s*$', line)
-        bid = id_m.group(1) if id_m else None
+        id_m = re.search(r'(?:\^([a-zA-Z0-9]{6,7})|<span id="([a-zA-Z0-9]{6,7})"></span>)', line)
+        bid = (id_m.group(1) or id_m.group(2)) if id_m else None
         
         if not bid:
             raw_block, _ = capture_block(lines, i)

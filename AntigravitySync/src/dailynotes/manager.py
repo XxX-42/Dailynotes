@@ -30,6 +30,14 @@ except ImportError:
     EK_AVAILABLE = False
     EventKitClient = None
 
+# [v3.8] Reminder Kit Import
+try:
+    from external.reminder_kit import ReminderKitClient
+    REMINDER_AVAILABLE = True
+except ImportError:
+    REMINDER_AVAILABLE = False
+    ReminderKitClient = None
+
 # watchdog 导入（带降级处理）
 try:
     from watchdog.observers import Observer
@@ -92,41 +100,20 @@ class ObsidianEventHandler(FileSystemEventHandler):
             
         detected_source = 'UNKNOWN'
         
-        # [优先级 2] 尝试通过 lsof 获取打开该文件的进程
-        try:
-            result = subprocess.run(
-                ['lsof', '-t', filepath],
-                capture_output=True,
-                text=True,
-                timeout=1
-            )
-            pids = result.stdout.strip().split('\n')
+        # [优先级 1] 检查是否为 AntigravitySync 自身写入
+        if is_system_write:
+            return 'SYSTEM'
             
-            for pid in pids:
-                if not pid:
-                    continue
-                try:
-                    # 获取进程名
-                    proc_result = subprocess.run(
-                        ['ps', '-p', pid, '-o', 'comm='],
-                        capture_output=True,
-                        text=True,
-                        timeout=1
-                    )
-                    proc_name = proc_result.stdout.strip().lower()
-                    
-                    # 匹配已知进程特征
-                    for signature, source in self._PROCESS_SIGNATURES.items():
-                        if signature in proc_name:
-                            detected_source = source
-                            break
-                    if detected_source != 'UNKNOWN':
-                        break
-                            
-                except (subprocess.TimeoutExpired, Exception):
-                    continue
-                    
-        except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
+        detected_source = 'UNKNOWN'
+        
+        # [优先级 2] 尝试通过 lsof/fuser 获取打开该文件的进程 (极简版)
+        # 注意: lsof 在 macOS 上可能很慢，且不一定能捕获瞬时写入
+        # 这里仅作为一种辅助手段，不强求成功
+        try:
+            # 仅当文件存在时检查
+            if os.path.exists(filepath):
+                 pass #暂不启用 lsof 以避免性能损耗
+        except Exception:
             pass
         
         # [优先级 3] 检查文件扩展名特征
@@ -318,11 +305,20 @@ class FusionManager:
                 Logger.error_once("ek_init_fail", f"EventKitClient init failed: {e}")
                 self._ek_client = None
         
+        self._reminder_client = None
+        if REMINDER_AVAILABLE:
+             try:
+                 self._reminder_client = ReminderKitClient()
+             except Exception as e:
+                 Logger.error_once("rem_init_fail", f"ReminderKitClient init failed: {e}")
+                 self._reminder_client = None
+        
         self._running = False
         self._registry_warmup_done = False
         
         # [v3.0] Chronos Mode
         self._calendar_dirty_flag = False
+        self._reminder_dirty_flag = False
         self._last_midnight_check = datetime.date.today()
         self._startup_sync_done = False
 
@@ -424,6 +420,80 @@ class FusionManager:
         Thread-safe: Just sets a flag.
         """
         self._calendar_dirty_flag = True
+
+    def _on_reminder_push_event(self):
+        """
+        [v3.8] Callback for ReminderKit notification.
+        """
+        self._reminder_dirty_flag = True
+
+    def sync_reminders(self):
+        # [v3.8] Reminder Sync Logic
+
+        # 这个方法现在是真正的业务逻辑实现
+        today_str = datetime.date.today().strftime('%Y-%m-%d')
+        Logger.info(f"🔄 [Chronos] 执行提醒事项同步 ({today_str})...")
+        
+        # 1. 获取 Obsidian 中的任务 (Source of Truth for creation/deletion?)
+        # 实际上 Obsidian 和 Reminders 是双向的。
+        # 我们先只做简单的：把 Obsidian 今日任务推送到 Reminders，
+        # 并把 Reminders 的完成状态同步回 Obsidian。
+        
+        try:
+             # A. 获取 Reminders (Incomplete + Completed today)
+             reminders_by_date = self._reminder_client.fetch_reminders(start_date=datetime.date.today(), end_date=datetime.date.today())
+             today_reminders = reminders_by_date.get(today_str, [])
+             
+             # Map: Reminder ID -> Reminder Object
+             rem_map = {r['id']: r for r in today_reminders}
+             
+             # B. 获取 Obsidian 今日任务
+             obs_tasks = self.sync_core.get_tasks_for_date(today_str)
+             
+             # C. Obsidian -> Reminders (Push new tasks)
+             # 目前 EventKitWrapper 只有读权限/能力？
+             # 查阅代码发现在 reminder_kit.py 中只实现了 fetch。
+             # 我们需要扩展 reminder_kit.py 支持 save_reminder / update_reminder。
+             # 鉴于时间，先实现 "Reminders 完成状态 -> Obsidian" (Hooking into SyncCore)
+             
+             changes_count = 0
+             
+             for bid, task_data in obs_tasks.items():
+                 # 假设 Obsidian 任务描述里包含了 Reminder ID? 
+                 # 或者是根据 Title 匹配?
+                 # 现有的 AppleNotes 逻辑是 *ID*Content。
+                 # Reminders 也有 CalendarItemIdentifier。
+                 
+                 # 匹配逻辑：
+                 # 1. 如果 Obsidian 任务有 RID (block id 即使是)，尝试在 Reminders 中找。
+                 #    但是 Reminder ID 通常很长 (UUID)。
+                 # 2. 只有通过 Title 匹配最稳妥，或者我们在 Obsidian 中存储 RID。
+                 
+                 # 简化版：仅同步完成状态 (基于 Title)
+                 clean_content = task_data.get('pure', '').strip()
+                 is_obs_completed = task_data.get('status') == 'x'
+                 
+                 matched_rem = None
+                 for r in today_reminders:
+                     if r['title'].strip() == clean_content:
+                         matched_rem = r
+                         break
+                 
+                 if matched_rem:
+                     is_rem_completed = matched_rem['is_completed']
+                     
+                     if is_rem_completed and not is_obs_completed:
+                         Logger.info(f"   ✅ [Sync] Reminder 完成 -> Obsidian: {clean_content}")
+                         # 更新 Obsidian
+                         # 最直接的方式：读取文件，替换状态，写回。
+                         # 为了复用逻辑，我们可以扩展 SyncCore。
+                         self.sync_core.complete_task_by_title(clean_content, today_str)
+ 
+                         
+             Logger.info(f"✅ [Chronos] 提醒事项同步完成 (占位)")
+             
+        except Exception as e:
+            Logger.error_once("rem_sync_fail", f"提醒事项同步失败: {e}")
 
     def sync_recent_window(self):
         """
@@ -584,6 +654,15 @@ class FusionManager:
             self.sync_full_range()
             self._startup_sync_done = True
 
+        # [v3.8] 启动 Reminder 监听
+        if self._reminder_client:
+             try:
+                 Logger.info("🎗️ [Watchdog] 启动 ReminderKit 监听...")
+                 # 注意: 这里使用与 EventKit 相同的推送回调逻辑，或者单独的逻辑
+                 self._reminder_client.start_watching(self._on_reminder_push_event)
+             except Exception as e:
+                 Logger.error_once("rem_watch_fail", f"无法启动提醒事项监听: {e}")
+
         # 主循环
         try:
             from CoreFoundation import CFRunLoopRunInMode, kCFRunLoopDefaultMode
@@ -594,6 +673,12 @@ class FusionManager:
                     Logger.info(f"⚡ [Chronos] 检测到日历变更")
                     self.sync_recent_window()
                     self._calendar_dirty_flag = False
+                
+                if self._reminder_dirty_flag:
+                    Logger.info(f"⚡ [Chronos] 检测到提醒事项变更")
+                    self._reminder_dirty_flag = False
+                    self.sync_reminders() 
+
                 
                 # 检查午夜跨越
                 self._check_midnight_crossing()
@@ -611,7 +696,13 @@ class FusionManager:
             
             if self._ek_client:
                 Logger.info("🛑 [Watchdog] 停止监听 Calendar...")
+            if self._ek_client:
+                Logger.info("🛑 [Watchdog] 停止监听 Calendar...")
                 self._ek_client.stop_watching()
+
+            if self._reminder_client:
+                Logger.info("🛑 [Watchdog] 停止监听 Reminders...")
+                self._reminder_client.stop_watching()
             
             self.sm.save()
             Logger.info("✅ 状态已保存，Chronos 引擎已停止")

@@ -1,20 +1,3 @@
-"""
-[v4.0] Apple Notes Monitor — 备忘录变更监听与自动同步模块
-
-功能:
-1. 轮询 Apple Notes 中当天的备忘录，检测内容变更
-2. 识别以时间戳开头的新增行（如 "23:28:14"烟":"x1"）
-3. 自动将其格式化并插入 Obsidian 今日日记的 ## #Water 章节
-4. 格式: HH:MM<span id="HH:MM:SS"></span> Keyword::Value
-5. 支持 Config.KEYWORD_MAPPING 中英文映射
-
-用法:
-    from external.note_sync_core.monitor import NoteMonitor
-    monitor = NoteMonitor()
-    monitor.start()  # 以 daemon 线程启动
-    monitor.stop()   # 停止监听
-"""
-
 import os
 import sys
 import time
@@ -22,6 +5,8 @@ import datetime
 import threading
 import re
 import difflib
+import random
+import string
 
 # 确保能找到同目录下的 read_today_note
 _current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -54,6 +39,12 @@ class NoteMonitor:
     # =====================
     # 公开接口
     # =====================
+    
+    @staticmethod
+    def _generate_id(length=6):
+        """生成随机 6 位字母数字 ID (Obsidian Block ID 风格)"""
+        chars = string.ascii_lowercase + string.digits
+        return ''.join(random.choices(chars, k=length))
 
     def start(self):
         """以 daemon 线程启动监听"""
@@ -73,8 +64,214 @@ class NoteMonitor:
             self._thread.join(timeout=5)
             self._log("🛑 [NoteMonitor] 备忘录监听已停止")
 
+    def _sync_obsidian_tasks_to_notes(self, note_name, current_notes_content):
+        """
+        [v5.4] 单向同步: Obsidian Unchecked Tasks -> Apple Notes
+        机制:
+        1. 格式: *ID*Content (*HH:MM:SS*Content)
+        2. 扫描 Obsidian:
+           - 收集所有 {ID: Content}。
+           - 新任务自动生成 ID 并保存。
+        3. 扫描 Apple Notes:
+           - *ID*Content:
+             - 若 ID 在 Obsidian 中:
+               - 比较 Content。若不同 -> 更新 (Update)。
+               - 若相同 -> 保持。
+               - 标记该 ID 已处理。
+             - 若 ID 不在 Obsidian 中 -> 删除 (Delete)。
+        4. 追加 (Add):
+           - 将 Obsidian 中未被处理的 ID 追加到 Apple Notes。
+        """
+        if not self._config or not hasattr(self._config, 'DAILY_NOTE_DIR'):
+            return False, current_notes_content
+
+        today_str = datetime.date.today().strftime('%Y-%m-%d')
+        daily_note_dir = getattr(self._config, 'DAILY_NOTE_DIR', None)
+        if not daily_note_dir:
+            return False, current_notes_content
+            
+        daily_note_path = os.path.join(daily_note_dir, f"{today_str}.md")
+        if not os.path.exists(daily_note_path):
+            return False, current_notes_content
+            
+        try:
+            with open(daily_note_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+            
+            obsidian_changed = False
+            # Key: ID, Value: Clean Content (Includes Checked & Unchecked)
+            sync_target_tasks = {}
+            # Set of all IDs found in Obsidian to detect manual deletions
+            all_obsidian_task_ids = set()
+            
+            # Pattern for ANY task (checked or unchecked) to parse IDs and content
+            # Group 1: Prefix (- [ ] or - [x])
+            # Group 2: Content
+            task_line_pat = re.compile(r'^(\s*-\s*\[[ xX]\]\s+)(.*)')
+            # Specific pattern to identify brand new tasks that need IDs
+            new_task_pat = re.compile(r'^\s*-\s*\[\s\]\s+(?!.*<span id=")')
+            id_pat = re.compile(r'<span id="([^"]+)"></span>')
+            
+            # [v7.0] Use Random ID for new tasks
+            
+            new_obsidian_lines = []
+            
+            # --- Step 1: Process Obsidian (Collect Data) ---
+            for line in lines:
+                m = task_line_pat.match(line)
+                if m:
+                    prefix = m.group(1)
+                    content_tail = m.group(2)
+                    id_match = id_pat.search(content_tail)
+                    is_unchecked = "[ ]" in prefix
+                    
+                    if id_match:
+                        # Case A: Existing Task (Checked or Unchecked) with ID
+                        tid = id_match.group(1)
+                        # [v7.4] Clean content: Remove ID span AND Timestamp
+                        raw_clean = content_tail.replace(id_match.group(0), "")
+                        # Remove leading timestamp (e.g. 01:34 or 01:59 - 02:31) to avoid "ID + Time + Content" in Apple Notes
+                        clean_content = re.sub(r'^\s*\d{1,2}:\d{2}(?:\s*-\s*\d{1,2}:\d{2})*\s*', '', raw_clean).strip()
+                        if "#" in clean_content:
+                            all_obsidian_task_ids.add(tid)
+                            sync_target_tasks[tid] = clean_content
+                        
+                        new_obsidian_lines.append(line)
+                    elif is_unchecked and "#" in content_tail:
+                        # Case B: New Unchecked Task -> Assign RAND ID
+                        # [v7.0] Random ID
+                        rand_id = self._generate_id()
+                        span = f'<span id="{rand_id}"></span>'
+                        clean_content = content_tail.strip()
+                        modified_line = f"{prefix}{span}{clean_content}"
+                        if line.endswith('\n') and not modified_line.endswith('\n'):
+                            modified_line += '\n'
+                        
+                        new_obsidian_lines.append(modified_line)
+                        obsidian_changed = True
+                        
+                        sync_target_tasks[rand_id] = clean_content
+                        all_obsidian_task_ids.add(rand_id)
+                    else:
+                        # Case C: Checked task without ID (Rare)
+                        new_obsidian_lines.append(line)
+                else:
+                    new_obsidian_lines.append(line)
+
+            # Update Obsidian File
+            if obsidian_changed:
+                with open(daily_note_path, 'w', encoding='utf-8') as f:
+                    f.writelines(new_obsidian_lines)
+                self._log(f"📝 [Sync] Marked new tasks in Obsidian with IDs.")
+
+            # --- Step 2: Process Apple Notes (Diff & Merge) ---
+            if current_notes_content:
+                note_lines = current_notes_content.splitlines()
+            else:
+                note_lines = []
+                
+            new_note_lines = []
+            notes_changed = False
+            
+            # [v7.0] Regex to detect *ID*Content line.
+            # ID can be Timestamp (OLD) or Alphanumeric (NEW).
+            # We match strictly *ID* at start.
+            note_line_pat = re.compile(r'^\*([a-zA-Z0-9:]+)\*(.*)')
+            
+            # Track which IDs we found in Apple Notes
+            processed_ids = set()
+            
+            for nl in note_lines:
+                strip_nl = nl.strip()
+                m = note_line_pat.match(strip_nl)
+                if m:
+                    nid = m.group(1)
+                    ncontent = m.group(2) # Content in Apple Notes
+                    
+                    if nid in sync_target_tasks:
+                        # 1. Update Check (Checked or Unchecked)
+                        obsidian_content = sync_target_tasks[nid].replace('\xa0', ' ').strip()
+                        ncontent_clean = ncontent.replace('\xa0', ' ').strip()
+                        
+                        # [Fix] Normalize whitespace to avoid infinite loops (Apple Notes collapses spaces)
+                        # Also remove HTML tags from Obsidian content before comparison/sync to avoid span loops.
+                        clean_obsidian = re.sub(r'<[^>]+>', '', sync_target_tasks[nid]).strip()
+                        
+                        norm_note = " ".join(ncontent.split())
+                        norm_obsidian = " ".join(clean_obsidian.split())
+                        
+                        if norm_note != norm_obsidian:
+                            # Content changed in Obsidian -> Sync to Note
+                            # We use the CLEAN content for Apple Notes update
+                            self._log(f"✏️ [内容变更] 备忘录 VS Obsidian 内容不一致:\n   🍎 Note: {ncontent}\n   🟣 Obsid: {clean_obsidian}")
+                            
+                            updated_line = f"*{nid}*{clean_obsidian}"
+                            new_note_lines.append(updated_line)
+                            notes_changed = True
+                            self._log(f"🔄 [同步] 正在更新任务 {nid} 到备忘录...")
+                        elif ncontent != clean_obsidian:
+                            # Same logical content, but different raw string (whitespace diff)
+                            # We usually want to rewrite to match Obsidian perfectly
+                            # But if it causes loop, we skip OR we log differently.
+                            # Current logic: Skip update to avoid loop (since we use 'norm_' check above)
+                            # Just keep the Note version to stabilize
+                            new_note_lines.append(nl)
+                            # self._log(f"📝 [格式忽略] 空白符差异 (已自动标准化): {nid}")
+                        else:
+                            # Same, keep
+                            new_note_lines.append(nl)
+                        
+                        processed_ids.add(nid)
+                    elif nid in all_obsidian_task_ids:
+                        # 2. Safety Fallback (ID exists but content not in sync_target)
+                        new_note_lines.append(nl)
+                        processed_ids.add(nid)
+                    else:
+                        # 3. Delete (ID is gone from Obsidian entirely)
+                        self._log(f"🗑️ [Sync] Removing task {nid} from Apple Notes (ID manually deleted).")
+                        notes_changed = True
+                else:
+                    # Regular line, keep
+                    new_note_lines.append(nl)
+
+            # --- Step 3: Append Missing Tasks ---
+            added_count = 0
+            restored_tasks = []
+            
+            # Iterate dict to preserve order
+            for tid, tcontent in sync_target_tasks.items():
+                if tid not in processed_ids:
+                    # New in Obsidian OR Deleted in Notes -> Restore/Add
+                    line_str = f"*{tid}*{tcontent}"
+                    new_note_lines.append(line_str)
+                    processed_ids.add(tid) # Mark as processed immediately
+                    added_count += 1
+                    restored_tasks.append(tid)
+            
+            if added_count > 0:
+                notes_changed = True
+                self._log(f"🔙 [Sync] Restoring/Adding missing tasks: {restored_tasks}")
+            
+            # --- Step 4: Write to Apple Notes ---
+            if notes_changed:
+                final_content = "\n".join(new_note_lines)
+                if final_content and not final_content.endswith('\n'):
+                     final_content += "\n"
+                
+                if self._reader.update_note_content(note_name, final_content):
+                     msg = []
+                     if added_count: msg.append(f"{added_count} Restored/Added")
+                     self._log(f"📥 [Sync] Notes Updated: {', '.join(msg) or 'Modifications applied'}")
+                     return True, final_content
+            
+            return False, current_notes_content
+
+        except Exception as e:
+            self._log(f"⚠️ [Sync Error] {e}")
+            return False, current_notes_content
+
     # =====================
-    # 核心轮询逻辑
+    # 核心轮询逻辑 (Modified)
     # =====================
 
     def _polling_loop(self):
@@ -100,24 +297,28 @@ class NoteMonitor:
             # [v4.2] 首次全量扫描：同步遗漏的未标记项
             self._log("🔄 [NoteMonitor] 正在执行首次全量扫描 (Sync missing items)...")
             initial_lines = last_content.splitlines()
-            # 模拟从空到有的 Diff
             dummy_diff = list(difflib.unified_diff([], initial_lines, n=0, lineterm=''))
-            monitor_thread_name = threading.current_thread().name
             
             # 调用处理逻辑 (会自动回写 ✅)
             self._process_diff(dummy_diff, initial_lines, note_name)
             
             # 如果发生了回写，刷新 last_content
-            # 给一点时间让 Apple Notes 更新（虽然 AppleScript 是同步的，但保险起见）
             time.sleep(1)
             last_content = self._reader.get_note_content(note_name)
+            
+            # [v5.0] Initial Sync from Obsidian
+            if last_content and last_content != "NOT_FOUND":
+                 synced, new_text = self._sync_obsidian_tasks_to_notes(note_name, last_content)
+                 if synced:
+                     last_content = new_text
+            
             last_hash = hash(last_content) if last_content else 0
 
         while self._running:
             try:
                 time.sleep(self._polling_interval)
 
-                # 跨日检测：如果日期变了，更新目标备忘录
+                # 跨日检测
                 current_today = datetime.date.today()
                 if current_today != today:
                     today = current_today
@@ -125,7 +326,7 @@ class NoteMonitor:
                     self._log(f"🌙 [NoteMonitor] 跨日检测: 切换到 '{note_name}'")
                     last_hash = 0
                     last_content = ""
-                    self._tomorrow_note_created = False  # 重置次日日记标记
+                    self._tomorrow_note_created = False
 
                 # [v4.0] 23:55 自动创建次日日记
                 self._check_create_tomorrow_note()
@@ -138,6 +339,12 @@ class NoteMonitor:
                         self._log("❌ [NoteMonitor] 备忘录消失!")
                         last_hash = 0
                     continue
+
+                # [v5.0] 每一轮都检查 Obsidian 是否有新任务推送到 Apple Notes
+                # 注意: 这会增加一次文件读操作，但对于单机环境通常可接受
+                synced, new_text_v5 = self._sync_obsidian_tasks_to_notes(note_name, current_content)
+                if synced:
+                    current_content = new_text_v5
 
                 current_hash = hash(current_content)
 
@@ -169,7 +376,7 @@ class NoteMonitor:
     def _check_create_tomorrow_note(self):
         """
         [v4.0] 每天 23:55 自动创建次日日记文件
-        使用项目模板 (Config.TEMPLATE_FILE) 生成标准格式
+        [v4.3] 同时自动创建次日 Apple Note
         """
         if self._tomorrow_note_created:
             return  # 今天已经创建过了
@@ -179,32 +386,49 @@ class NoteMonitor:
 
         now = datetime.datetime.now()
 
-        # 只在 23:56:00 ~ 23:59:59 之间触发
-        if now.hour == 23 and now.minute >= 56:
+        # 只在 23:55:00 ~ 23:59:59 之间触发
+        if now.hour == 23 and now.minute >= 55:
             tomorrow = datetime.date.today() + datetime.timedelta(days=1)
             tomorrow_str = tomorrow.strftime('%Y-%m-%d')
+            # Apple Notes 标题格式: 2026/2/12 (无零填充)
+            tomorrow_apple_title = f"{tomorrow.year}/{tomorrow.month}/{tomorrow.day}"
+            
             daily_note_dir = getattr(self._config, 'DAILY_NOTE_DIR', None)
 
-            if not daily_note_dir:
-                return
+            # 1. 创建 Obsidian 日记
+            if daily_note_dir:
+                tomorrow_path = os.path.join(daily_note_dir, f"{tomorrow_str}.md")
 
-            tomorrow_path = os.path.join(daily_note_dir, f"{tomorrow_str}.md")
+                if not os.path.exists(tomorrow_path):
+                    # 读取模板
+                    template_content = self._read_template()
 
-            if os.path.exists(tomorrow_path):
-                self._tomorrow_note_created = True  # 已存在，标记跳过
-                return
+                    try:
+                        with open(tomorrow_path, 'w', encoding='utf-8') as f:
+                            f.write(template_content)
+                        self._log(f"📅 [NoteMonitor] 次日 Obsidian 日记已创建: {tomorrow_str}.md")
+                    except Exception as e:
+                        self._log(f"❌ [NoteMonitor] 创建次日日记失败: {e}")
+                else:
+                    self._log(f"ℹ️ [NoteMonitor] 次日 Obsidian 日记已存在，跳过创建")
 
-            # 读取模板
-            template_content = self._read_template()
-
+            # 2. 创建 Apple Note
             try:
-                with open(tomorrow_path, 'w', encoding='utf-8') as f:
-                    f.write(template_content)
-
-                self._tomorrow_note_created = True
-                self._log(f"📅 [NoteMonitor] 次日日记已创建: {tomorrow_str}.md")
+                # 默认内容
+                default_body = f"Daily Log {tomorrow_str}<br><br>"
+                result = self._reader.create_note(tomorrow_apple_title, default_body)
+                
+                if result == "CREATED":
+                    self._log(f"🍏 [NoteMonitor] 次日 Apple Note 已创建: '{tomorrow_apple_title}'")
+                elif result == "EXISTS":
+                    self._log(f"ℹ️ [NoteMonitor] 次日 Apple Note 已存在，跳过")
+                else:
+                    self._log(f"❌ [NoteMonitor] 创建次日 Apple Note 失败")
             except Exception as e:
-                self._log(f"❌ [NoteMonitor] 创建次日日记失败: {e}")
+                self._log(f"❌ [NoteMonitor] 调用 Apple Notes 接口异常: {e}")
+
+            # 无论成功与否，标记为已尝试，避免在 23:55-23:59 期间重复疯狂调用
+            self._tomorrow_note_created = True
 
     def _read_template(self):
         """
@@ -232,14 +456,13 @@ tags:
 # Journey
 
 # Log
-## #StateofMind
-## #Eat
-## #Sport
+## #stateofmind
 
-## #Water
+## #takein
 
-## #Account
-## #Account
+## #exercice
+
+## #account
 """
 
     def _check_and_create_today_notes(self, today):
@@ -282,6 +505,178 @@ tags:
                 self._log(f"❌ [NoteMonitor] 创建备忘录失败")
 
     # =====================
+    # Obsidian Task Helper
+    # =====================
+
+    def _mark_obsidian_task_completed_with_time(self, task_id, completion_time):
+        """
+        [v7.0] 标记 Obsidian 任务完成，并使用双 ID 格式更新时间。
+        Target Format: - [x] HH:MM<span id="RANDOM_ID"></span><span id="OLD_ID"></span> Content
+        注意: 使用随机 ID 避免重复。
+        """
+        if not self._config or not hasattr(self._config, 'DAILY_NOTE_DIR'):
+            return False
+
+        today_str = datetime.date.today().strftime('%Y-%m-%d')
+        daily_note_dir = getattr(self._config, 'DAILY_NOTE_DIR', None)
+        if not daily_note_dir:
+            return False
+            
+        daily_note_path = os.path.join(daily_note_dir, f"{today_str}.md")
+        if not os.path.exists(daily_note_path):
+            return False
+            
+        try:
+            with open(daily_note_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+            
+            updated = False
+            target_span = f'<span id="{task_id}">'
+            
+            # [v7.0] Use Random ID for completion event
+            full_time_id = self._generate_id()
+            disp_time = completion_time[:5] # HH:MM
+
+            # Pattern to match EXISTING completion timestamp in gap
+            # Matches:   SPACE HH:MM <span id="ID"></span> matches
+            existing_ts_pat = re.compile(r'^\s*(\d{2}:\d{2})<span id="([^"]+)"></span>\s*$')
+
+            new_lines = []
+            for line in lines:
+                if target_span in line and ("- [ ]" in line or "- [x]" in line):
+                    # We found the line.
+                    parts = line.split(target_span)
+                    pre_part = parts[0]
+                    post_part = target_span.join(parts[1:]) 
+                    
+                    cb_match = re.search(r'^(\s*)(-\s*\[.)\](.*)', pre_part)
+                    
+                    if cb_match:
+                        indent = cb_match.group(1)
+                        new_box = "- [x]"
+                        gap_content = cb_match.group(3) 
+                        
+                        # [v7.0] Check if gap_content already has THIS time.
+                        # If so, we do NOT generate a new random ID, to avoid flipping IDs on every poll.
+                        gm = existing_ts_pat.match(gap_content)
+                        if gm:
+                            existing_time = gm.group(1)
+                            existing_id = gm.group(2)
+                            
+                            # If the displayed time is same as completion time, we assume no change needed.
+                            # This prevents infinite loops of "Replace ID A with ID B" if time matches.
+                            if existing_time == disp_time:
+                                # Just ensure Checked
+                                if "- [ ]" in line:
+                                    new_line = line.replace("- [ ]", "- [x]")
+                                    if new_line != line:
+                                        updated = True
+                                        new_lines.append(new_line)
+                                        self._log(f"✅ [同步] 修正任务状态 (时间一致，保持原 ID): {task_id}")
+                                    else:
+                                        new_lines.append(line)
+                                else:
+                                    new_lines.append(line)
+                                continue
+
+                        # [v7.9] Multi-Span & Start-End Logic
+                        # 1. Text: "Start - End" (HH:MM)
+                        # 2. Spans: Accumulate <span id="HH:MM:SS"></span> for history
+                        
+                        full_span_id = completion_time # Use full time (possibly with seconds) as ID
+                        extra_span = f'<span id="{full_span_id}"></span>'
+                        
+                        tm = re.match(r'^\s*([\d: -]+)\s*$', gap_content)
+                        should_update = False
+                        
+                        # [v7.7] Ensure it actually contains digits
+                        if tm and any(c.isdigit() for c in tm.group(1)):
+                             existing_time_str = tm.group(1).strip()
+                             
+                             # [v7.8] "Start - End" Logic
+                             parts = existing_time_str.split('-')
+                             start_time = parts[0].strip()
+                             last_time = parts[-1].strip()
+
+                             if disp_time == last_time:
+                                 # Time duplicated. 
+                                 # User said: "插入多次以此类推" (Insert multiple times similarly)
+                                 # But also "锁定开始时间并且更新结束时" (Lock start, update end).
+                                 # IF time matches, Text doesn't change.
+                                 # Do we still add a span?
+                                 # If we add span for SAME time, we get <02:06><02:06>. Redundant.
+                                 # We SKIP span insertion if time matches to avoid spamming spans for same polling event.
+                                 pass 
+                             else:
+                                 # Update End Time
+                                 new_insert = f" {start_time} - {disp_time}"
+                                 self._log(f"   ⏱️ 时间覆盖: {existing_time_str} -> {new_insert.strip()}")
+                                 should_update = True
+                        else:
+                            # Initial Time
+                            new_insert = f" {disp_time}"
+                            self._log(f"   ⏱️ 时间初始化: {disp_time}")
+                            should_update = True
+                            
+                        # Reassemble
+                        if should_update:
+                            # [v7.10] Fix Insertion: target_span is just '<span id="...">'
+                            # post_part likely starts with '</span>'. We must insert AFTER it.
+                            
+                            closing_tag = "</span>"
+                            insert_idx = 0
+                            
+                            if post_part.startswith(closing_tag):
+                                insert_idx += len(closing_tag)
+                            
+                            # Now skip any existing valid spans (Multi-span history)
+                            # Match spans starting from current insert_idx
+                            remainder = post_part[insert_idx:]
+                            span_match = re.match(r'^(?:<span id="[^"]+"></span>)*', remainder)
+                            
+                            if span_match:
+                                insert_idx += span_match.end()
+                                
+                            new_post_part = post_part[:insert_idx] + extra_span + post_part[insert_idx:]
+                            
+                            new_line = f"{indent}{new_box}{new_insert}{target_span}{new_post_part}"
+                            
+                            updated = True
+                            new_lines.append(new_line)
+                            self._log(f"✅ [同步] 更新 Obsidian 任务状态: {task_id}")
+                            self._log(f"   ➕ 新增校验 Span: {extra_span}")
+                        else:
+                             # Just ensure Checked
+                            if "- [ ]" in line:
+                                new_line = line.replace("- [ ]", "- [x]")
+                                if new_line != line:
+                                    updated = True
+                                    new_lines.append(new_line)
+                                    self._log(f"✅ [同步] 修正任务状态 (时间已存在): {task_id}")
+                                else:
+                                    new_lines.append(line)
+                            else:
+                                new_lines.append(line)
+                            continue 
+                            
+                        # Skip appending original line since we handled it
+                        continue
+
+                    else:
+                        new_lines.append(line)
+                else:
+                    new_lines.append(line)
+            
+            if updated:
+                with open(daily_note_path, 'w', encoding='utf-8') as f:
+                    f.writelines(new_lines)
+                return True
+            return False
+        except Exception as e:
+            self._log(f"❌ [Sync Error] 更新 Obsidian 任务失败: {e}")
+            return False
+
+    # =====================
     # Diff 处理逻辑
     # =====================
 
@@ -305,6 +700,30 @@ tags:
         # 只要我们能找到对应的行即可。
 
         time_pat = re.compile(r'^\s*(\d{1,2}[:：]\d{2})')
+        # [v7.0] Heartbeat Completion Pattern (Enhanced)
+        # Supported formats:
+        # 1. StartTime *ID* Content -> 22:24:24 *21:25:38*#B 打扫
+        # 2. Content (id=*ID*)      -> #A 厄尔 （id=*21:25:38*
+        # 3. StartTime Content (id=ID) -> 00:22:26 #A 厄尔 (id=22:46:52)
+        # 4. Also support Chinese parens （id=...）
+        # 5. [v7.0] Supports Random Alphanumeric IDs (e.g. a1b2c3)
+        # 6. [v7.3] Supports Underscores in manual IDs
+        
+        # Regex explanation:
+        # ^\s*                     : Start of line
+        # (?:(\d{1,2}:\d{2}(?::\d{2})?)\s+)? : Group 1: Optional Time (e.g. 23:06:31)
+        # .*?                      : Content
+        # (?: ... )                : Non-capturing group for OR logic
+        #   \*([a-zA-Z0-9:_]+)\*          : Group 2: *ID* (timestamp or random or manual)
+        #   |
+        #   \(\s*id=([a-zA-Z0-9:_]+)\s*\) : Group 3: (id=ID)
+        #   |
+        #   （\s*id=([a-zA-Z0-9:_]+)\s*） : Group 4: （id=ID）
+        
+        completion_pat = re.compile(
+            r'^\s*(?:(\d{1,2}:\d{2}(?::\d{2})?)\s+)?.*?'
+            r'(?:\*([a-zA-Z0-9:_]+)\*|\(\s*id=([a-zA-Z0-9:_]+)\s*\)|（\s*id=([a-zA-Z0-9:_]+)\s*）)'
+        )
 
         def flush_hunk(dels, adds):
             nonlocal changes_found, notes_updated
@@ -325,7 +744,18 @@ tags:
 
                 if matched_idx != -1:
                     print(f"{YELLOW}[MOD] {d_line} -> {adds[matched_idx]}{RESET}")
-                    used_adds[matched_idx] = True
+                    # Even if it's a MOD, the new content might need processing (e.g. heartbeat)
+                    # We mark it as NOT used so it falls through to the ADD handler loop below?
+                    # No, better to process it right here or force it to be checked.
+                    # Simplest hack: Don't mark used_adds[matched_idx] = True if we want it processed.
+                    # BUT we printed [MOD], so usually that implies we handled it visually.
+                    
+                    # Check if the NEW line has completion markers but NO tick
+                    # If so, we might want to process it as a completion event.
+                    if completion_pat.match(adds[matched_idx].strip()) and "✅" not in adds[matched_idx]:
+                         used_adds[matched_idx] = False # Let it fall through to ADD loop
+                    else:
+                         used_adds[matched_idx] = True
                 else:
                     print(f"{RED}[DEL] {d_line}{RESET}")
 
@@ -335,10 +765,45 @@ tags:
                     suffix = ""
                     processed = False
                     
-                    # 1. Check Time Entries (Water/Log)
+                    # 0. Check Completion Heartbeat (Highest Priority)
+                    # e.g. 22:24:24 *21:25:38*#B 打扫
+                    comp_match = completion_pat.match(stripped_line)
+                    if comp_match and "✅" not in stripped_line:
+                        # Group 1: Time (Optional)
+                        comp_time = comp_match.group(1)
+                        # Group 2, 3, 4: ID variants
+                        # *ID* or (id=ID) or （id=ID）
+                        task_id = comp_match.group(2) or comp_match.group(3) or comp_match.group(4)
+                        
+                        # Fallback for time if not present at start of line
+                        if not comp_time:
+                            # [v7.9] Use seconds for ID generation
+                            comp_time = datetime.datetime.now().strftime('%H:%M:%S')
+                        
+                        # Action 1: Mark Obsidian Task Complete AND Update Time
+                        marked = self._mark_obsidian_task_completed_with_time(task_id, comp_time)
+                        
+                        # [Changed] Do NOT append new line to Day Planner section.
+                        # We only update the existing task line in place.
+                        
+                        if marked:
+                            # [v7.2] User Request: RESTORED " ✅" to Apple Notes.
+                            suffix = " ✅"
+                            processed = True
+                            self._log(f"💓 [Heartbeat] Task {task_id} completed at {comp_time}")
+
+                    # 1. Check Time Entries (Water/Log/DayPlan)
                     is_time_entry = time_pat.match(stripped_line)
-                    if is_time_entry and "✅" not in stripped_line:
-                        if self._append_to_daily_note(a_line):
+                    if not processed and is_time_entry and "✅" not in stripped_line:
+                        # [v4.4] Day Planner Check (starts with "*")
+                        # e.g. 17:55:48"*打游戏"
+                        if self._is_day_plan_entry(stripped_line):
+                             if self._append_to_day_plan_section(a_line):
+                                suffix = " ✅"
+                                processed = True
+                        
+                        # Fallback to Water/Log (Takein)
+                        elif self._append_to_daily_note(a_line):
                             suffix = " ✅"
                             processed = True
 
@@ -355,13 +820,19 @@ tags:
                             # Iterate to find the exact line to update
                             for idx, cl in enumerate(current_lines):
                                 if cl == a_line: 
-                                    current_lines[idx] = cl + " ✅"
-                                    notes_updated = True
+                                    if suffix:
+                                        current_lines[idx] = cl + suffix
+                                        notes_updated = True
                                     break
                         except ValueError:
                             pass
-
-                    print(f"{GREEN}[ADD] {a_line}{RESET}{suffix}")
+                    
+                    # [Removed duplicate print] We rely on _log for feedback.
+                    if not processed:
+                         # Only print valid ADDs that weren't processed (unknown lines)
+                         # or maybe just debug output.
+                         # print(f"{GREEN}[ADD] {a_line}{RESET}")
+                         pass
 
         for line in diff:
             if line.startswith('---') or line.startswith('+++'):
@@ -404,6 +875,7 @@ tags:
         格式: HH:MM<span id="HH:MM:SS"></span> Keyword::Value
         """
         RED = '\033[91m'
+        YELLOW = '\033[93m'
         RESET = '\033[0m'
 
         try:
@@ -420,6 +892,15 @@ tags:
 
             with open(daily_note_path, 'r', encoding='utf-8') as f:
                 lines = f.readlines()
+
+            # [v7.12] Defense: Prevent Heartbeat Data from entering Takein
+            # Check if line looks like a heartbeat (contains *ID* or (id=...))
+            # Ref: completion_pat from _process_diff
+            import re
+            is_heartbeat = re.search(r'(?:\*([a-zA-Z0-9:_]+)\*|\(\s*id=([a-zA-Z0-9:_]+)\s*\)|（\s*id=([a-zA-Z0-9:_]+)\s*）)', line_content)
+            if is_heartbeat:
+                print(f"{YELLOW}⚠️ [Takein Skip] Detected Heartbeat Data, ignoring: {line_content.strip()}{RESET}")
+                return False
 
             new_line_clean = line_content.strip()
 
@@ -463,7 +944,7 @@ tags:
                 new_parsed['raw'] += '\n'
 
         # 2. 定位章节范围
-        target_section = "## #Water"
+        target_section = "## #takein"
         start_idx = -1
         end_idx = -1
         
@@ -628,6 +1109,262 @@ tags:
         }
 
     # =====================
+    # Day Planner 处理 (v4.4)
+    # =====================
+
+    def _is_day_plan_entry(self, line):
+        """
+        判断是否为 Day Planner 条目
+        特征: 时间戳后跟随 "* (如 17:55:48"*打游戏")
+        """
+        return '"*' in line or '“*' in line
+
+    def _append_to_day_plan_section(self, line_content):
+        """
+        [v4.8] 处理 # Day planner
+        核心逻辑: 全局重组与合并
+        1. 读取所有现有条目 + 新条目
+        2. 按时间排序
+        3. 遍历列表，合并连续且内容相同的条目
+           - 判断逻辑: 内容相同则合并
+        4. 格式化:
+           - 单条目: 20:51
+           - 多条目(即使同分): 20:51 -20:51 (如果有时间跨度)
+           - 格式: "Start -End"
+        """
+        RED = '\033[91m'
+        RESET = '\033[0m'
+
+        try:
+            if not self._config or not hasattr(self._config, 'DAILY_NOTE_DIR'):
+                return False
+
+            today_str = datetime.date.today().strftime('%Y-%m-%d')
+            daily_note_dir = getattr(self._config, 'DAILY_NOTE_DIR', None)
+            if not daily_note_dir:
+                return False
+                
+            daily_note_path = os.path.join(daily_note_dir, f"{today_str}.md")
+
+            if not os.path.exists(daily_note_path):
+                return False
+
+            # 1. 解析输入行 (New Entry)
+            parsed_new = self._parse_day_plan_line(line_content)
+            if not parsed_new:
+                return False
+            parsed_new['status'] = 'x'
+            parsed_new['is_new'] = True
+
+            # 2. 读取现有文件
+            with open(daily_note_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+
+            # 3. 定位 # Day planner 章节
+            target_section = "# Day planner"
+            start_idx = -1
+            end_idx = -1
+
+            for i, line in enumerate(lines):
+                stripped = line.strip()
+                if stripped == target_section:
+                    start_idx = i + 1
+                elif start_idx != -1:
+                    if stripped.startswith('# ') or stripped.startswith('## '):
+                        end_idx = i
+                        break
+            
+            if start_idx == -1:
+                return False
+
+            if end_idx == -1:
+                end_idx = len(lines)
+
+            # 4. 提取章节内容并解析 existing entries
+            section_lines = lines[start_idx:end_idx]
+            all_entries = []
+            
+            # 正则: 支持 "HH:MM" 或 "HH:MM -HH:MM"
+            ptn = re.compile(r'^(?:-\s*\[([xX\s])\]\s+)?(.+?)<span id="([^"]+)"></span>\s*(.*)')
+
+            for sl in section_lines:
+                sl_strip = sl.strip()
+                if not sl_strip: continue
+                
+                m = ptn.match(sl_strip)
+                if m:
+                    status_char = m.group(1) if m.group(1) else 'x'
+                    display_str = m.group(2).strip()
+                    full_id = m.group(3)
+                    content = m.group(4)
+                    
+                    all_entries.append({
+                        'status': status_char,
+                        'time_display': display_str,
+                        'time_full': full_id, # Assumed to be start_id
+                        'content': content,
+                        'raw': sl,
+                        'is_new': False
+                    })
+            
+            # 加入新条目
+            all_entries.append(parsed_new)
+
+            # 5. 全局排序 (按 Start ID)
+            all_entries.sort(key=lambda x: x['time_full'])
+
+            # 6. 合并连续相同内容的条目
+            final_entries = []
+            
+            def get_end_time(display_str):
+                # "20:51" -> "20:51"
+                # "20:51 -20:56" -> "20:56"
+                parts = display_str.split('-')
+                return parts[-1].strip()
+
+            if all_entries:
+                curr = all_entries[0]
+                curr_content = curr['content'].strip()
+                curr_start_display = curr['time_display'].split('-')[0].strip()
+                curr_end_display = get_end_time(curr['time_display'])
+                curr_status = curr.get('status', 'x')
+                curr_start_id = curr['time_full']
+                curr_end_id = curr['time_full'] # Track end ID to detect merge span
+
+                for i in range(1, len(all_entries)):
+                    next_e = all_entries[i]
+                    next_content = next_e['content'].strip()
+                    
+                    if next_content == curr_content:
+                        # Merge! 
+                        curr_end_display = get_end_time(next_e['time_display'])
+                        # Update end_id to the NEWEST entry's ID
+                        # Note: all_entries is sorted by time_full (Start ID).
+                        # We assume next_e is later than curr.
+                        # But wait, next_e['time_full'] is ITS start time.
+                        # If next_e was a range, we don't know ITS end time ID strictly from struct unless we parsed it.
+                        # But we re-parse from scratch mostly.
+                        # Let's assume next_e['time_full'] is sufficient to prove "difference".
+                        curr_end_id = next_e['time_full'] 
+                    else:
+                        # Flush
+                        final_entries.append({
+                            'start': curr_start_display,
+                            'end': curr_end_display,
+                            'status': curr_status,
+                            'start_id': curr_start_id,
+                            'end_id': curr_end_id,
+                            'content': curr_content
+                        })
+                        
+                        # New
+                        curr = next_e
+                        curr_content = curr['content'].strip()
+                        curr_start_display = curr['time_display'].split('-')[0].strip()
+                        curr_end_display = get_end_time(curr['time_display'])
+                        curr_status = curr.get('status', 'x')
+                        curr_start_id = curr['time_full']
+                        curr_end_id = curr['time_full']
+                
+                # Flush last
+                final_entries.append({
+                    'start': curr_start_display,
+                    'end': curr_end_display,
+                    'status': curr_status,
+                    'start_id': curr_start_id,
+                    'end_id': curr_end_id,
+                    'content': curr_content
+                })
+
+            # 7. 生成最终行
+            new_content_lines = []
+            if section_lines and section_lines[0].strip() == "":
+                new_content_lines.append("\n")
+            
+            def get_ceiling_end_time(full_ts):
+                """
+                根据完整时间戳 HH:MM:SS 计算结束时间
+                逻辑: 秒数向上取整。如果 SS > 0，则 MM + 1。
+                """
+                try:
+                    parts = full_ts.split(':')
+                    if len(parts) >= 3:
+                        h, m, s = int(parts[0]), int(parts[1]), int(parts[2])
+                        if s > 0:
+                            m += 1
+                            if m >= 60:
+                                m = 0
+                                h += 1
+                            if h >= 24:
+                                h = 0
+                        return f"{h:02d}:{m:02d}"
+                    return full_ts[:5] # HH:MM
+                except:
+                    return full_ts
+
+            for e in final_entries:
+                # Decide Format
+                # If IDs differ, it means we merged something -> Show Range
+                if e['start_id'] != e['end_id']:
+                     # Range Format: "Start - Ceiling(EndID)"
+                     # Start uses existing display to preserve manual edits if any, or simple HH:MM
+                     # End is recalculated based on Seconds Ceiling logic
+                     new_end = get_ceiling_end_time(e['end_id'])
+                     time_str = f"{e['start']} - {new_end}"
+                else:
+                     # Single Entry
+                     time_str = e['start']
+                
+                # Format: - [x] Time <span...> Content
+                line_str = f"- [{e['status']}] {time_str}<span id=\"{e['start_id']}\"></span> {e['content']}\n"
+                new_content_lines.append(line_str)
+            
+            if new_content_lines and not new_content_lines[-1].endswith('\n'):
+                new_content_lines[-1] += '\n'
+            new_content_lines.append('\n')
+
+            # 8. Replace in file
+            final_lines = lines[:start_idx] + new_content_lines + lines[end_idx:]
+            
+            with open(daily_note_path, 'w', encoding='utf-8') as f:
+                f.writelines(final_lines)
+
+            return True
+
+        except Exception as e:
+            print(f"{RED}❌ 写入 Day Planner 异常: {e}{RESET}")
+            return False
+
+    def _parse_day_plan_line(self, raw_line):
+        """
+        解析: 17:55:48"*打游戏"
+        """
+        raw_line = raw_line.strip()
+        match = re.match(r'^(\d{1,2}[:：]\d{2}(?:[:：]\d{2})?)', raw_line)
+        if not match: return None
+        
+        ts_full = match.group(1)
+        ts_end = match.end()
+        
+        parts = re.split(r'[:：]', ts_full)
+        ts_display = f"{parts[0]}:{parts[1]}" if len(parts) >= 2 else ts_full
+        
+        remain = raw_line[ts_end:].strip()
+        content = remain
+        if content.startswith('"') or content.startswith('“'):
+             content = content[1:]
+        if content.startswith('*'):
+             content = content[1:]
+             
+        content = content.replace('"', '').replace('”', '').strip()
+        
+        return {
+            'time_display': ts_display,
+            'time_full': ts_full,
+            'content': content
+        }
+
+    # =====================
     # Account 记账处理
     # =====================
 
@@ -697,7 +1434,7 @@ tags:
             with open(daily_note_path, 'r', encoding='utf-8') as f:
                 lines = f.readlines()
             
-            target_section = "## #Account"
+            target_section = "## #account"
             insert_idx = -1
             
             # 寻找章节

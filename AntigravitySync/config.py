@@ -9,7 +9,7 @@ class Config:
     # ==========================
     VAULT_ROOT = r'/Users/user999/Documents/【Liang_project】/远程仓库1'
     REL_ATTACHMENT_DIR = r'【ATTACHMENT】'
-    REL_TEMPLATE_FILE = r'【002_Infobox】/Templates/DayPlanTemplate.md'
+    REL_TEMPLATE_FILE = r'【002_Infobox】/Templates/DayPlanTemplate_beta.md'
 
     # 自动拼接
     DAILY_NOTE_DIR = os.path.join(VAULT_ROOT, REL_ATTACHMENT_DIR, r'【DAILYNOTE】')
@@ -112,5 +112,6 @@ class Config:
         "水": "Water",
         "魔爪": "Monster",
         "咖啡": "Coffee",
-        "吃饭": "Meal"
+        "吃饭": "food",
+        "食物": "food"
     }

@@ -154,6 +154,59 @@ class SyncCore:
             self.initialize_registry()
         
         return self._task_registry.get_tasks_by_date(date_str)
+
+    def complete_task_by_title(self, title: str, date_str: str) -> bool:
+        """
+        [v3.8] Mark a task as completed by title matching.
+        Searches in tasks associated with the given date.
+        """
+        tasks = self.get_tasks_for_date(date_str)
+        matched = False
+        
+        for bid, task in tasks.items():
+            # Loose matching: strip whitespace
+            if task.get('pure', '').strip() == title.strip():
+                if task.get('status') == 'x':
+                    return True # Already done
+                
+                # Perform Update
+                file_path = task['path']
+                if self._update_task_status_in_file(file_path, bid, 'x'):
+                    matched = True
+                    Logger.info(f"   ✅ [SyncCore] Marking task completed: {title}")
+                    # Refresh registry for this file immediately
+                    self.process_file_event(file_path)
+                break
+        
+        return matched
+
+    def _update_task_status_in_file(self, filepath, bid, new_status):
+        """
+        Helper to safely update status in a file given a block ID.
+        """
+        if not os.path.exists(filepath):
+            return False
+            
+        lines = FileUtils.read_file(filepath)
+        if not lines: return False
+        
+        modified = False
+        for i, line in enumerate(lines):
+            if bid in line:
+                # Regex replace status
+                # Pattern: - [char]
+                # Careful not to destroy formatting
+                if re.search(r'^\s*-\s*\[.\]', line):
+                    new_line = re.sub(r'(-\s*\[).(\])', fr'\g<1>{new_status}\g<2>', line, 1)
+                    if new_line != line:
+                        lines[i] = new_line
+                        modified = True
+                    break
+        
+        if modified:
+            Logger.debug(f"   💾 [UPDATE] Status Change ({new_status}) -> {os.path.basename(filepath)}")
+            return FileUtils.write_file(filepath, lines)
+        return False
         
     def calculate_nearest_project(self, routing_path):
         """

@@ -535,7 +535,15 @@ tags:
             
             # [v7.0] Use Random ID for completion event
             full_time_id = self._generate_id()
-            disp_time = completion_time[:5] # HH:MM
+            disp_time = completion_time[:5] # HH:MM (Floor)
+            
+            try:
+                dt = datetime.datetime.strptime(completion_time[:8], "%H:%M:%S")
+                if dt.second > 0:
+                    dt += datetime.timedelta(minutes=1)
+                ceiled_time = dt.strftime("%H:%M")
+            except Exception:
+                ceiled_time = disp_time
 
             # Pattern to match EXISTING completion timestamp in gap
             # Matches:   SPACE HH:MM <span id="ID"></span> matches
@@ -598,7 +606,7 @@ tags:
                              start_time = parts[0].strip()
                              last_time = parts[-1].strip()
 
-                             if disp_time == last_time:
+                             if ceiled_time == last_time:
                                  # Time duplicated. 
                                  # User said: "插入多次以此类推" (Insert multiple times similarly)
                                  # But also "锁定开始时间并且更新结束时" (Lock start, update end).
@@ -608,12 +616,12 @@ tags:
                                  # We SKIP span insertion if time matches to avoid spamming spans for same polling event.
                                  pass 
                              else:
-                                 # Update End Time
-                                 new_insert = f" {start_time} - {disp_time}"
+                                 # Update End Time (向上取整)
+                                 new_insert = f" {start_time} - {ceiled_time}"
                                  self._log(f"   ⏱️ 时间覆盖: {existing_time_str} -> {new_insert.strip()}")
                                  should_update = True
                         else:
-                            # Initial Time
+                            # Initial Time (向下取整)
                             new_insert = f" {disp_time}"
                             self._log(f"   ⏱️ 时间初始化: {disp_time}")
                             should_update = True

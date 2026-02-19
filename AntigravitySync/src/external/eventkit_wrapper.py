@@ -85,7 +85,6 @@ class EventKitClient:
         self.store = EKEventStore.alloc().init()
         self.access_granted = False
         self._observer = None
-        self._thread = None
 
     def check_access(self):
         """
@@ -147,25 +146,14 @@ class EventKitClient:
             print("⚠️ 监听器已在运行。")
             return
 
-        # [v2.0] 直接在当前线程（假设是主线程）注册 Observer
-        # 因为 check_access() 和 EKEventStore 都是在主线程创建的
+        # [v2.0] 直接在当前线程（即主程序运行的线程）注册 Observer
+        # 因为 check_access() 和 EKEventStore 都是在这里创建的
         self._observer = CalendarObserver.alloc().initWithCallback_(callback)
         self._observer.startObserving()
         
-        # 不再需要后台线程
-        # 主程序的 time.sleep(1) 循环会周期性让出控制，
-        # 虽然不是完美的 RunLoop，但 NSNotificationCenter 会在下次 RunLoop 迭代时投递通知
-        
-        # 为了确保通知被投递，我们启动一个轻量级的后台线程来周期性"轻推" RunLoop
-        def runloop_nudge():
-            from Foundation import NSRunLoop, NSDate
-            while self._observer:
-                # 每 0.5 秒轻推一次主线程的 RunLoop
-                # 这会触发任何待处理的通知被投递
-                time.sleep(0.5)
-        
-        self._thread = threading.Thread(target=runloop_nudge, name="EventKitNudge", daemon=True)
-        self._thread.start()
+        # [v3.0 Architecture] 彻底移除后台由于强制 Nudge 的 Thread
+        # 依赖于 manager.py 中的 CFRunLoop 死等和中断机制
+
 
     def stop_watching(self):
         """

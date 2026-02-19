@@ -417,15 +417,26 @@ class FusionManager:
     def _on_calendar_push_event(self):
         """
         [v3.0] Callback for EventKit notification.
-        Thread-safe: Just sets a flag.
+        Thread-safe: Just sets a flag and stops the runloop.
         """
         self._calendar_dirty_flag = True
+        try:
+            from CoreFoundation import CFRunLoopStop, CFRunLoopGetCurrent
+            CFRunLoopStop(CFRunLoopGetCurrent())
+        except Exception as e:
+            Logger.debug(f"⚠️ Failed to stop CFRunLoop in calendar callback: {e}")
 
     def _on_reminder_push_event(self):
         """
         [v3.8] Callback for ReminderKit notification.
         """
         self._reminder_dirty_flag = True
+        try:
+            from CoreFoundation import CFRunLoopStop, CFRunLoopGetCurrent
+            CFRunLoopStop(CFRunLoopGetCurrent())
+        except Exception as e:
+            Logger.debug(f"⚠️ Failed to stop CFRunLoop in reminder callback: {e}")
+
 
     def sync_reminders(self):
         # [v3.8] Reminder Sync Logic
@@ -683,8 +694,9 @@ class FusionManager:
                 # 检查午夜跨越
                 self._check_midnight_crossing()
                 
-                # 保持 RunLoop 唤醒
-                CFRunLoopRunInMode(kCFRunLoopDefaultMode, Config.CHRONOS_LOOP_INTERVAL, False)
+                # 保持 RunLoop 唤醒，returnAfterSourceHandled=True
+                CFRunLoopRunInMode(kCFRunLoopDefaultMode, Config.CHRONOS_LOOP_INTERVAL, True)
+
                 
         except KeyboardInterrupt:
             Logger.info("\n⏹️ 收到中断信号...")

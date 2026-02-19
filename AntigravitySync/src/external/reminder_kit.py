@@ -62,7 +62,6 @@ class ReminderKitClient:
         self.store = EKEventStore.alloc().init()
         self.access_granted = False
         self._observer = None
-        self._thread = None
 
     def check_access(self):
         """

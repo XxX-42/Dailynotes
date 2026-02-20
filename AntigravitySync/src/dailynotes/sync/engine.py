@@ -211,12 +211,22 @@ class SyncCore:
     def calculate_nearest_project(self, routing_path):
         """
         Traverses up from the routing path to find the nearest ancestor project.
+        Also explicitly matches if the routing_path itself IS a main project.
         """
         if not routing_path: return None
-        search_start = os.path.dirname(routing_path)
+        
+        # 1. Exact direct match (Is the routing path precisely a `main` project?)
+        import unicodedata
+        norm_routing = unicodedata.normalize('NFC', routing_path)
+        for p_name, p_path in self.project_path_map.items():
+            if unicodedata.normalize('NFC', p_path) == norm_routing:
+                return p_name
+        
+        # [FIX] Start searching from the directory of the file itself
+        # so same-level main projects are correctly discovered.
+        curr_search = os.path.dirname(routing_path)
         
         # Traverse upwards
-        curr_search = search_start
         while curr_search.startswith(Config.ROOT_DIR):
             if curr_search in self.project_map:
                 return self.project_map[curr_search]
@@ -278,9 +288,18 @@ class SyncCore:
                     # 2. Calculate Correct Target
                     target_p_name = self.calculate_nearest_project(routing_path)
                     
+                    # [RESTORE] ORIGINAL WANDERER LOGIC
+                    # Users want tasks with `#A, #B, #C, #D` to be archived to Orphans if they
+                    # don't strictly belong to an explicitly matching known project.
                     should_move = False
                     
+                    st_m = re.search(r'-\s*\[(.)\]', lines[i])
+                    status = st_m.group(1) if st_m else ' '
+                    has_sync_tag = bool(re.search(r'#[A-D]\b', lines[i]))
+                    
                     if not target_p_name:
+                        # [BUG] 这里原本如果目标不存在就直接跳过（导致流浪者完全被无视）
+                        # 今天原本是要修这个 BUG 的，按照您的要求，先完全退回到没修之前的旧代码
                         should_move = False
                     elif ctx in ['JOURNEY', 'PLANNER']:
                         should_move = True
@@ -301,8 +320,9 @@ class SyncCore:
 
                         # === UNIFIED STRATEGY: Always format properly ===
                         # Extract or generate block ID
-                        bid_m = re.search(r'(?:\^([a-zA-Z0-9]{6,})\s*$|<span id="([a-zA-Z0-9]{6,})"></span>)', raw_first)
+                        bid_m = re.search(r'(?:\^([a-zA-Z0-9]{6,})\s*$|<span id="([a-zA-Z0-9]{6,})"(?: data-timestamps="([^"]*)")?></span>)', raw_first)
                         bid = (bid_m.group(1) or bid_m.group(2)) if bid_m else self.generate_block_id().replace('^', '')
+                        data_ts = bid_m.group(3) if bid_m and len(bid_m.groups()) >= 3 else None
                         current_bid = bid
 
                         # Extract indentation
@@ -329,7 +349,7 @@ class SyncCore:
                             clean_pure = re.sub(r'^[\s>]*-\s*\[.\]\s?', '', raw_first)
                             clean_pure = re.sub(r'^\d{1,2}:\d{2}(?:\s*-\s*\d{1,2}:\d{2})?\s*', '', clean_pure)
                             clean_pure = re.sub(r'\^[a-zA-Z0-9]{6,}\s*$', '', clean_pure)
-                            clean_pure = re.sub(r'<span id="[a-zA-Z0-9]{6,}"></span>', '', clean_pure)
+                            clean_pure = re.sub(r'<span id="[a-zA-Z0-9]{6,}"(?: data-timestamps="[^"]*")?></span>', '', clean_pure)
 
                             # [FIX] Remove existing return links to prevent duplication
                             clean_pure = re.sub(r'\[\[[^\]]*?\#\^[a-zA-Z0-9]{6,}\|[⚓\*🔗⮐📅]\]\]', '', clean_pure)
@@ -347,7 +367,7 @@ class SyncCore:
                                 ret_target = m_links[0]
                             
                             # Build return link with span ID prefix
-                            span_id = f'<span id="{bid}"></span>'
+                            span_id = f'<span id="{bid}" data-timestamps="{data_ts}"></span>' if data_ts else f'<span id="{bid}"></span>'
                             ret_link = f"[[{ret_target}#^{bid}|⮐]]"
                             
                             # Format final line: time + span_id + return link + preserved content (no trailing ^id)
@@ -394,7 +414,7 @@ class SyncCore:
                             clean_pure = re.sub(r'\s+', ' ', clean_pure).strip()
                             
                             # [FIX] Use span_id prefix instead of trailing ^bid
-                            span_id = f'<span id="{bid}"></span>'
+                            span_id = f'<span id="{bid}" data-timestamps="{data_ts}"></span>' if data_ts else f'<span id="{bid}"></span>'
                             final_head_line = f"{indent_str}- [{status}] {time_part}{span_id}{ret_link}{file_tag} {clean_pure}\n"
 
                         content[0] = final_head_line
@@ -457,7 +477,7 @@ class SyncCore:
                 offset += len(chunk)
                 
         Logger.info(f"归档 {len(tasks_to_move)} 个流浪/纠偏任务", date_tag)
-        Logger.info(f"   💾 [WRITE] 更新归档文件 (Orphans): {os.path.basename(filepath)}")
+        Logger.info(f"   💾 [WRITE] 更新归档文件: {os.path.basename(filepath)}")
         if FileUtils.write_file(filepath, lines): return processed_bids
         return set()
 

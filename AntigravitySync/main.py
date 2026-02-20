@@ -124,9 +124,9 @@ def run_with_self_healing():
             else:
                 Logger.info(f"⚠️ 模板文件不存在: {Config.REL_TEMPLATE_FILE} (将使用基础骨架)")
             
-            # [v4.0] 备忘录监听状态
-            if _note_monitor and _note_monitor._running:
-                Logger.info(f"📝 备忘录: ✅ Apple Notes -> Obsidian ## #Water")
+            # [v9.0] 备忘录监听状态（子进程模式）
+            if _note_monitor_proc and _note_monitor_proc.poll() is None:
+                Logger.info(f"📝 备忘录: ✅ Apple Notes -> Obsidian (PID: {_note_monitor_proc.pid})")
             else:
                 Logger.info(f"📝 备忘录: ⚠️ 未启用")
             

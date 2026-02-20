@@ -1002,6 +1002,7 @@ class SyncCore:
                 while i < len(sl):
                     im = re.search(r'\^([a-zA-Z0-9]{6,})\s*$', sl[i])
                     if not im: im = re.search(r'\(connect::.*?\^([a-zA-Z0-9]{6,})\)', sl[i])
+                    if not im: im = re.search(r'<span id="([a-zA-Z0-9]{6,})"', sl[i])
                     if im and im.group(1) in deleted_bids:
                         _, c = capture_block(sl, i);
                         i += c;

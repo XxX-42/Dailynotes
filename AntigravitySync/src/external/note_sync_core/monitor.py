@@ -752,7 +752,11 @@ tags:
                                 collected_ids.extend(span_ids)
                                 post_part = post_part[ts_match.end():]
                             
-                            collected_ids.append(full_span_id)
+                            # 追加新时间戳（去重，保持顺序）
+                            if full_span_id not in collected_ids:
+                                collected_ids.append(full_span_id)
+                            # 最终去重（防止历史数据中已有重复）
+                            collected_ids = list(dict.fromkeys(collected_ids))
                             new_ts_str = ",".join(collected_ids)
                             
                             new_id_tag = f'<span id="{task_id}" data-timestamps="{new_ts_str}"></span>'

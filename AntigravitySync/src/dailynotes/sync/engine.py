@@ -39,7 +39,11 @@ class SyncCore:
         self._sync_counter = {}  # {bid: count}
         self._sync_counter_reset_time = time.time()
         self._SYNC_THRESHOLD = 5  # Max syncs per task per reset period
+        self._SYNC_THRESHOLD = 5  # Max syncs per task per reset period
         self._RESET_INTERVAL = 60  # Reset counters every 60 seconds
+        
+        # [P1 FIX] Orphan skips cache
+        self._orphan_skips = set()
         
         # [v1.8] TaskRegistry for incremental sync
         self._task_registry: TaskRegistry = get_registry()
@@ -631,9 +635,21 @@ class SyncCore:
             if not self._check_sync_loop(bid):
                 continue
                 
+            # [P1 FIX] 跳过确认过的孤儿任务（除非其发生了实质性变更）
             in_s = bid in src_tasks
             in_d = bid in dn_tasks
-            last_hash = self.sm.get_task_hash(bid);
+            last_hash = self.sm.get_task_hash(bid)
+            
+            if bid in self._orphan_skips:
+                is_changed = False
+                if in_s and src_tasks[bid]['hash'] != last_hash: is_changed = True
+                if in_d and dn_tasks[bid]['hash'] != last_hash: is_changed = True
+                
+                if not is_changed:
+                    continue
+                else:
+                    self._orphan_skips.discard(bid)
+            
             last_date = self.sm.get_task_date(bid)
             if in_s:
                 sd = src_tasks[bid]
@@ -927,6 +943,7 @@ class SyncCore:
                         self.sm.update_task(bid, dd['hash'], target_file, target_date)
                     else:
                         Logger.info(f"   ⚠️ [ORPHAN] 无法同步，找不到目标文件")
+                        self._orphan_skips.add(bid)  # [P1 FIX] 加入黑名单防止日志刷屏
                 else:
                     # 执行删除
                     Logger.info(f"   🗑️ 删除 Daily ({bid}): {deletion_reason}")

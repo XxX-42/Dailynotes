@@ -232,7 +232,8 @@ class ObsidianEventHandler(FileSystemEventHandler):
             
             print(f"{color}🏷️  [ChangeSource] {os.path.basename(filepath)} <- {change_source}{reset_color}")
             
-            if FileUtils.is_system_write(content_hash):
+            # [P0 FIX] 使用已经求值的 check_system_write 结果，避免二次调用消耗 hash
+            if is_sys_write:
                 Logger.debug(f"[Event] 忽略自写入事件: {os.path.basename(filepath)}")
                 return
             
@@ -321,6 +322,7 @@ class FusionManager:
         self._reminder_dirty_flag = False
         self._last_midnight_check = datetime.date.today()
         self._startup_sync_done = False
+        self._last_calendar_sync_time = 0  # [P2 FIX] Debounce timer
 
     def process_single_date(self, date_str, is_event_trigger=False):
         """
@@ -681,9 +683,15 @@ class FusionManager:
             while self._running:
                 # [v3.0] 纯事件驱动：仅处理标志位
                 if self._calendar_dirty_flag:
-                    Logger.info(f"⚡ [Chronos] 检测到日历变更")
-                    self.sync_recent_window()
                     self._calendar_dirty_flag = False
+                    now = time.time()
+                    # [P2 FIX] 防抖机制，5秒内仅执行一次日历全量/窗口查询
+                    if now - self._last_calendar_sync_time > 5.0:
+                        Logger.info(f"⚡ [Chronos] 检测到日历变更")
+                        self.sync_recent_window()
+                        self._last_calendar_sync_time = now
+                    else:
+                        Logger.debug(f"⏳ [Chronos] 防抖生效：忽略短时间内的重复日历变更 ({now - self._last_calendar_sync_time:.1f}s)")
                 
                 if self._reminder_dirty_flag:
                     Logger.info(f"⚡ [Chronos] 检测到提醒事项变更")

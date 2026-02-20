@@ -87,7 +87,8 @@ class Logger:
 class FileUtils:
     # [REFACTORED] Content-hash based self-awareness
     # Replaces fragile mtime comparison with deterministic content identity
-    _system_write_hashes = set()
+    # Replaces fragile mtime comparison with deterministic content identity
+    _system_write_hashes = {}  # {hash: timestamp} to preserve order and deduplicate
     _MAX_HASH_CACHE = 50  # Prevent memory leak
 
     @staticmethod
@@ -101,10 +102,10 @@ class FileUtils:
     def is_system_write(cls, content_hash: str) -> bool:
         """
         Check if hash matches a system write.
-        If match found, removes it from set (one-time use).
+        If match found, removes it from dict (one-time use).
         """
         if content_hash in cls._system_write_hashes:
-            cls._system_write_hashes.discard(content_hash)
+            del cls._system_write_hashes[content_hash]
             return True
         return False
 
@@ -151,8 +152,11 @@ class FileUtils:
         
         # Manage cache size to prevent memory leak
         if len(FileUtils._system_write_hashes) >= FileUtils._MAX_HASH_CACHE:
-            FileUtils._system_write_hashes.clear()
-        FileUtils._system_write_hashes.add(content_hash)
+            # 移除最早插入的一半元素
+            oldest_keys = list(FileUtils._system_write_hashes.keys())[:FileUtils._MAX_HASH_CACHE // 2]
+            for k in oldest_keys:
+                del FileUtils._system_write_hashes[k]
+        FileUtils._system_write_hashes[content_hash] = time.time()
         
         try:
             # 在同一目录中创建临时文件（原子重命名所需）
@@ -171,7 +175,8 @@ class FileUtils:
         except Exception as e:
             Logger.error_once(f"write_{filepath}", f"写入失败 {filepath}: {e}")
             # Remove hash on failure (write didn't happen)
-            FileUtils._system_write_hashes.discard(content_hash)
+            if content_hash in FileUtils._system_write_hashes:
+                del FileUtils._system_write_hashes[content_hash]
             # 如果临时文件存在，则清理
             if temp_name and os.path.exists(temp_name):
                 try:

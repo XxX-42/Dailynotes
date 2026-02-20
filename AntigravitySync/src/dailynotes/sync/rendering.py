@@ -12,7 +12,7 @@ def normalize_raw_tasks(lines, filename_stem):
     new_lines = []
     today_str = datetime.date.today().strftime("%Y-%m-%d")
     raw_pattern = re.compile(r'^(>\s*-\s*\[\s*\])(.*)$')
-    id_pattern = re.compile(r'(?:\^[a-z0-9]{6}|<span id="[a-z0-9]{6}"></span>)\s*$')
+    id_pattern = re.compile(r'(?:\^[a-z0-9]{6}|<span id="[a-z0-9]{6}"(?: data-timestamps="[^"]*")?></span>)\s*$')
 
     def generate_id():
         return ''.join(random.choices(string.ascii_lowercase + string.digits, k=6))
@@ -112,7 +112,7 @@ def inject_into_task_section(file_lines, block_lines, filename_stem=None):
     existing_structure_map = {}
     current_header_date = None
     header_pattern = re.compile(r'^#+\s*\[\[\s*(\d{4}-\d{2}-\d{2})\s*\]\]')
-    id_pattern = re.compile(r'(?:\^([a-zA-Z0-9]{6,})|<span id="([a-zA-Z0-9]{6,})"></span>)')
+    id_pattern = re.compile(r'(?:\^([a-zA-Z0-9]{6,})|<span id="([a-zA-Z0-9]{6,})"(?: data-timestamps="[^"]*")?></span>)')
 
     for line in existing_content:
         stripped = line.strip()

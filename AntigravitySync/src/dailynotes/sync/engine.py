@@ -338,7 +338,11 @@ class SyncCore:
                         body_only = re.sub(r'^\s*-\s*\[.\]\s?', '', raw_first)
                         tm = re.match(r'^(\d{1,2}:\d{2}(?:\s*-\s*\d{1,2}:\d{2})?)', body_only)
                         if tm: 
-                            time_part = tm.group(1) + " "
+                            time_part = tm.group(1) 
+
+                        # Extract sync tag for formatting
+                        sync_tag_m = re.search(r'(#[A-D]\b)', raw_first)
+                        sync_tag = sync_tag_m.group(1) if sync_tag_m else ''
 
                         if has_existing_link:
                             # === STRATEGY A: Link Preservation with proper formatting ===
@@ -357,6 +361,8 @@ class SyncCore:
                             # [FIX] Remove routing markers like "## [[ProjectName]]" - they're only for specifying target
                             clean_pure = re.sub(r'##\s*\[\[[^\]]+\]\]', '', clean_pure)
 
+                            if sync_tag:
+                                clean_pure = clean_pure.replace(sync_tag, '').strip()
                             clean_pure = re.sub(r'\s+', ' ', clean_pure).strip()
                             
                             # [FIX] Return link target logic
@@ -370,8 +376,10 @@ class SyncCore:
                             span_id = f'<span id="{bid}" data-timestamps="{data_ts}"></span>' if data_ts else f'<span id="{bid}"></span>'
                             ret_link = f"[[{ret_target}#^{bid}|⮐]]"
                             
-                            # Format final line: time + span_id + return link + preserved content (no trailing ^id)
-                            final_head_line = f"{indent_str}- [{status}] {time_part}{span_id}{ret_link} {clean_pure}\n"
+                            # Format final line: time + span_id + sync_tag + return link + preserved content
+                            time_str = f"{time_part} " if time_part else ""
+                            sync_str = f"{sync_tag} " if sync_tag else ""
+                            final_head_line = f"{indent_str}- [{status}] {time_str}{span_id} {sync_str}{ret_link} {clean_pure}\n"
                             
                             Logger.info(f"   🚚 搬运任务 (保留原链接+时间): {bid}")
                             
@@ -411,11 +419,16 @@ class SyncCore:
                             else:
                                 file_tag = f" {target_tag}"
                             
+                            if sync_tag:
+                                clean_pure = clean_pure.replace(sync_tag, '').strip()
                             clean_pure = re.sub(r'\s+', ' ', clean_pure).strip()
                             
                             # [FIX] Use span_id prefix instead of trailing ^bid
                             span_id = f'<span id="{bid}" data-timestamps="{data_ts}"></span>' if data_ts else f'<span id="{bid}"></span>'
-                            final_head_line = f"{indent_str}- [{status}] {time_part}{span_id}{ret_link}{file_tag} {clean_pure}\n"
+                            
+                            time_str = f"{time_part} " if time_part else ""
+                            sync_str = f"{sync_tag} " if sync_tag else ""
+                            final_head_line = f"{indent_str}- [{status}] {time_str}{span_id} {sync_str}{ret_link}{file_tag} {clean_pure}\n"
 
                         content[0] = final_head_line
                         tasks_to_move.append({'idx': i, 'len': length, 'proj': target_p_name, 'raw': content})

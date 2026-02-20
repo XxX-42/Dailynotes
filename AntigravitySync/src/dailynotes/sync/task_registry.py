@@ -251,14 +251,18 @@ class TaskRegistry:
                 if bid in tasks:
                     return tasks[bid].copy()
             
-            # Second Pass: Deep Search for Historical/Secondary Spans
-            # Scans the first line of raw block text for <span id="bid">
-            target_span = f'<span id="{bid}">' 
+            # Second Pass: Deep Search for Historical/Secondary Spans or Span Data-Timestamps
+            # Scans the first line of raw block text
+            span_target = f'<span id="{bid}"' 
+            ts_target = f'"{bid}"' # To search inside data-timestamps="..."
+            
             for date_str, tasks in self._date_index.items():
                 for core_id, task in tasks.items():
                     raw_lines = task.get('raw', [])
-                    if raw_lines and target_span in raw_lines[0]:
-                        return task.copy()
+                    if raw_lines:
+                        r0 = raw_lines[0]
+                        if span_target in r0 or ts_target in r0:
+                            return task.copy()
             
             return None
     

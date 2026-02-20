@@ -20,11 +20,16 @@ def scan_projects():
             if f.endswith('.md'):
                 path = os.path.join(root, f)
                 stem = unicodedata.normalize('NFC', os.path.splitext(f)[0])
-                file_path_map[stem] = path # 记录所有文件路径
                 
-                # 检查 main 标签 (需要读取文件)
-                if 'main' in parse_yaml_tags(FileUtils.read_file(path) or []):
+                # Check for main tags
+                tags = parse_yaml_tags(FileUtils.read_file(path) or [])
+                is_main = 'main' in tags
+                
+                if is_main:
                     main_files.append(f)
+                    file_path_map[stem] = path # Main files always win the namespace
+                elif stem not in file_path_map:
+                    file_path_map[stem] = path # Only add if not already taken by a main file
 
         # 只要当前目录有 main 文件，就注册为项目（不管父级是否也是项目）
         if len(main_files) >= 1:

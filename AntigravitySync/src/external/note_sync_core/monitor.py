@@ -220,8 +220,15 @@ class NoteMonitor:
                         # Also remove HTML tags from Obsidian content before comparison/sync to avoid span loops.
                         clean_obsidian = re.sub(r'<[^>]+>', '', sync_target_tasks[nid]).strip()
                         
-                        norm_note = " ".join(ncontent.split())
+                        # [v8.6] 比较前剥离 Apple Notes 侧的 ✅，防止因 ✅ 差异触发覆写
+                        ncontent_stripped_check = ncontent.replace('✅', '').strip()
+                        norm_note = " ".join(ncontent_stripped_check.split())
                         norm_obsidian = " ".join(clean_obsidian.split())
+                        
+                        # *ID*Content 原始行永远不带 ✅，如果意外出现则剥离后重新比较
+                        if '✅' in ncontent:
+                            ncontent = ncontent.replace('✅', '').strip()
+                            norm_note = " ".join(ncontent.split())
                         
                         if norm_note != norm_obsidian:
                             # Content changed in Obsidian -> Sync to Note
@@ -399,8 +406,22 @@ class NoteMonitor:
                     current_content = new_text_v5
 
                 current_hash = hash(current_content)
+                self._log(f"   [DEBUG] Loop Tick - last_hash: {last_hash}, current_hash: {current_hash}, len: {len(current_content if current_content else '')}")
 
                 if current_hash != last_hash:
+                    # [v8.4] Apple Notes 快捷指令打卡时可能会按行分次写入，导致我们读到残破的 (id=xxx 末尾
+                    # 如果检测到潜在的心跳标记，先等待 1.0 秒，确保存盘已满血落地再解析
+                    if "(id=" in current_content or "（id=" in current_content or "✅" in current_content or re.search(r'\*(?:[a-zA-Z0-9:_]+)\*', current_content):
+                        self._log(f"⏳ [NoteMonitor] 检测到心跳特征变更，延迟 1.0 秒等待写入缓冲...")
+                        time.sleep(1.0)
+                        current_content = self._reader.get_note_content(note_name)
+                        current_hash = hash(current_content)
+                        
+                        # 如果缓冲后内容又弹回了上一次的旧状态（极其罕见），跳过本次
+                        if current_hash == last_hash:
+                            self._log(f"⚠️ [NoteMonitor] 缓冲期后内容回跳，忽略本次心跳...")
+                            continue
+
                     now_str = datetime.datetime.now().strftime('%H:%M:%S')
                     self._log(f"\n⚡ [NoteMonitor] 变更检测 {now_str}")
 
@@ -418,7 +439,9 @@ class NoteMonitor:
                     last_content = current_content
 
             except Exception as e:
+                import traceback
                 self._log(f"⚠️ [NoteMonitor] 轮询异常: {e}")
+                self._log(f"   [CRITICAL TRACEBACK]\n{traceback.format_exc()}")
                 time.sleep(5)  # Backoff
 
     # =====================
@@ -591,6 +614,8 @@ tags:
         if not os.path.exists(target_file_path):
             self._log(f"⚠️ [NoteMonitor] 无法定位包含任务 {task_id} 的文件: {os.path.basename(target_file_path)}")
             return False
+        
+        self._log(f"   [DEBUG] 心跳写入目标: {os.path.basename(target_file_path)}")
             
         try:
             with open(target_file_path, 'r', encoding='utf-8') as f:
@@ -620,6 +645,7 @@ tags:
             for line in lines:
                 id_search = target_id_pat.search(line)
                 if id_search and ("- [ ]" in line or "- [x]" in line):
+                    self._log(f"   [DEBUG] 找到目标行: {line.strip()[:80]}")
                     # We found the line.
                     full_id_tag = id_search.group(1)
                     div_timestamps = id_search.group(2) or ""
@@ -676,8 +702,9 @@ tags:
                              last_time = parts[-1].strip()
 
                              if ceiled_time == last_time:
-                                 # Time duplicated. 
-                                 pass 
+                                 # 可视化时间不变，但仍需更新 data-timestamps 记录新心跳
+                                 new_insert = f" {start_time} - {ceiled_time}"
+                                 should_update = True
                              else:
                                  # Update End Time (向上取整)
                                  new_insert = f" {start_time} - {ceiled_time}"
@@ -736,6 +763,7 @@ tags:
                             new_lines.append(new_line)
                             self._log(f"✅ [同步] 更新 Obsidian 任务状态: {task_id}")
                             self._log(f"   ➕ 时间戳整合写入 div data-timestamps: {new_ts_str}")
+                            self._log(f"   📄 更新后全文: {new_line.rstrip()}")
                         else:
                              # Just ensure Checked
                             if "- [ ]" in line:
@@ -744,6 +772,7 @@ tags:
                                     updated = True
                                     new_lines.append(new_line)
                                     self._log(f"✅ [同步] 修正任务状态 (时间已存在): {task_id}")
+                                    self._log(f"   📄 更新后全文: {new_line.rstrip()}")
                                 else:
                                     new_lines.append(line)
                             else:
@@ -762,6 +791,7 @@ tags:
                 with open(target_file_path, 'w', encoding='utf-8') as f:
                     f.writelines(new_lines)
                 return True
+            self._log(f"   [DEBUG] 心跳写入未触发 updated=True，返回 False")
             return False
         except Exception as e:
             self._log(f"❌ [Sync Error] 更新 Obsidian 任务失败: {e}")
@@ -790,7 +820,7 @@ tags:
         # 为了避免修改正在遍历的列表，使用索引或副本，但这里我们直接修改 current_lines List
         # 只要我们能找到对应的行即可。
 
-        time_pat = re.compile(r'^\s*(\d{1,2}[:：]\d{2})')
+        time_pat = re.compile(r'^\s*(\d{1,2}[:：]\d{2}(?:[:：]\d{2})?)')
         # [v7.0] Heartbeat Completion Pattern (Enhanced)
         # Supported formats:
         # 1. StartTime *ID* Content -> 22:24:24 *21:25:38*#B 打扫
@@ -811,8 +841,8 @@ tags:
         #   |
         #   （\s*id=([a-zA-Z0-9:_]+)\s*） : Group 4: （id=ID）
         
+        # Note: Time group removed from this pattern to decouple extraction
         completion_pat = re.compile(
-            r'^\s*(\d{1,2}:\d{2}(?::\d{2})?)?\s*.*?'
             r'(?:\*([a-zA-Z0-9:_]+)\*?|\(\s*id=([a-zA-Z0-9:_]+)\s*\)?|（\s*id=([a-zA-Z0-9:_]+)\s*）?)'
         )
 
@@ -841,14 +871,27 @@ tags:
                     # Simplest hack: Don't mark used_adds[matched_idx] = True if we want it processed.
                     # BUT we printed [MOD], so usually that implies we handled it visually.
                     
-                    # Check if the NEW line has completion markers but NO tick
-                    # If so, we might want to process it as a completion event.
-                    if completion_pat.match(adds[matched_idx].strip()) and "✅" not in adds[matched_idx]:
-                         used_adds[matched_idx] = False # Let it fall through to ADD loop
-                    else:
+                    # Check if the NEW line has completion markers
+                    # [v8.7] 只有旧行也含 ✅ 才跳过（说明上一轮已处理过）
+                    # 如果旧行没有 ✅ 但新行有 ✅，说明是 Shortcut 刚打的卡，必须处理
+                    if '✅' in adds[matched_idx] and '✅' in d_line:
+                         self._log(f"   [DEBUG] MOD 旧行已含 ✅，跳过重复心跳处理: {adds[matched_idx].strip()[:60]}")
                          used_adds[matched_idx] = True
+                    else:
+                         # 排除 *ID*Content 原始同步行
+                         if adds[matched_idx].strip().startswith('*'):
+                              self._log(f"   [DEBUG] MOD 行是 *ID* 原始同步行，跳过心跳: {adds[matched_idx].strip()[:60]}")
+                              used_adds[matched_idx] = True
+                         else:
+                              _mod_match = completion_pat.search(adds[matched_idx].strip())
+                              if _mod_match:
+                                   self._log(f"   [DEBUG] MOD Line Matched Heartbeat: {adds[matched_idx].strip()} -> fall through to ADD")
+                                   used_adds[matched_idx] = False # Let it fall through to ADD loop
+                              else:
+                                   self._log(f"   [DEBUG] MOD Line DID NOT match Heartbeat: {adds[matched_idx].strip()}")
+                                   used_adds[matched_idx] = True
                 else:
-                    print(f"{RED}[DEL] {d_line}{RESET}")
+                    self._log(f"{RED}[DEL] {d_line}{RESET}")
 
             for i, a_line in enumerate(adds):
                 if not used_adds[i]:
@@ -858,13 +901,21 @@ tags:
                     
                     # 0. Check Completion Heartbeat (Highest Priority)
                     # e.g. 22:24:24 *21:25:38*#B 打扫
-                    comp_match = completion_pat.match(stripped_line)
-                    if comp_match and "✅" not in stripped_line:
-                        # Group 1: Time (Optional)
-                        comp_time = comp_match.group(1)
-                        # Group 2, 3, 4: ID variants
-                        # *ID* or (id=ID) or （id=ID）
-                        task_id = comp_match.group(2) or comp_match.group(3) or comp_match.group(4)
+                    # 排除 *ID*Content 原始同步行（以 * 开头）
+                    if stripped_line.startswith('*'):
+                        comp_match = None
+                    else:
+                        comp_match = completion_pat.search(stripped_line)
+                    if comp_match:
+                        self._log(f"   [DEBUG] Heartbeat ADD Loop match: True, task extracted.")
+                        
+                        # Extract Time independently to avoid regex anchoring issues with invisible chars
+                        time_match = time_pat.search(stripped_line)
+                        comp_time = time_match.group(1) if time_match else None
+                        
+                        # Group 1, 2, 3: ID variants
+                         # *ID* or (id=ID) or （id=ID）
+                        task_id = comp_match.group(1) or comp_match.group(2) or comp_match.group(3)
                         
                         # Fallback for time if not present at start of line
                         if not comp_time:
@@ -878,25 +929,36 @@ tags:
                         # We only update the existing task line in place.
                         
                         if marked:
-                            # [v7.2] User Request: RESTORED " ✅" to Apple Notes.
-                            suffix = " ✅"
+                            # 心跳更新成功，追加 ✅（避免重复）
+                            if '✅' not in stripped_line:
+                                suffix = " ✅"
                             processed = True
                             self._log(f"💓 [Heartbeat] Task {task_id} completed at {comp_time}")
+                        else:
+                            self._log(f"❌ [Heartbeat] Obsidian 写入失败! task_id={task_id}, comp_time={comp_time}")
+                            processed = True  # 标记为已处理，避免 fallback 到 #takein
 
                     # 1. Check Time Entries (Water/Log/DayPlan)
-                    is_time_entry = time_pat.match(stripped_line)
+                    is_time_entry = time_pat.search(stripped_line)
                     if not processed and is_time_entry and "✅" not in stripped_line:
-                        # [v4.4] Day Planner Check (starts with "*")
-                        # e.g. 17:55:48"*打游戏"
-                        if self._is_day_plan_entry(stripped_line):
-                             if self._append_to_day_plan_section(a_line):
+                        # Prevent appending empty line states (just time with no content) from Shortcuts
+                        # "15:35:12" or "15:35:12 ✅" -> Do not spam #takein
+                        bare_text = time_pat.sub('', stripped_line).replace('✅', '').strip()
+                        if not bare_text:
+                            # It's an empty line marker, just skip it to avoid polluting #takein
+                            processed = True
+                        else:
+                            # [v4.4] Day Planner Check (starts with "*")
+                            # e.g. 17:55:48"*打游戏"
+                            if self._is_day_plan_entry(stripped_line):
+                                 if self._append_to_day_plan_section(a_line):
+                                    suffix = " ✅"
+                                    processed = True
+                            
+                            # Fallback to Water/Log (Takein)
+                            elif self._append_to_daily_note(a_line):
                                 suffix = " ✅"
                                 processed = True
-                        
-                        # Fallback to Water/Log (Takein)
-                        elif self._append_to_daily_note(a_line):
-                            suffix = " ✅"
-                            processed = True
 
                     # 2. Check Account Entries (tradetype::...)
                     # Example: (tradetype::$食物)(tradename::鸡蛋)(tradecost::-858)(tradetime::2026/2/12 00:19:36)

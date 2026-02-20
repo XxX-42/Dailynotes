@@ -43,6 +43,10 @@ class Config:
     # [v1.4] 事件驱动模式参数
     EVENT_DEBOUNCE_SECONDS = 0.5   # 事件触发防抖时间（秒）
     
+    # [v4.0] 新任务主键注入延迟
+    # 当检测到新创建的待同步任务（如 #B）时，延迟 X 秒再注入主键，防止破坏用户打字体验
+    NEW_TASK_INJECTION_DELAY = 3.0
+    
     # [v3.6] 变更来源感知延迟
     # 根据检测到的变更来源，在执行格式化/同步前等待不同时间
     CHANGE_SOURCE_TYPING_DELAY = 15.0   # 用户打字：短延迟，减少打断感

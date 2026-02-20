@@ -6,7 +6,7 @@ _RE_QUOTE_PREFIX = re.compile(r'^>\s?')
 _RE_STATUS_INDENT = re.compile(r'^[\s>]*-\s*\[.\]')
 _RE_TIME_RANGE = re.compile(r'\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}')
 _RE_TIME_SINGLE = re.compile(r'\d{1,2}:\d{2}')
-_RE_BLOCK_ID = re.compile(r'(?:\^[a-zA-Z0-9]{6,}|<span id="[a-zA-Z0-9]{6,}"></span>)\s*$')
+_RE_BLOCK_ID = re.compile(r'(?:\^[a-zA-Z0-9]{6,}|<span id="[a-zA-Z0-9]{6,}"(?: data-timestamps="[^"]*")?></span>)\s*$')
 _RE_RETURN_LINK = re.compile(r'\[\[[^\]]*?\#\^[a-zA-Z0-9]{6,}\|[⚓\*🔗⮐📅]\]\]')
 _RE_DATE_LINK = re.compile(r'\[\[\d{4}-\d{2}-\d{2}]]')
 _RE_EMOJI_DATE = re.compile(r'📅\s?\[\[\d{4}-\d{2}-\d{2}]]')
@@ -41,13 +41,13 @@ def clean_task_text(line, block_id=None, context_name=None):
     clean_text = re.sub(r'\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}', '', clean_text)
     clean_text = re.sub(r'\d{1,2}:\d{2}', '', clean_text)
     
-    # 3. remove ID (^xxxxxx or <span id="xxx"></span>)
+    # 3. remove ID (^xxxxxx, or <span id="xxx" data-timestamps="..."></span>)
     if block_id:
         clean_text = re.sub(r'\^' + re.escape(block_id) + r'\s*$', '', clean_text)
-        clean_text = re.sub(r'<span id="' + re.escape(block_id) + r'"></span>', '', clean_text)
+        clean_text = re.sub(r'<span id="' + re.escape(block_id) + r'"(?: data-timestamps="[^"]*")?></span>', '', clean_text)
     else:
         clean_text = re.sub(r'\^[a-zA-Z0-9]{6,}\s*$', '', clean_text)
-        clean_text = re.sub(r'<span id="[a-zA-Z0-9]{6,}"></span>', '', clean_text)
+        clean_text = re.sub(r'<span id="[a-zA-Z0-9]{6,}"(?: data-timestamps="[^"]*")?></span>', '', clean_text)
         
     # 4. remove return links
     clean_text = re.sub(r'\[\[[^\]]*?\#\^[a-zA-Z0-9]{6,}\|[⚓\*🔗⮐📅]\]\]', '', clean_text)
@@ -126,10 +126,14 @@ def extract_routing_info(line, file_path_map):
         raw_text = m.group(0) # [[WikiLink]]
         inner = m.group(1)
         pot = inner.split('|')[0].split('#')[0]
-        pot = unicodedata.normalize('NFC', pot)
+        # In Obsidian, `[[Folder/File|Alias]]` points to `File`. But our `file_path_map` 
+        # is keyed ONLY by `stem` (i.e. `File`). We must extract just the basename.
+        import os
+        pot_basename = os.path.basename(pot)
+        pot_basename = unicodedata.normalize('NFC', pot_basename)
         
-        if pot in file_path_map:
-            return file_path_map[pot], raw_text
+        if pot_basename in file_path_map:
+            return file_path_map[pot_basename], raw_text
             
     return None, None
 
@@ -264,7 +268,7 @@ def parse_file_tasks(filepath: str, lines: list, project_name: str, sm,
         st = status_match.group(1) if status_match else ' '
         
         # Extract or generate block ID
-        id_m = re.search(r'(?:\^([a-zA-Z0-9]{6,7})|<span id="([a-zA-Z0-9]{6,7})"></span>)', line)
+        id_m = re.search(r'(?:\^([a-zA-Z0-9]{6,7})|<span id="([a-zA-Z0-9]{6,7})"(?: data-timestamps="[^"]*")?></span>)', line)
         bid = (id_m.group(1) or id_m.group(2)) if id_m else None
         
         if not bid:

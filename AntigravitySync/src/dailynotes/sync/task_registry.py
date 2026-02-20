@@ -234,19 +234,32 @@ class TaskRegistry:
     def get_task_by_id(self, bid: str) -> Optional[Dict]:
         """
         [v1.9] Find a task globally by its block ID across all dates and files.
+        [v2.0] Multi-Span Deep Search: If dict key fails, search raw text.
+        
         Since we index by date, this requires an O(D) scan across dates, 
         where D is the number of dates with tasks.
         
         Args:
-            bid: Obsidian Block ID
+            bid: Obsidian Block ID (e.g. 'y32pg9' or '02:27:20')
             
         Returns:
             Task dictionary if found, else None
         """
         with self._file_lock:
+            # First Pass: Fast Dictionary Key Lookup O(N)
             for date_str, tasks in self._date_index.items():
                 if bid in tasks:
                     return tasks[bid].copy()
+            
+            # Second Pass: Deep Search for Historical/Secondary Spans
+            # Scans the first line of raw block text for <span id="bid">
+            target_span = f'<span id="{bid}">' 
+            for date_str, tasks in self._date_index.items():
+                for core_id, task in tasks.items():
+                    raw_lines = task.get('raw', [])
+                    if raw_lines and target_span in raw_lines[0]:
+                        return task.copy()
+            
             return None
     
     def get_affected_dates(self, filepath: str) -> Set[str]:

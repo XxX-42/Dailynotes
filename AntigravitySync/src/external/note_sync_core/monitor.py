@@ -719,7 +719,7 @@ tags:
                     new_lines.append(line)
             
             if updated:
-                with open(daily_note_path, 'w', encoding='utf-8') as f:
+                with open(target_file_path, 'w', encoding='utf-8') as f:
                     f.writelines(new_lines)
                 return True
             return False

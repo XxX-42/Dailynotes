@@ -110,10 +110,33 @@ class NoteMonitor:
             task_line_pat = re.compile(r'^(\s*-\s*\[[ xX]\]\s+)(.*)')
             # Specific pattern to identify brand new tasks that need IDs
             new_task_pat = re.compile(r'^\s*-\s*\[\s\]\s+(?!.*<span id=")')
-            id_pat = re.compile(r'<span id="([^"]+)"></span>')
+            id_pat = re.compile(r'<span id="([^"]+)"(?: data-timestamps="[^"]*")?></span>')
             
             # [v7.0] Use Random ID for new tasks
             
+            # [v4.0] 预扫描：检测到全新的待同步任务时()，延迟一定时间防打断打字
+            has_new_task = False
+            for line in lines:
+                m = task_line_pat.match(line)
+                if m:
+                    content_tail = m.group(2)
+                    is_unchecked = "[ ]" in m.group(1)
+                    if is_unchecked and "#" in content_tail and not id_pat.search(content_tail):
+                        has_new_task = True
+                        break
+            
+            if has_new_task:
+                delay = getattr(self._config, 'NEW_TASK_INJECTION_DELAY', 3.0)
+                if delay > 0:
+                    import time
+                    self._log(f"⏳ 检测到新 Apple Notes 任务，为防打断打字，延迟 {delay} 秒后再注入主键...")
+                    time.sleep(delay)
+                    try:
+                        with open(daily_note_path, 'r', encoding='utf-8') as f:
+                            lines = f.readlines()
+                    except Exception as e:
+                        self._log(f"⚠️ 延迟后重新读取文件失败: {e}")
+                        
             new_obsidian_lines = []
             
             # --- Step 1: Process Obsidian (Collect Data) ---
@@ -143,7 +166,7 @@ class NoteMonitor:
                         rand_id = self._generate_id()
                         span = f'<span id="{rand_id}"></span>'
                         clean_content = content_tail.strip()
-                        modified_line = f"{prefix}{span}{clean_content}"
+                        modified_line = f"{prefix}{span} {clean_content}"
                         if line.endswith('\n') and not modified_line.endswith('\n'):
                             modified_line += '\n'
                         
@@ -574,7 +597,6 @@ tags:
                 lines = f.readlines()
             
             updated = False
-            target_span = f'<span id="{task_id}">'
             
             # [v7.0] Use Random ID for completion event
             full_time_id = self._generate_id()
@@ -588,17 +610,23 @@ tags:
             except Exception:
                 ceiled_time = disp_time
 
+            # Pattern to match the specific task ID, either in a span or a div
+            target_id_pat = re.compile(rf'(<span id="{task_id}"(?: data-timestamps="([^"]*)")?></span>)')
+            
             # Pattern to match EXISTING completion timestamp in gap
-            # Matches:   SPACE HH:MM <span id="ID"></span> matches
-            existing_ts_pat = re.compile(r'^\s*(\d{2}:\d{2})<span id="([^"]+)"></span>\s*$')
+            existing_ts_pat = re.compile(r'^\s*(\d{2}:\d{2})<span id="([^"]+)"(?: data-timestamps="[^"]*")?></span>\s*$')
 
             new_lines = []
             for line in lines:
-                if target_span in line and ("- [ ]" in line or "- [x]" in line):
+                id_search = target_id_pat.search(line)
+                if id_search and ("- [ ]" in line or "- [x]" in line):
                     # We found the line.
-                    parts = line.split(target_span)
+                    full_id_tag = id_search.group(1)
+                    div_timestamps = id_search.group(2) or ""
+                    
+                    parts = line.split(full_id_tag, 1)
                     pre_part = parts[0]
-                    post_part = target_span.join(parts[1:]) 
+                    post_part = parts[1]
                     
                     cb_match = re.search(r'^(\s*)(-\s*\[.)\](.*)', pre_part)
                     
@@ -630,33 +658,25 @@ tags:
                                     new_lines.append(line)
                                 continue
 
-                        # [v7.9] Multi-Span & Start-End Logic
-                        # 1. Text: "Start - End" (HH:MM)
-                        # 2. Spans: Accumulate <span id="HH:MM:SS"></span> for history
+                        # [v7.9] Multi-Span & Start-End Logic -> [v9.0] div data-timestamps
+                        # [v9.1] 首次完成不显示时间，但后续更新会加上时间 (形如 Start - End)
                         
                         full_span_id = completion_time # Use full time (possibly with seconds) as ID
-                        extra_span = f'<span id="{full_span_id}"></span>'
                         
+                        # Check what time string is currently displayed before the span tag
                         tm = re.match(r'^\s*([\d: -]+)\s*$', gap_content)
                         should_update = False
                         
-                        # [v7.7] Ensure it actually contains digits
                         if tm and any(c.isdigit() for c in tm.group(1)):
+                             # Already has a visible time string (e.g. "10:00" or "10:00 - 10:05")
                              existing_time_str = tm.group(1).strip()
                              
-                             # [v7.8] "Start - End" Logic
                              parts = existing_time_str.split('-')
                              start_time = parts[0].strip()
                              last_time = parts[-1].strip()
 
                              if ceiled_time == last_time:
                                  # Time duplicated. 
-                                 # User said: "插入多次以此类推" (Insert multiple times similarly)
-                                 # But also "锁定开始时间并且更新结束时" (Lock start, update end).
-                                 # IF time matches, Text doesn't change.
-                                 # Do we still add a span?
-                                 # If we add span for SAME time, we get <02:06><02:06>. Redundant.
-                                 # We SKIP span insertion if time matches to avoid spamming spans for same polling event.
                                  pass 
                              else:
                                  # Update End Time (向上取整)
@@ -664,38 +684,58 @@ tags:
                                  self._log(f"   ⏱️ 时间覆盖: {existing_time_str} -> {new_insert.strip()}")
                                  should_update = True
                         else:
-                            # Initial Time (向下取整)
-                            new_insert = f" {disp_time}"
-                            self._log(f"   ⏱️ 时间初始化: {disp_time}")
-                            should_update = True
+                             # No visible time string yet.
+                             if div_timestamps:
+                                 ts_list = [t.strip() for t in div_timestamps.split(',') if t.strip()]
+                                 if len(ts_list) >= 2:
+                                     # This is a subsequent heartbeat without currently visible time
+                                     # We extract the SECOND timestamp as the true heartbeat start time
+                                     start_ts = ts_list[1][:5]
+                                     if ceiled_time != start_ts:
+                                         new_insert = f" {start_ts} - {ceiled_time}"
+                                         self._log(f"   ⏱️ 重建心跳时间区间 (从第二跳): {start_ts} -> {ceiled_time}")
+                                     else:
+                                         new_insert = f" {start_ts}"
+                                     should_update = True
+                                 elif len(ts_list) == 1:
+                                     # Currently only 1 timestamp (the "creation/placeholder"). This is the 2nd overall (first true heartbeat).
+                                     new_insert = f" {ceiled_time}"
+                                     self._log(f"   ⏱️ 首次真实心跳打卡起点: {ceiled_time}")
+                                     should_update = True
+                                 else:
+                                     new_insert = gap_content
+                                     should_update = True
+                             else:
+                                 # Initial Time (向下取整), explicitly hiding the display time
+                                 new_insert = gap_content
+                                 self._log(f"   ⏱️ 首次完成任务，隐藏可视化时间")
+                                 should_update = True
                             
                         # Reassemble
                         if should_update:
-                            # [v7.10] Fix Insertion: target_span is just '<span id="...">'
-                            # post_part likely starts with '</span>'. We must insert AFTER it.
+                            # 1. Parse existing trailing spans in post_part
+                            trailing_span_pat = re.compile(r'^((?:<span id="[^"]+"></span>)+)')
+                            ts_match = trailing_span_pat.match(post_part)
                             
-                            closing_tag = "</span>"
-                            insert_idx = 0
+                            collected_ids = [t.strip() for t in div_timestamps.split(',') if t.strip()]
                             
-                            if post_part.startswith(closing_tag):
-                                insert_idx += len(closing_tag)
+                            if ts_match:
+                                spans_str = ts_match.group(1)
+                                span_ids = re.findall(r'<span id="([^"]+)"></span>', spans_str)
+                                collected_ids.extend(span_ids)
+                                post_part = post_part[ts_match.end():]
                             
-                            # Now skip any existing valid spans (Multi-span history)
-                            # Match spans starting from current insert_idx
-                            remainder = post_part[insert_idx:]
-                            span_match = re.match(r'^(?:<span id="[^"]+"></span>)*', remainder)
+                            collected_ids.append(full_span_id)
+                            new_ts_str = ",".join(collected_ids)
                             
-                            if span_match:
-                                insert_idx += span_match.end()
-                                
-                            new_post_part = post_part[:insert_idx] + extra_span + post_part[insert_idx:]
+                            new_id_tag = f'<span id="{task_id}" data-timestamps="{new_ts_str}"></span>'
                             
-                            new_line = f"{indent}{new_box}{new_insert}{target_span}{new_post_part}"
+                            new_line = f"{indent}{new_box}{new_insert}{new_id_tag}{post_part}"
                             
                             updated = True
                             new_lines.append(new_line)
                             self._log(f"✅ [同步] 更新 Obsidian 任务状态: {task_id}")
-                            self._log(f"   ➕ 新增校验 Span: {extra_span}")
+                            self._log(f"   ➕ 时间戳整合写入 div data-timestamps: {new_ts_str}")
                         else:
                              # Just ensure Checked
                             if "- [ ]" in line:
@@ -772,8 +812,8 @@ tags:
         #   （\s*id=([a-zA-Z0-9:_]+)\s*） : Group 4: （id=ID）
         
         completion_pat = re.compile(
-            r'^\s*(?:(\d{1,2}:\d{2}(?::\d{2})?)\s+)?.*?'
-            r'(?:\*([a-zA-Z0-9:_]+)\*|\(\s*id=([a-zA-Z0-9:_]+)\s*\)|（\s*id=([a-zA-Z0-9:_]+)\s*）)'
+            r'^\s*(\d{1,2}:\d{2}(?::\d{2})?)?\s*.*?'
+            r'(?:\*([a-zA-Z0-9:_]+)\*?|\(\s*id=([a-zA-Z0-9:_]+)\s*\)?|（\s*id=([a-zA-Z0-9:_]+)\s*）?)'
         )
 
         def flush_hunk(dels, adds):
@@ -948,7 +988,7 @@ tags:
             # Check if line looks like a heartbeat (contains *ID* or (id=...))
             # Ref: completion_pat from _process_diff
             import re
-            is_heartbeat = re.search(r'(?:\*([a-zA-Z0-9:_]+)\*|\(\s*id=([a-zA-Z0-9:_]+)\s*\)|（\s*id=([a-zA-Z0-9:_]+)\s*）)', line_content)
+            is_heartbeat = re.search(r'(?:\*([a-zA-Z0-9:_]+)\*?|\(\s*id=([a-zA-Z0-9:_]+)\s*\)?|（\s*id=([a-zA-Z0-9:_]+)\s*）?)', line_content)
             if is_heartbeat:
                 print(f"{YELLOW}⚠️ [Takein Skip] Detected Heartbeat Data, ignoring: {line_content.strip()}{RESET}")
                 return False

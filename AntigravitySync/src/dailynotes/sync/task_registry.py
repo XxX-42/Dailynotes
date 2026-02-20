@@ -231,6 +231,24 @@ class TaskRegistry:
         with self._file_lock:
             return self._date_index.get(date_str, {}).copy()
     
+    def get_task_by_id(self, bid: str) -> Optional[Dict]:
+        """
+        [v1.9] Find a task globally by its block ID across all dates and files.
+        Since we index by date, this requires an O(D) scan across dates, 
+        where D is the number of dates with tasks.
+        
+        Args:
+            bid: Obsidian Block ID
+            
+        Returns:
+            Task dictionary if found, else None
+        """
+        with self._file_lock:
+            for date_str, tasks in self._date_index.items():
+                if bid in tasks:
+                    return tasks[bid].copy()
+            return None
+    
     def get_affected_dates(self, filepath: str) -> Set[str]:
         """
         Get all dates that have tasks from a specific file.

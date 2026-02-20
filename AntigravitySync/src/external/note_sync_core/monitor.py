@@ -227,9 +227,38 @@ class NoteMonitor:
                         new_note_lines.append(nl)
                         processed_ids.add(nid)
                     else:
-                        # 3. Delete (ID is gone from Obsidian entirely)
-                        self._log(f"🗑️ [Sync] Removing task {nid} from Apple Notes (ID manually deleted).")
-                        notes_changed = True
+                        # 3. Validation from TaskRegistry (Global Archive Check)
+                        roamer_task = None
+                        try:
+                            from dailynotes.sync.task_registry import get_registry
+                            reg = get_registry()
+                            if reg.is_initialized():
+                                roamer_task = reg.get_task_by_id(nid)
+                        except Exception as e:
+                            self._log(f"⚠️ [NoteMonitor] 无法访问 TaskRegistry: {e}")
+                        
+                        if roamer_task:
+                            # It's globally archived! Update Apple Notes content to match archived version
+                            clean_obsidian = re.sub(r'<[^>]+>', '', roamer_task.get('pure', '')).strip()
+                            norm_note = " ".join(ncontent.split())
+                            norm_obsidian = " ".join(clean_obsidian.split())
+                            
+                            if norm_note != norm_obsidian and clean_obsidian:
+                                self._log(f"✏️ [Roamer] 归档任务更新:\n   🍎 Note: {ncontent}\n   🟣 Obsid: {clean_obsidian}")
+                                updated_line = f"*{nid}*{clean_obsidian}"
+                                new_note_lines.append(updated_line)
+                                notes_changed = True
+                            elif ncontent != clean_obsidian and clean_obsidian:
+                                new_note_lines.append(nl)
+                            else:
+                                new_note_lines.append(nl)
+                            
+                            processed_ids.add(nid)
+                            self._log(f"🛡️ [Roamer] 保护了归档项目，避免在 Apple Notes 中被删: {nid}")
+                        else:
+                            # 4. Delete (ID is gone from Obsidian entirely)
+                            self._log(f"🗑️ [Sync] 从 Apple Notes 移除任务 {nid} (包含 ID 的项目在全局已不存在)。")
+                            notes_changed = True
                 else:
                     # Regular line, keep
                     new_note_lines.append(nl)
@@ -511,6 +540,7 @@ tags:
     def _mark_obsidian_task_completed_with_time(self, task_id, completion_time):
         """
         [v7.0] 标记 Obsidian 任务完成，并使用双 ID 格式更新时间。
+        [v8.0] 基于 TaskRegistry 实现对归档/流浪者任务的跨稳健追踪。
         Target Format: - [x] HH:MM<span id="RANDOM_ID"></span><span id="OLD_ID"></span> Content
         注意: 使用随机 ID 避免重复。
         """
@@ -522,12 +552,25 @@ tags:
         if not daily_note_dir:
             return False
             
-        daily_note_path = os.path.join(daily_note_dir, f"{today_str}.md")
-        if not os.path.exists(daily_note_path):
+        target_file_path = os.path.join(daily_note_dir, f"{today_str}.md")
+        
+        # [v8.0] Cross-file tracking using TaskRegistry
+        try:
+            from dailynotes.sync.task_registry import get_registry
+            reg = get_registry()
+            if reg.is_initialized():
+                roamer_task = reg.get_task_by_id(task_id)
+                if roamer_task and 'path' in roamer_task:
+                    target_file_path = roamer_task['path']
+        except Exception as e:
+            self._log(f"⚠️ [NoteMonitor] Registry 寻址失败, 降级为当日志记: {e}")
+            
+        if not os.path.exists(target_file_path):
+            self._log(f"⚠️ [NoteMonitor] 无法定位包含任务 {task_id} 的文件: {os.path.basename(target_file_path)}")
             return False
             
         try:
-            with open(daily_note_path, 'r', encoding='utf-8') as f:
+            with open(target_file_path, 'r', encoding='utf-8') as f:
                 lines = f.readlines()
             
             updated = False

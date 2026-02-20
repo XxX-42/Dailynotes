@@ -55,34 +55,48 @@ def stop_caffeinate():
         _caffeinate_proc = None
 
 # [v4.0] NoteMonitor 全局实例（方便退出时清理）
-_note_monitor = None
+_note_monitor_proc = None
 
 def _start_note_monitor():
     """
-    [v4.0] 启动 Apple Notes 备忘录监听（daemon 线程）
-    独立于 FusionManager，互不干扰
+    [v9.0] 启动 Apple Notes 备忘录监听（独立子进程）
+    直接运行 watch_today_note.py，完全独立于 FusionManager
     """
-    global _note_monitor
+    global _note_monitor_proc
     if not NOTE_MONITOR_AVAILABLE:
         Logger.info("ℹ️  [NoteMonitor] 模块不可用，跳过备忘录监听")
         return
 
     try:
-        _note_monitor = NoteMonitor(config=Config, logger=Logger)
-        _note_monitor.start()
+        watch_script = os.path.join(
+            os.path.dirname(__file__), 'src', 'external', 'note_sync_core', 'watch_today_note.py'
+        )
+        if not os.path.exists(watch_script):
+            Logger.info(f"⚠️ [NoteMonitor] 脚本不存在: {watch_script}")
+            return
+
+        _note_monitor_proc = subprocess.Popen(
+            [sys.executable, watch_script],
+            cwd=os.path.dirname(__file__),
+            stdout=None,  # 继承主进程的 stdout，日志直接输出到控制台
+            stderr=None,
+        )
+        Logger.info(f"🚀 [NoteMonitor] 已作为独立子进程启动 (PID: {_note_monitor_proc.pid})")
     except Exception as e:
         Logger.info(f"⚠️ [NoteMonitor] 启动失败（不影响主程序）: {e}")
-        _note_monitor = None
+        _note_monitor_proc = None
 
 def _stop_note_monitor():
-    """[v4.0] 停止 NoteMonitor"""
-    global _note_monitor
-    if _note_monitor:
+    """[v9.0] 停止 NoteMonitor 子进程"""
+    global _note_monitor_proc
+    if _note_monitor_proc:
         try:
-            _note_monitor.stop()
+            _note_monitor_proc.terminate()
+            _note_monitor_proc.wait(timeout=5)
+            Logger.info("🛑 [NoteMonitor] 子进程已停止")
         except Exception:
-            pass
-        _note_monitor = None
+            _note_monitor_proc.kill()
+        _note_monitor_proc = None
 
 def run_with_self_healing():
     """

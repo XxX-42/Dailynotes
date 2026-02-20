@@ -409,9 +409,9 @@ class NoteMonitor:
                 self._log(f"   [DEBUG] Loop Tick - last_hash: {last_hash}, current_hash: {current_hash}, len: {len(current_content if current_content else '')}")
 
                 if current_hash != last_hash:
-                    # [v8.4] Apple Notes 快捷指令打卡时可能会按行分次写入，导致我们读到残破的 (id=xxx 末尾
-                    # 如果检测到潜在的心跳标记，先等待 1.0 秒，确保存盘已满血落地再解析
-                    if "(id=" in current_content or "（id=" in current_content or "✅" in current_content or re.search(r'\*(?:[a-zA-Z0-9:_]+)\*', current_content):
+                    # [v8.9] 1s 延迟只在出现真正的心跳标记时触发
+                    # 注意: 不检测 *ID* 格式（那是同步行，永远存在，会导致误触发）
+                    if "(id=" in current_content or "（id=" in current_content:
                         self._log(f"⏳ [NoteMonitor] 检测到心跳特征变更，延迟 1.0 秒等待写入缓冲...")
                         time.sleep(1.0)
                         current_content = self._reader.get_note_content(note_name)
@@ -763,7 +763,7 @@ tags:
                             new_lines.append(new_line)
                             self._log(f"✅ [同步] 更新 Obsidian 任务状态: {task_id}")
                             self._log(f"   ➕ 时间戳整合写入 div data-timestamps: {new_ts_str}")
-                            self._log(f"   📄 更新后全文: {new_line.rstrip()}")
+
                         else:
                              # Just ensure Checked
                             if "- [ ]" in line:
@@ -772,7 +772,7 @@ tags:
                                     updated = True
                                     new_lines.append(new_line)
                                     self._log(f"✅ [同步] 修正任务状态 (时间已存在): {task_id}")
-                                    self._log(f"   📄 更新后全文: {new_line.rstrip()}")
+        
                                 else:
                                     new_lines.append(line)
                             else:

@@ -301,8 +301,8 @@ class SyncCore:
 
                         # === UNIFIED STRATEGY: Always format properly ===
                         # Extract or generate block ID
-                        bid_m = re.search(r'\^([a-zA-Z0-9]{6,})\s*$', raw_first)
-                        bid = bid_m.group(1) if bid_m else self.generate_block_id().replace('^', '')
+                        bid_m = re.search(r'(?:\^([a-zA-Z0-9]{6,})\s*$|<span id="([a-zA-Z0-9]{6,})"></span>)', raw_first)
+                        bid = (bid_m.group(1) or bid_m.group(2)) if bid_m else self.generate_block_id().replace('^', '')
                         current_bid = bid
 
                         # Extract indentation

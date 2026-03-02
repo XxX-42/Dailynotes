@@ -113,7 +113,7 @@ def run_with_self_healing():
     while restart_count < max_restarts:
         try:
             app = FusionManager()
-            Logger.info(f"=== Antigravity Sync {Config.VERSION} (Exponential Dynamic Scheduling) ===")
+            Logger.info(f"=== Lyubishchev Sync {Config.VERSION} (Exponential Dynamic Scheduling) ===")
             Logger.info(f"路径: {Config.ROOT_DIR}")
             Logger.info(f"模式: Watchdog (Vault & Calendar) + 指数动态调度")
             Logger.info(f"调度公式: I(d) = {Config.EXP_BASE} * exp({Config.EXP_COEFF} * d) + {Config.EXP_OFFSET}")

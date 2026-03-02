@@ -4,9 +4,9 @@ import os
 
 repo_root = "/Users/user999/Documents/【Liang_project】/Code_Scripits/2025_DailynoteSync_complete_beta"
 files = [
-    "AntigravitySync/config.py",
-    "AntigravitySync/src/dailynotes/format_core.py",
-    "AntigravitySync/src/dailynotes/sync/rendering.py"
+    "LyubishchevSync/config.py",
+    "LyubishchevSync/src/dailynotes/format_core.py",
+    "LyubishchevSync/src/dailynotes/sync/rendering.py"
 ]
 
 def run(cmd):

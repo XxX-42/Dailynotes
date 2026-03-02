@@ -15,12 +15,12 @@ import datetime
 # 路径设置
 # ==========================================
 # 当前脚本: src/external/note_sync_core/run_note_monitor.py
-# 回溯到:   AntigravitySync/
+# 回溯到:   LyubishchevSync/
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))          # note_sync_core/
-ANTIGRAVITY_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(SCRIPT_DIR)))  # AntigravitySync/
-os.chdir(ANTIGRAVITY_ROOT)
-sys.path.insert(0, os.path.join(ANTIGRAVITY_ROOT, 'src'))
-sys.path.insert(0, ANTIGRAVITY_ROOT)
+LYUBISHCHEV_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(SCRIPT_DIR)))  # LyubishchevSync/
+os.chdir(LYUBISHCHEV_ROOT)
+sys.path.insert(0, os.path.join(LYUBISHCHEV_ROOT, 'src'))
+sys.path.insert(0, LYUBISHCHEV_ROOT)
 sys.path.insert(0, SCRIPT_DIR)
 
 # ==========================================

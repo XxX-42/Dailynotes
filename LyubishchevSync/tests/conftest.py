@@ -1,5 +1,5 @@
 """
-AntigravitySync Test Suite - conftest.py
+LyubishchevSync Test Suite - conftest.py
 Common fixtures and configuration for pytest.
 
 This module provides:
@@ -15,15 +15,15 @@ from unittest.mock import MagicMock, patch, PropertyMock
 from typing import Dict, List, Any
 
 # ============================================================================
-# PATH SETUP - Ensure tests can import AntigravitySync modules
+# PATH SETUP - Ensure tests can import LyubishchevSync modules
 # ============================================================================
 
-# Get the AntigravitySync directory (parent of tests/)
-ANTIGRAVITY_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SRC_DIR = os.path.join(ANTIGRAVITY_DIR, 'src')
+# Get the LyubishchevSync directory (parent of tests/)
+LYUBISHCHEV_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SRC_DIR = os.path.join(LYUBISHCHEV_DIR, 'src')
 
 # Add paths to sys.path if not already present
-for path in [ANTIGRAVITY_DIR, SRC_DIR]:
+for path in [LYUBISHCHEV_DIR, SRC_DIR]:
     if path not in sys.path:
         sys.path.insert(0, path)
 

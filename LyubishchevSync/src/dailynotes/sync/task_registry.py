@@ -1,5 +1,5 @@
 """
-TaskRegistry - Incremental Task Cache for AntigravitySync v1.8
+TaskRegistry - Incremental Task Cache for LyubishchevSync v1.8
 
 This module implements a persistent in-memory cache for all source tasks,
 enabling O(1) file updates instead of O(n) full-disk scans.

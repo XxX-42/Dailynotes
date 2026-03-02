@@ -19,9 +19,9 @@ import main
 from config import Config
 from dailynotes.utils import ProcessLock, Logger
 
-class AntigravityApp(rumps.App):
+class LyubishchevApp(rumps.App):
     def __init__(self):
-        super(AntigravityApp, self).__init__("AG", title="⏳ AG")
+        super(LyubishchevApp, self).__init__("AG", title="⏳ AG")
         self.menu = [
             rumps.MenuItem("Status: Initializing...", callback=None),
             None,
@@ -101,11 +101,11 @@ class AntigravityApp(rumps.App):
 
     @rumps.clicked("Open Log File")
     def open_log(self, _):
-        log_file = "/tmp/AntigravitySync_startup.log"
+        log_file = "/tmp/LyubishchevSync_startup.log"
         if os.path.exists(log_file):
             subprocess.run(["open", log_file])
         else:
-            rumps.notification("Antigravity Sync", "Log Missing", "Log file not found at " + log_file)
+            rumps.notification("Lyubishchev Sync", "Log Missing", "Log file not found at " + log_file)
 
     @rumps.clicked("Restart Sync")
     def restart_sync(self, _):
@@ -209,7 +209,7 @@ if __name__ == "__main__":
     # Apply Patch
     dailynotes.manager.FusionManager.run = patched_run
 
-    app = AntigravityApp()
+    app = LyubishchevApp()
     # Inject app reference to manager so it can check should_run
     dailynotes.manager.FusionManager.app_ref = app 
     

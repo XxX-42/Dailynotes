@@ -1,5 +1,5 @@
 """
-Fusion Manager - Antigravity Architecture v3.0 (Chronos Mode)
+Fusion Manager - Lyubishchev Architecture v3.0 (Chronos Mode)
 Pure Event-Driven Sync Engine - No Polling Required.
 
 Key Features:
@@ -85,7 +85,7 @@ class ObsidianEventHandler(FileSystemEventHandler):
         [v3.1] 检测文件变更来源
         
         返回值:
-        - 'SYSTEM': AntigravitySync 自身写入
+        - 'SYSTEM': LyubishchevSync 自身写入
         - 'OBSIDIAN_TYPING': 用户在 Obsidian 中打字/交互 (依据: workspace.json 同时更新)
         - 'OBSIDIAN_SYNC': Obsidian 后台同步 (依据: workspace.json 未更新)
         - 'USER': 用户通过其他编辑器修改
@@ -94,13 +94,13 @@ class ObsidianEventHandler(FileSystemEventHandler):
         """
         import subprocess
         
-        # [优先级 1] 检查是否为 AntigravitySync 自身写入
+        # [优先级 1] 检查是否为 LyubishchevSync 自身写入
         if is_system_write:
             return 'SYSTEM'
             
         detected_source = 'UNKNOWN'
         
-        # [优先级 1] 检查是否为 AntigravitySync 自身写入
+        # [优先级 1] 检查是否为 LyubishchevSync 自身写入
         if is_system_write:
             return 'SYSTEM'
             

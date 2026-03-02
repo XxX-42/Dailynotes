@@ -41,7 +41,7 @@ def _get_ek_client():
 # Helper Functions for EventKit
 # =============================================================================
 
-def _datetime_to_nsdate(target_dt: datetime, time_str: str) -> NSDate:
+def _datetime_to_nsdate(target_dt: datetime, time_str: str):
     """
     Convert a target date and time string (HH:MM) to NSDate.
     

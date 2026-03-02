@@ -12,7 +12,8 @@
 │       └── cache
 │           ├── lastfailed
 │           └── nodeids
-├── AntigravitySync
+├── 2025_DailynoteSync_complete_beta_code_only.md
+├── LyubishchevSync
 │   ├── config.py
 │   ├── gui_main.py
 │   ├── main.py
@@ -39,6 +40,7 @@
 │   │       ├── note_sync_core
 │   │       │   ├── monitor.py
 │   │       │   ├── read_today_note.py
+│   │       │   ├── run_note_monitor.py
 │   │       │   └── watch_today_note.py
 │   │       ├── reminder_kit.py
 │   │       └── task_sync_core
@@ -48,9 +50,7 @@
 │   │           ├── obsidian_service.py
 │   │           ├── sync_engine.py
 │   │           └── utils.py
-│   ├── test_reminder_ek.py
-│   ├── test_simple.py
-│   ├── test_whitespace.py
+│   ├── test_parse_again.py
 │   └── tests
 │       ├── __init__.py
 │       ├── conftest.py
@@ -98,9 +98,9 @@ import os
 
 repo_root = "/Users/user999/Documents/【Liang_project】/Code_Scripits/2025_DailynoteSync_complete_beta"
 files = [
-    "AntigravitySync/config.py",
-    "AntigravitySync/src/dailynotes/format_core.py",
-    "AntigravitySync/src/dailynotes/sync/rendering.py"
+    "LyubishchevSync/config.py",
+    "LyubishchevSync/src/dailynotes/format_core.py",
+    "LyubishchevSync/src/dailynotes/sync/rendering.py"
 ]
 
 def run(cmd):
@@ -149,7 +149,7 @@ def run_git_commands():
     env["LANG"] = "en_US.UTF-8"
 
     commands = [
-        ["git", "add", "AntigravitySync/config.py", "AntigravitySync/src/dailynotes/format_core.py", "AntigravitySync/src/dailynotes/sync/rendering.py"],
+        ["git", "add", "LyubishchevSync/config.py", "LyubishchevSync/src/dailynotes/format_core.py", "LyubishchevSync/src/dailynotes/sync/rendering.py"],
         ["git", "commit", "-m", "Disable debug mode, adjust sync range, and fix header blank line issues"],
         ["git", "push", "origin", "HEAD"]
     ]
@@ -242,61 +242,61 @@ See [the docs](https://docs.pytest.org/en/stable/how-to/cache.html) for more inf
 ## File: .pytest_cache/v/cache/nodeids
 ```text
 [
-  "AntigravitySync/tests/test_parsing.py::TestCaptureBlock::test_empty_lines_within_block",
-  "AntigravitySync/tests/test_parsing.py::TestCaptureBlock::test_single_line_task",
-  "AntigravitySync/tests/test_parsing.py::TestCaptureBlock::test_stops_after_too_many_empty_lines",
-  "AntigravitySync/tests/test_parsing.py::TestCaptureBlock::test_stops_at_same_indent",
-  "AntigravitySync/tests/test_parsing.py::TestCaptureBlock::test_task_with_children",
-  "AntigravitySync/tests/test_parsing.py::TestCleanTaskText::test_complex_cleanup",
-  "AntigravitySync/tests/test_parsing.py::TestCleanTaskText::test_preserves_regular_links",
-  "AntigravitySync/tests/test_parsing.py::TestCleanTaskText::test_removes_block_id",
-  "AntigravitySync/tests/test_parsing.py::TestCleanTaskText::test_removes_context_link",
-  "AntigravitySync/tests/test_parsing.py::TestCleanTaskText::test_removes_date_link",
-  "AntigravitySync/tests/test_parsing.py::TestCleanTaskText::test_removes_emoji_date",
-  "AntigravitySync/tests/test_parsing.py::TestCleanTaskText::test_removes_return_link",
-  "AntigravitySync/tests/test_parsing.py::TestCleanTaskText::test_removes_time",
-  "AntigravitySync/tests/test_parsing.py::TestCleanTaskText::test_removes_time_range",
-  "AntigravitySync/tests/test_parsing.py::TestCleanTaskText::test_simple_task",
-  "AntigravitySync/tests/test_parsing.py::TestGenerateBlockId::test_alphanumeric",
-  "AntigravitySync/tests/test_parsing.py::TestGenerateBlockId::test_format",
-  "AntigravitySync/tests/test_parsing.py::TestGenerateBlockId::test_uniqueness",
-  "AntigravitySync/tests/test_parsing.py::TestGetIndentDepth::test_four_space_indent",
-  "AntigravitySync/tests/test_parsing.py::TestGetIndentDepth::test_mixed_indent",
-  "AntigravitySync/tests/test_parsing.py::TestGetIndentDepth::test_no_indent",
-  "AntigravitySync/tests/test_parsing.py::TestGetIndentDepth::test_quoted_line",
-  "AntigravitySync/tests/test_parsing.py::TestGetIndentDepth::test_tab_indent",
-  "AntigravitySync/tests/test_parsing.py::TestGetIndentDepth::test_two_space_indent",
-  "AntigravitySync/tests/test_parsing.py::TestParseFileTasks::test_basic_task_extraction",
-  "AntigravitySync/tests/test_parsing.py::TestParseFileTasks::test_completed_task_status",
-  "AntigravitySync/tests/test_parsing.py::TestParseFileTasks::test_empty_file",
-  "AntigravitySync/tests/test_parsing.py::TestParseFileTasks::test_generates_missing_id",
-  "AntigravitySync/tests/test_parsing.py::TestParseFileTasks::test_multiple_dates",
-  "AntigravitySync/tests/test_parsing.py::TestParseFileTasks::test_nested_children_captured",
-  "AntigravitySync/tests/test_parsing.py::TestParseFileTasks::test_no_task_section",
-  "AntigravitySync/tests/test_parsing.py::TestParseFileTasks::test_rescues_id_from_hash",
-  "AntigravitySync/tests/test_parsing.py::TestParseFileTasks::test_respects_time_gate",
-  "AntigravitySync/tests/test_parsing.py::TestParseFileTasks::test_stops_at_delimiter",
-  "AntigravitySync/tests/test_parsing.py::TestParseFileTasksWriteBack::test_write_back_disabled",
-  "AntigravitySync/tests/test_parsing.py::TestParseFileTasksWriteBack::test_write_back_enabled",
-  "AntigravitySync/tests/test_registry.py::TestTaskRegistryInitialization::test_initialize_calls_os_walk",
-  "AntigravitySync/tests/test_registry.py::TestTaskRegistryInitialization::test_initialize_populates_cache",
-  "AntigravitySync/tests/test_registry.py::TestTaskRegistryInitialization::test_singleton_pattern",
-  "AntigravitySync/tests/test_registry.py::TestTaskRegistryRealisticScenarios::test_complex_task_section",
-  "AntigravitySync/tests/test_registry.py::TestTaskRegistryRetrieval::test_get_affected_dates",
-  "AntigravitySync/tests/test_registry.py::TestTaskRegistryRetrieval::test_get_tasks_by_date",
-  "AntigravitySync/tests/test_registry.py::TestTaskRegistryRetrieval::test_get_tasks_by_date_nonexistent",
-  "AntigravitySync/tests/test_registry.py::TestTaskRegistryRetrieval::test_get_tasks_by_date_returns_copy",
-  "AntigravitySync/tests/test_registry.py::TestTaskRegistryThreadSafety::test_concurrent_updates_dont_crash",
-  "AntigravitySync/tests/test_registry.py::TestTaskRegistryUpdate::test_update_adds_new_tasks",
-  "AntigravitySync/tests/test_registry.py::TestTaskRegistryUpdate::test_update_changes_task_date",
-  "AntigravitySync/tests/test_registry.py::TestTaskRegistryUpdate::test_update_handles_file_deletion",
-  "AntigravitySync/tests/test_registry.py::TestTaskRegistryUpdate::test_update_overwrites_modified_tasks",
-  "AntigravitySync/tests/test_registry.py::TestTaskRegistryUpdate::test_update_removes_deleted_tasks"
+  "LyubishchevSync/tests/test_parsing.py::TestCaptureBlock::test_empty_lines_within_block",
+  "LyubishchevSync/tests/test_parsing.py::TestCaptureBlock::test_single_line_task",
+  "LyubishchevSync/tests/test_parsing.py::TestCaptureBlock::test_stops_after_too_many_empty_lines",
+  "LyubishchevSync/tests/test_parsing.py::TestCaptureBlock::test_stops_at_same_indent",
+  "LyubishchevSync/tests/test_parsing.py::TestCaptureBlock::test_task_with_children",
+  "LyubishchevSync/tests/test_parsing.py::TestCleanTaskText::test_complex_cleanup",
+  "LyubishchevSync/tests/test_parsing.py::TestCleanTaskText::test_preserves_regular_links",
+  "LyubishchevSync/tests/test_parsing.py::TestCleanTaskText::test_removes_block_id",
+  "LyubishchevSync/tests/test_parsing.py::TestCleanTaskText::test_removes_context_link",
+  "LyubishchevSync/tests/test_parsing.py::TestCleanTaskText::test_removes_date_link",
+  "LyubishchevSync/tests/test_parsing.py::TestCleanTaskText::test_removes_emoji_date",
+  "LyubishchevSync/tests/test_parsing.py::TestCleanTaskText::test_removes_return_link",
+  "LyubishchevSync/tests/test_parsing.py::TestCleanTaskText::test_removes_time",
+  "LyubishchevSync/tests/test_parsing.py::TestCleanTaskText::test_removes_time_range",
+  "LyubishchevSync/tests/test_parsing.py::TestCleanTaskText::test_simple_task",
+  "LyubishchevSync/tests/test_parsing.py::TestGenerateBlockId::test_alphanumeric",
+  "LyubishchevSync/tests/test_parsing.py::TestGenerateBlockId::test_format",
+  "LyubishchevSync/tests/test_parsing.py::TestGenerateBlockId::test_uniqueness",
+  "LyubishchevSync/tests/test_parsing.py::TestGetIndentDepth::test_four_space_indent",
+  "LyubishchevSync/tests/test_parsing.py::TestGetIndentDepth::test_mixed_indent",
+  "LyubishchevSync/tests/test_parsing.py::TestGetIndentDepth::test_no_indent",
+  "LyubishchevSync/tests/test_parsing.py::TestGetIndentDepth::test_quoted_line",
+  "LyubishchevSync/tests/test_parsing.py::TestGetIndentDepth::test_tab_indent",
+  "LyubishchevSync/tests/test_parsing.py::TestGetIndentDepth::test_two_space_indent",
+  "LyubishchevSync/tests/test_parsing.py::TestParseFileTasks::test_basic_task_extraction",
+  "LyubishchevSync/tests/test_parsing.py::TestParseFileTasks::test_completed_task_status",
+  "LyubishchevSync/tests/test_parsing.py::TestParseFileTasks::test_empty_file",
+  "LyubishchevSync/tests/test_parsing.py::TestParseFileTasks::test_generates_missing_id",
+  "LyubishchevSync/tests/test_parsing.py::TestParseFileTasks::test_multiple_dates",
+  "LyubishchevSync/tests/test_parsing.py::TestParseFileTasks::test_nested_children_captured",
+  "LyubishchevSync/tests/test_parsing.py::TestParseFileTasks::test_no_task_section",
+  "LyubishchevSync/tests/test_parsing.py::TestParseFileTasks::test_rescues_id_from_hash",
+  "LyubishchevSync/tests/test_parsing.py::TestParseFileTasks::test_respects_time_gate",
+  "LyubishchevSync/tests/test_parsing.py::TestParseFileTasks::test_stops_at_delimiter",
+  "LyubishchevSync/tests/test_parsing.py::TestParseFileTasksWriteBack::test_write_back_disabled",
+  "LyubishchevSync/tests/test_parsing.py::TestParseFileTasksWriteBack::test_write_back_enabled",
+  "LyubishchevSync/tests/test_registry.py::TestTaskRegistryInitialization::test_initialize_calls_os_walk",
+  "LyubishchevSync/tests/test_registry.py::TestTaskRegistryInitialization::test_initialize_populates_cache",
+  "LyubishchevSync/tests/test_registry.py::TestTaskRegistryInitialization::test_singleton_pattern",
+  "LyubishchevSync/tests/test_registry.py::TestTaskRegistryRealisticScenarios::test_complex_task_section",
+  "LyubishchevSync/tests/test_registry.py::TestTaskRegistryRetrieval::test_get_affected_dates",
+  "LyubishchevSync/tests/test_registry.py::TestTaskRegistryRetrieval::test_get_tasks_by_date",
+  "LyubishchevSync/tests/test_registry.py::TestTaskRegistryRetrieval::test_get_tasks_by_date_nonexistent",
+  "LyubishchevSync/tests/test_registry.py::TestTaskRegistryRetrieval::test_get_tasks_by_date_returns_copy",
+  "LyubishchevSync/tests/test_registry.py::TestTaskRegistryThreadSafety::test_concurrent_updates_dont_crash",
+  "LyubishchevSync/tests/test_registry.py::TestTaskRegistryUpdate::test_update_adds_new_tasks",
+  "LyubishchevSync/tests/test_registry.py::TestTaskRegistryUpdate::test_update_changes_task_date",
+  "LyubishchevSync/tests/test_registry.py::TestTaskRegistryUpdate::test_update_handles_file_deletion",
+  "LyubishchevSync/tests/test_registry.py::TestTaskRegistryUpdate::test_update_overwrites_modified_tasks",
+  "LyubishchevSync/tests/test_registry.py::TestTaskRegistryUpdate::test_update_removes_deleted_tasks"
 ]
 ```
 
 ---
-## File: AntigravitySync/config.py
+## File: LyubishchevSync/config.py
 ```py
 import os
 
@@ -342,6 +342,10 @@ class Config:
     
     # [v1.4] 事件驱动模式参数
     EVENT_DEBOUNCE_SECONDS = 0.5   # 事件触发防抖时间（秒）
+    
+    # [v4.0] 新任务主键注入延迟
+    # 当检测到新创建的待同步任务（如 #B）时，延迟 X 秒再注入主键，防止破坏用户打字体验
+    NEW_TASK_INJECTION_DELAY = 3.0
     
     # [v3.6] 变更来源感知延迟
     # 根据检测到的变更来源，在执行格式化/同步前等待不同时间
@@ -419,7 +423,7 @@ class Config:
 ```
 
 ---
-## File: AntigravitySync/gui_main.py
+## File: LyubishchevSync/gui_main.py
 ```py
 import sys
 import os
@@ -442,9 +446,9 @@ import main
 from config import Config
 from dailynotes.utils import ProcessLock, Logger
 
-class AntigravityApp(rumps.App):
+class LyubishchevApp(rumps.App):
     def __init__(self):
-        super(AntigravityApp, self).__init__("AG", title="⏳ AG")
+        super(LyubishchevApp, self).__init__("AG", title="⏳ AG")
         self.menu = [
             rumps.MenuItem("Status: Initializing...", callback=None),
             None,
@@ -524,11 +528,11 @@ class AntigravityApp(rumps.App):
 
     @rumps.clicked("Open Log File")
     def open_log(self, _):
-        log_file = "/tmp/AntigravitySync_startup.log"
+        log_file = "/tmp/LyubishchevSync_startup.log"
         if os.path.exists(log_file):
             subprocess.run(["open", log_file])
         else:
-            rumps.notification("Antigravity Sync", "Log Missing", "Log file not found at " + log_file)
+            rumps.notification("Lyubishchev Sync", "Log Missing", "Log file not found at " + log_file)
 
     @rumps.clicked("Restart Sync")
     def restart_sync(self, _):
@@ -632,7 +636,7 @@ if __name__ == "__main__":
     # Apply Patch
     dailynotes.manager.FusionManager.run = patched_run
 
-    app = AntigravityApp()
+    app = LyubishchevApp()
     # Inject app reference to manager so it can check should_run
     dailynotes.manager.FusionManager.app_ref = app 
     
@@ -641,7 +645,7 @@ if __name__ == "__main__":
 ```
 
 ---
-## File: AntigravitySync/main.py
+## File: LyubishchevSync/main.py
 ```py
 import time
 import signal
@@ -700,34 +704,48 @@ def stop_caffeinate():
         _caffeinate_proc = None
 
 # [v4.0] NoteMonitor 全局实例（方便退出时清理）
-_note_monitor = None
+_note_monitor_proc = None
 
 def _start_note_monitor():
     """
-    [v4.0] 启动 Apple Notes 备忘录监听（daemon 线程）
-    独立于 FusionManager，互不干扰
+    [v9.0] 启动 Apple Notes 备忘录监听（独立子进程）
+    直接运行 watch_today_note.py，完全独立于 FusionManager
     """
-    global _note_monitor
+    global _note_monitor_proc
     if not NOTE_MONITOR_AVAILABLE:
         Logger.info("ℹ️  [NoteMonitor] 模块不可用，跳过备忘录监听")
         return
 
     try:
-        _note_monitor = NoteMonitor(config=Config, logger=Logger)
-        _note_monitor.start()
+        watch_script = os.path.join(
+            os.path.dirname(__file__), 'src', 'external', 'note_sync_core', 'watch_today_note.py'
+        )
+        if not os.path.exists(watch_script):
+            Logger.info(f"⚠️ [NoteMonitor] 脚本不存在: {watch_script}")
+            return
+
+        _note_monitor_proc = subprocess.Popen(
+            [sys.executable, watch_script],
+            cwd=os.path.dirname(__file__),
+            stdout=None,  # 继承主进程的 stdout，日志直接输出到控制台
+            stderr=None,
+        )
+        Logger.info(f"🚀 [NoteMonitor] 已作为独立子进程启动 (PID: {_note_monitor_proc.pid})")
     except Exception as e:
         Logger.info(f"⚠️ [NoteMonitor] 启动失败（不影响主程序）: {e}")
-        _note_monitor = None
+        _note_monitor_proc = None
 
 def _stop_note_monitor():
-    """[v4.0] 停止 NoteMonitor"""
-    global _note_monitor
-    if _note_monitor:
+    """[v9.0] 停止 NoteMonitor 子进程"""
+    global _note_monitor_proc
+    if _note_monitor_proc:
         try:
-            _note_monitor.stop()
+            _note_monitor_proc.terminate()
+            _note_monitor_proc.wait(timeout=5)
+            Logger.info("🛑 [NoteMonitor] 子进程已停止")
         except Exception:
-            pass
-        _note_monitor = None
+            _note_monitor_proc.kill()
+        _note_monitor_proc = None
 
 def run_with_self_healing():
     """
@@ -744,7 +762,7 @@ def run_with_self_healing():
     while restart_count < max_restarts:
         try:
             app = FusionManager()
-            Logger.info(f"=== Antigravity Sync {Config.VERSION} (Exponential Dynamic Scheduling) ===")
+            Logger.info(f"=== Lyubishchev Sync {Config.VERSION} (Exponential Dynamic Scheduling) ===")
             Logger.info(f"路径: {Config.ROOT_DIR}")
             Logger.info(f"模式: Watchdog (Vault & Calendar) + 指数动态调度")
             Logger.info(f"调度公式: I(d) = {Config.EXP_BASE} * exp({Config.EXP_COEFF} * d) + {Config.EXP_OFFSET}")
@@ -755,9 +773,9 @@ def run_with_self_healing():
             else:
                 Logger.info(f"⚠️ 模板文件不存在: {Config.REL_TEMPLATE_FILE} (将使用基础骨架)")
             
-            # [v4.0] 备忘录监听状态
-            if _note_monitor and _note_monitor._running:
-                Logger.info(f"📝 备忘录: ✅ Apple Notes -> Obsidian ## #Water")
+            # [v9.0] 备忘录监听状态（子进程模式）
+            if _note_monitor_proc and _note_monitor_proc.poll() is None:
+                Logger.info(f"📝 备忘录: ✅ Apple Notes -> Obsidian (PID: {_note_monitor_proc.pid})")
             else:
                 Logger.info(f"📝 备忘录: ⚠️ 未启用")
             
@@ -844,193 +862,61 @@ if __name__ == "__main__":
 ```
 
 ---
-## File: AntigravitySync/test_reminder_ek.py
+## File: LyubishchevSync/test_parse_again.py
 ```py
-import objc
-import threading
-import time
-import datetime
-from EventKit import EKEventStore, EKEntityTypeReminder
-from Foundation import NSPredicate, NSDate
+git pushimport sys
+import os
+import unicodedata
 
-# 0 = Event, 1 = Reminder
-ENTITY_TYPE_REMINDER = 1
+sys.path.append(os.path.join(os.getcwd(), 'src'))
+from dailynotes.sync.parsing import extract_routing_info
+from dailynotes.sync.discovery import scan_projects
+from config import Config
 
-class ReminderTest:
-    def __init__(self):
-        self.store = EKEventStore.alloc().init()
-        self.access_granted = False
+project_map, project_path_map, file_path_map = scan_projects()
+line = '- [x] 10:22 - 14:37<span id="xxx"></span> #B [[测试/测试|测试]]'
 
-    def check_access(self):
-        group = threading.Event()
-        
-        def callback(granted, error):
-            self.access_granted = granted
-            if error:
-                print(f"❌ Error: {error}")
-            group.set()
+target_path, link_text = extract_routing_info(line, file_path_map)
+print(f"Extraction result path: {target_path}")
 
-        status = EKEventStore.authorizationStatusForEntityType_(ENTITY_TYPE_REMINDER)
-        print(f"Current Status: {status}")
-
-        if hasattr(self.store, 'requestFullAccessToRemindersWithCompletion_'):
-             self.store.requestFullAccessToRemindersWithCompletion_(callback)
-        else:
-             self.store.requestAccessToEntityType_completion_(ENTITY_TYPE_REMINDER, callback)
-        
-        group.wait()
-        return self.access_granted
-
-    def fetch_reminders(self):
-        if not self.access_granted:
-            print("No access")
-            return
-
-        print("Fetching reminders...")
-        # Predicate for all reminders (incomplete)
-        # For reminders, we use fetchRemindersMatchingPredicate_completion_ which is async!
-        
-        # Or sync method? fetchRemindersMatchingPredicate is NOT available.
-        # We MUST use the async method.
-        
-        predicate = self.store.predicateForRemindersInCalendars_(None) # None = all calendars
-        
-        group = threading.Event()
-        
-        def fetch_callback(reminders):
-            print(f"✅ Fetched {len(reminders) if reminders else 0} reminders.")
-            if reminders:
-                for r in reminders[:5]:
-                    print(f" - [{r.title()}] Completed: {r.isCompleted()}")
-            group.set()
+if target_path:
+    # 1. Exact direct match
+    norm_routing = unicodedata.normalize('NFC', target_path)
+    p_name = None
+    for k, v in project_path_map.items():
+        if unicodedata.normalize('NFC', v) == norm_routing:
+            p_name = k
+            break
             
-        self.store.fetchRemindersMatchingPredicate_completion_(predicate, fetch_callback)
-        group.wait()
+    if not p_name:
+        curr_search = os.path.dirname(target_path)
+        while curr_search.startswith(Config.ROOT_DIR):
+            if curr_search in project_map:
+                p_name = project_map[curr_search]
+                break
+            parent = os.path.dirname(curr_search)
+            if parent == curr_search: break 
+            curr_search = parent
+            
+    print(f"Calculated target project namespace: {p_name}")
 
-if __name__ == "__main__":
-    test = ReminderTest()
-    if test.check_access():
-        print("Access Granted")
-        test.fetch_reminders()
-    else:
-        print("Access Denied")
-
-```
-
----
-## File: AntigravitySync/test_simple.py
-```py
-#!/usr/bin/env python3
-"""
-简化测试：找出 "- " -> "-" 的问题
-"""
-import sys
-sys.path.insert(0, '/Users/user999/Documents/【Liang_project】/Code_Scripits/2025_DailynoteSync_complete_beta/AntigravitySync')
-
-result_lines = []
-
-def log(msg):
-    result_lines.append(msg)
-    print(msg)
-
-from src.dailynotes.format_core import FormatCore
-
-# 测试 sort_day_planner_content
-test_content = "- "
-log(f"INPUT: {repr(test_content)}")
-result = FormatCore.sort_day_planner_content(test_content)
-log(f"OUTPUT: {repr(result)}")
-
-if test_content.endswith(" ") and not result.endswith(" "):
-    log("PROBLEM FOUND: 尾部空格被删除!")
-else:
-    log("OK")
-
-# 写结果到文件
-with open('/Users/user999/Documents/【Liang_project】/Code_Scripits/2025_DailynoteSync_complete_beta/AntigravitySync/test_output.txt', 'w') as f:
-    f.write("\n".join(result_lines))
 
 ```
 
 ---
-## File: AntigravitySync/test_whitespace.py
-```py
-#!/usr/bin/env python3
-"""
-测试脚本：找出哪个函数在处理 "- " 时删除了空格
-"""
-import sys
-sys.path.insert(0, '/Users/user999/Documents/【Liang_project】/Code_Scripits/2025_DailynoteSync_complete_beta/AntigravitySync')
-
-from src.dailynotes.format_core import FormatCore
-from src.dailynotes.sync.parsing import normalize_block_content, clean_task_text
-from src.dailynotes.sync.rendering import normalize_child_lines, aggressive_daily_clean
-
-# 测试用例
-test_line = "- "
-test_lines = ["# Day planner\n", "\n", "- \n", "\n"]
-
-print("=" * 50)
-print("测试输入行: repr =", repr(test_line))
-print("=" * 50)
-
-# 测试 1: normalize_block_content
-print("\n[TEST 1] normalize_block_content")
-result1 = normalize_block_content([test_line])
-print(f"  输入: {repr([test_line])}")
-print(f"  输出: {repr(result1)}")
-
-# 测试 2: clean_task_text
-print("\n[TEST 2] clean_task_text")
-result2 = clean_task_text(test_line)
-print(f"  输入: {repr(test_line)}")
-print(f"  输出: {repr(result2)}")
-
-# 测试 3: normalize_child_lines
-print("\n[TEST 3] normalize_child_lines")
-result3 = normalize_child_lines([test_line], 0)
-print(f"  输入: {repr([test_line])}")
-print(f"  输出: {repr(result3)}")
-
-# 测试 4: aggressive_daily_clean
-print("\n[TEST 4] aggressive_daily_clean")
-result4 = aggressive_daily_clean(test_lines)
-print(f"  输入: {repr(test_lines)}")
-print(f"  输出: {repr(result4)}")
-
-# 测试 5: FormatCore.sort_day_planner_content
-print("\n[TEST 5] FormatCore.sort_day_planner_content")
-test_content = "- \n"
-result5 = FormatCore.sort_day_planner_content(test_content)
-print(f"  输入: {repr(test_content)}")
-print(f"  输出: {repr(result5)}")
-
-# 测试 6: FormatCore.sort_markdown_sections
-print("\n[TEST 6] FormatCore.sort_markdown_sections")
-test_md = "# Day planner\n\n- \n\n# Journey\n"
-result6 = FormatCore.sort_markdown_sections(test_md)
-print(f"  输入: {repr(test_md)}")
-print(f"  输出: {repr(result6)}")
-
-print("\n" + "=" * 50)
-print("完成测试")
-
-```
-
----
-## File: AntigravitySync/tests/__init__.py
+## File: LyubishchevSync/tests/__init__.py
 ```py
 """
-AntigravitySync Test Suite
+LyubishchevSync Test Suite
 """
 
 ```
 
 ---
-## File: AntigravitySync/tests/conftest.py
+## File: LyubishchevSync/tests/conftest.py
 ```py
 """
-AntigravitySync Test Suite - conftest.py
+LyubishchevSync Test Suite - conftest.py
 Common fixtures and configuration for pytest.
 
 This module provides:
@@ -1046,15 +932,15 @@ from unittest.mock import MagicMock, patch, PropertyMock
 from typing import Dict, List, Any
 
 # ============================================================================
-# PATH SETUP - Ensure tests can import AntigravitySync modules
+# PATH SETUP - Ensure tests can import LyubishchevSync modules
 # ============================================================================
 
-# Get the AntigravitySync directory (parent of tests/)
-ANTIGRAVITY_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SRC_DIR = os.path.join(ANTIGRAVITY_DIR, 'src')
+# Get the LyubishchevSync directory (parent of tests/)
+LYUBISHCHEV_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SRC_DIR = os.path.join(LYUBISHCHEV_DIR, 'src')
 
 # Add paths to sys.path if not already present
-for path in [ANTIGRAVITY_DIR, SRC_DIR]:
+for path in [LYUBISHCHEV_DIR, SRC_DIR]:
     if path not in sys.path:
         sys.path.insert(0, path)
 
@@ -1297,7 +1183,7 @@ def pytest_configure(config):
 ```
 
 ---
-## File: AntigravitySync/tests/test_monitor_sections.py
+## File: LyubishchevSync/tests/test_monitor_sections.py
 ```py
 
 import sys
@@ -1306,7 +1192,7 @@ import unittest
 from unittest.mock import MagicMock
 
 # Add src to path
-sys.path.append(os.path.abspath('/Users/user999/Documents/【Liang_project】/Code_Scripits/2025_DailynoteSync_complete_beta/AntigravitySync/src/external/note_sync_core'))
+sys.path.append(os.path.abspath('/Users/user999/Documents/【Liang_project】/Code_Scripits/2025_DailynoteSync_complete_beta/LyubishchevSync/src/external/note_sync_core'))
 
 # Mock config before importing monitor
 class MockConfig:
@@ -1369,10 +1255,10 @@ if __name__ == '__main__':
 ```
 
 ---
-## File: AntigravitySync/tests/test_parsing.py
+## File: LyubishchevSync/tests/test_parsing.py
 ```py
 """
-AntigravitySync Test Suite - test_parsing.py
+LyubishchevSync Test Suite - test_parsing.py
 Unit tests for src/dailynotes/sync/parsing.py
 
 Tests cover:
@@ -1394,9 +1280,9 @@ from typing import List
 # PATH SETUP
 # ============================================================================
 
-ANTIGRAVITY_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SRC_DIR = os.path.join(ANTIGRAVITY_DIR, 'src')
-for path in [ANTIGRAVITY_DIR, SRC_DIR]:
+LYUBISHCHEV_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SRC_DIR = os.path.join(LYUBISHCHEV_DIR, 'src')
+for path in [LYUBISHCHEV_DIR, SRC_DIR]:
     if path not in sys.path:
         sys.path.insert(0, path)
 
@@ -1943,10 +1829,10 @@ class TestParseFileTasksWriteBack:
 ```
 
 ---
-## File: AntigravitySync/tests/test_registry.py
+## File: LyubishchevSync/tests/test_registry.py
 ```py
 """
-AntigravitySync Test Suite - test_registry.py
+LyubishchevSync Test Suite - test_registry.py
 Unit tests for src/dailynotes/sync/task_registry.py
 
 Critical tests for v1.8 core value:
@@ -1968,9 +1854,9 @@ from typing import Dict, List, Set
 # PATH SETUP
 # ============================================================================
 
-ANTIGRAVITY_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SRC_DIR = os.path.join(ANTIGRAVITY_DIR, 'src')
-for path in [ANTIGRAVITY_DIR, SRC_DIR]:
+LYUBISHCHEV_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SRC_DIR = os.path.join(LYUBISHCHEV_DIR, 'src')
+for path in [LYUBISHCHEV_DIR, SRC_DIR]:
     if path not in sys.path:
         sys.path.insert(0, path)
 
@@ -2588,7 +2474,7 @@ class TestTaskRegistryRealisticScenarios:
 ```
 
 ---
-## File: AntigravitySync/src/dailynotes/__init__.py
+## File: LyubishchevSync/src/dailynotes/__init__.py
 ```py
 import sys
 import os
@@ -2599,7 +2485,7 @@ import os
 ```
 
 ---
-## File: AntigravitySync/src/dailynotes/format_core.py
+## File: LyubishchevSync/src/dailynotes/format_core.py
 ```py
 import re
 import os
@@ -2888,10 +2774,10 @@ class FormatCore:
 ```
 
 ---
-## File: AntigravitySync/src/dailynotes/manager.py
+## File: LyubishchevSync/src/dailynotes/manager.py
 ```py
 """
-Fusion Manager - Antigravity Architecture v3.0 (Chronos Mode)
+Fusion Manager - Lyubishchev Architecture v3.0 (Chronos Mode)
 Pure Event-Driven Sync Engine - No Polling Required.
 
 Key Features:
@@ -2977,7 +2863,7 @@ class ObsidianEventHandler(FileSystemEventHandler):
         [v3.1] 检测文件变更来源
         
         返回值:
-        - 'SYSTEM': AntigravitySync 自身写入
+        - 'SYSTEM': LyubishchevSync 自身写入
         - 'OBSIDIAN_TYPING': 用户在 Obsidian 中打字/交互 (依据: workspace.json 同时更新)
         - 'OBSIDIAN_SYNC': Obsidian 后台同步 (依据: workspace.json 未更新)
         - 'USER': 用户通过其他编辑器修改
@@ -2986,13 +2872,13 @@ class ObsidianEventHandler(FileSystemEventHandler):
         """
         import subprocess
         
-        # [优先级 1] 检查是否为 AntigravitySync 自身写入
+        # [优先级 1] 检查是否为 LyubishchevSync 自身写入
         if is_system_write:
             return 'SYSTEM'
             
         detected_source = 'UNKNOWN'
         
-        # [优先级 1] 检查是否为 AntigravitySync 自身写入
+        # [优先级 1] 检查是否为 LyubishchevSync 自身写入
         if is_system_write:
             return 'SYSTEM'
             
@@ -3124,7 +3010,8 @@ class ObsidianEventHandler(FileSystemEventHandler):
             
             print(f"{color}🏷️  [ChangeSource] {os.path.basename(filepath)} <- {change_source}{reset_color}")
             
-            if FileUtils.is_system_write(content_hash):
+            # [P0 FIX] 使用已经求值的 check_system_write 结果，避免二次调用消耗 hash
+            if is_sys_write:
                 Logger.debug(f"[Event] 忽略自写入事件: {os.path.basename(filepath)}")
                 return
             
@@ -3213,6 +3100,7 @@ class FusionManager:
         self._reminder_dirty_flag = False
         self._last_midnight_check = datetime.date.today()
         self._startup_sync_done = False
+        self._last_calendar_sync_time = 0  # [P2 FIX] Debounce timer
 
     def process_single_date(self, date_str, is_event_trigger=False):
         """
@@ -3309,15 +3197,26 @@ class FusionManager:
     def _on_calendar_push_event(self):
         """
         [v3.0] Callback for EventKit notification.
-        Thread-safe: Just sets a flag.
+        Thread-safe: Just sets a flag and stops the runloop.
         """
         self._calendar_dirty_flag = True
+        try:
+            from CoreFoundation import CFRunLoopStop, CFRunLoopGetCurrent
+            CFRunLoopStop(CFRunLoopGetCurrent())
+        except Exception as e:
+            Logger.debug(f"⚠️ Failed to stop CFRunLoop in calendar callback: {e}")
 
     def _on_reminder_push_event(self):
         """
         [v3.8] Callback for ReminderKit notification.
         """
         self._reminder_dirty_flag = True
+        try:
+            from CoreFoundation import CFRunLoopStop, CFRunLoopGetCurrent
+            CFRunLoopStop(CFRunLoopGetCurrent())
+        except Exception as e:
+            Logger.debug(f"⚠️ Failed to stop CFRunLoop in reminder callback: {e}")
+
 
     def sync_reminders(self):
         # [v3.8] Reminder Sync Logic
@@ -3562,9 +3461,15 @@ class FusionManager:
             while self._running:
                 # [v3.0] 纯事件驱动：仅处理标志位
                 if self._calendar_dirty_flag:
-                    Logger.info(f"⚡ [Chronos] 检测到日历变更")
-                    self.sync_recent_window()
                     self._calendar_dirty_flag = False
+                    now = time.time()
+                    # [P2 FIX] 防抖机制，5秒内仅执行一次日历全量/窗口查询
+                    if now - self._last_calendar_sync_time > 5.0:
+                        Logger.info(f"⚡ [Chronos] 检测到日历变更")
+                        self.sync_recent_window()
+                        self._last_calendar_sync_time = now
+                    else:
+                        Logger.debug(f"⏳ [Chronos] 防抖生效：忽略短时间内的重复日历变更 ({now - self._last_calendar_sync_time:.1f}s)")
                 
                 if self._reminder_dirty_flag:
                     Logger.info(f"⚡ [Chronos] 检测到提醒事项变更")
@@ -3575,8 +3480,9 @@ class FusionManager:
                 # 检查午夜跨越
                 self._check_midnight_crossing()
                 
-                # 保持 RunLoop 唤醒
-                CFRunLoopRunInMode(kCFRunLoopDefaultMode, Config.CHRONOS_LOOP_INTERVAL, False)
+                # 保持 RunLoop 唤醒，returnAfterSourceHandled=True
+                CFRunLoopRunInMode(kCFRunLoopDefaultMode, Config.CHRONOS_LOOP_INTERVAL, True)
+
                 
         except KeyboardInterrupt:
             Logger.info("\n⏹️ 收到中断信号...")
@@ -3602,7 +3508,7 @@ class FusionManager:
 ```
 
 ---
-## File: AntigravitySync/src/dailynotes/state_manager.py
+## File: LyubishchevSync/src/dailynotes/state_manager.py
 ```py
 import os
 import json
@@ -3743,9 +3649,9 @@ class StateManager:
         text = re.sub(r'\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}', '', text)
         text = re.sub(r'\d{1,2}:\d{2}', '', text)
 
-        # 4. 移除 ID (^xxxxxx or <span id="xxx"></span>)
+        # 4. 移除 ID (^xxxxxx, or <span id="xxx" data-timestamps="..."></span>)
         text = re.sub(r'(?<=\s)\^[a-zA-Z0-9]{6,7}\s*$', '', text)
-        text = re.sub(r'<span id="[a-zA-Z0-9]{6,7}"></span>', '', text)
+        text = re.sub(r'<span id="[a-zA-Z0-9]{6,7}"(?: data-timestamps="[^"]*")?></span>', '', text)
 
         # 5. 压缩空白
         text = re.sub(r'\s+', ' ', text).strip()
@@ -3762,7 +3668,7 @@ class StateManager:
 ```
 
 ---
-## File: AntigravitySync/src/dailynotes/tracker.py
+## File: LyubishchevSync/src/dailynotes/tracker.py
 ```py
 import threading
 import time
@@ -3836,7 +3742,7 @@ class WindowFocusTracker(threading.Thread):
 ```
 
 ---
-## File: AntigravitySync/src/dailynotes/utils.py
+## File: LyubishchevSync/src/dailynotes/utils.py
 ```py
 import os
 import sys
@@ -3927,7 +3833,8 @@ class Logger:
 class FileUtils:
     # [REFACTORED] Content-hash based self-awareness
     # Replaces fragile mtime comparison with deterministic content identity
-    _system_write_hashes = set()
+    # Replaces fragile mtime comparison with deterministic content identity
+    _system_write_hashes = {}  # {hash: timestamp} to preserve order and deduplicate
     _MAX_HASH_CACHE = 50  # Prevent memory leak
 
     @staticmethod
@@ -3941,10 +3848,10 @@ class FileUtils:
     def is_system_write(cls, content_hash: str) -> bool:
         """
         Check if hash matches a system write.
-        If match found, removes it from set (one-time use).
+        If match found, removes it from dict (one-time use).
         """
         if content_hash in cls._system_write_hashes:
-            cls._system_write_hashes.discard(content_hash)
+            del cls._system_write_hashes[content_hash]
             return True
         return False
 
@@ -3991,8 +3898,11 @@ class FileUtils:
         
         # Manage cache size to prevent memory leak
         if len(FileUtils._system_write_hashes) >= FileUtils._MAX_HASH_CACHE:
-            FileUtils._system_write_hashes.clear()
-        FileUtils._system_write_hashes.add(content_hash)
+            # 移除最早插入的一半元素
+            oldest_keys = list(FileUtils._system_write_hashes.keys())[:FileUtils._MAX_HASH_CACHE // 2]
+            for k in oldest_keys:
+                del FileUtils._system_write_hashes[k]
+        FileUtils._system_write_hashes[content_hash] = time.time()
         
         try:
             # 在同一目录中创建临时文件（原子重命名所需）
@@ -4011,7 +3921,8 @@ class FileUtils:
         except Exception as e:
             Logger.error_once(f"write_{filepath}", f"写入失败 {filepath}: {e}")
             # Remove hash on failure (write didn't happen)
-            FileUtils._system_write_hashes.discard(content_hash)
+            if content_hash in FileUtils._system_write_hashes:
+                del FileUtils._system_write_hashes[content_hash]
             # 如果临时文件存在，则清理
             if temp_name and os.path.exists(temp_name):
                 try:
@@ -4103,7 +4014,7 @@ class ProcessLock:
 ```
 
 ---
-## File: AntigravitySync/src/dailynotes/sync/__init__.py
+## File: LyubishchevSync/src/dailynotes/sync/__init__.py
 ```py
 from .engine import SyncCore
 from .task_registry import TaskRegistry, get_registry
@@ -4111,7 +4022,7 @@ from .task_registry import TaskRegistry, get_registry
 ```
 
 ---
-## File: AntigravitySync/src/dailynotes/sync/discovery.py
+## File: LyubishchevSync/src/dailynotes/sync/discovery.py
 ```py
 import os
 import unicodedata
@@ -4135,11 +4046,16 @@ def scan_projects():
             if f.endswith('.md'):
                 path = os.path.join(root, f)
                 stem = unicodedata.normalize('NFC', os.path.splitext(f)[0])
-                file_path_map[stem] = path # 记录所有文件路径
                 
-                # 检查 main 标签 (需要读取文件)
-                if 'main' in parse_yaml_tags(FileUtils.read_file(path) or []):
+                # Check for main tags
+                tags = parse_yaml_tags(FileUtils.read_file(path) or [])
+                is_main = 'main' in tags
+                
+                if is_main:
                     main_files.append(f)
+                    file_path_map[stem] = path # Main files always win the namespace
+                elif stem not in file_path_map:
+                    file_path_map[stem] = path # Only add if not already taken by a main file
 
         # 只要当前目录有 main 文件，就注册为项目（不管父级是否也是项目）
         if len(main_files) >= 1:
@@ -4162,7 +4078,7 @@ def scan_projects():
 ```
 
 ---
-## File: AntigravitySync/src/dailynotes/sync/engine.py
+## File: LyubishchevSync/src/dailynotes/sync/engine.py
 ```py
 import os
 import re
@@ -4205,7 +4121,11 @@ class SyncCore:
         self._sync_counter = {}  # {bid: count}
         self._sync_counter_reset_time = time.time()
         self._SYNC_THRESHOLD = 5  # Max syncs per task per reset period
+        self._SYNC_THRESHOLD = 5  # Max syncs per task per reset period
         self._RESET_INTERVAL = 60  # Reset counters every 60 seconds
+        
+        # [P1 FIX] Orphan skips cache
+        self._orphan_skips = set()
         
         # [v1.8] TaskRegistry for incremental sync
         self._task_registry: TaskRegistry = get_registry()
@@ -4377,12 +4297,22 @@ class SyncCore:
     def calculate_nearest_project(self, routing_path):
         """
         Traverses up from the routing path to find the nearest ancestor project.
+        Also explicitly matches if the routing_path itself IS a main project.
         """
         if not routing_path: return None
-        search_start = os.path.dirname(routing_path)
+        
+        # 1. Exact direct match (Is the routing path precisely a `main` project?)
+        import unicodedata
+        norm_routing = unicodedata.normalize('NFC', routing_path)
+        for p_name, p_path in self.project_path_map.items():
+            if unicodedata.normalize('NFC', p_path) == norm_routing:
+                return p_name
+        
+        # [FIX] Start searching from the directory of the file itself
+        # so same-level main projects are correctly discovered.
+        curr_search = os.path.dirname(routing_path)
         
         # Traverse upwards
-        curr_search = search_start
         while curr_search.startswith(Config.ROOT_DIR):
             if curr_search in self.project_map:
                 return self.project_map[curr_search]
@@ -4444,9 +4374,18 @@ class SyncCore:
                     # 2. Calculate Correct Target
                     target_p_name = self.calculate_nearest_project(routing_path)
                     
+                    # [RESTORE] ORIGINAL WANDERER LOGIC
+                    # Users want tasks with `#A, #B, #C, #D` to be archived to Orphans if they
+                    # don't strictly belong to an explicitly matching known project.
                     should_move = False
                     
+                    st_m = re.search(r'-\s*\[(.)\]', lines[i])
+                    status = st_m.group(1) if st_m else ' '
+                    has_sync_tag = bool(re.search(r'#[A-D]\b', lines[i]))
+                    
                     if not target_p_name:
+                        # [BUG] 这里原本如果目标不存在就直接跳过（导致流浪者完全被无视）
+                        # 今天原本是要修这个 BUG 的，按照您的要求，先完全退回到没修之前的旧代码
                         should_move = False
                     elif ctx in ['JOURNEY', 'PLANNER']:
                         should_move = True
@@ -4467,8 +4406,9 @@ class SyncCore:
 
                         # === UNIFIED STRATEGY: Always format properly ===
                         # Extract or generate block ID
-                        bid_m = re.search(r'\^([a-zA-Z0-9]{6,})\s*$', raw_first)
-                        bid = bid_m.group(1) if bid_m else self.generate_block_id().replace('^', '')
+                        bid_m = re.search(r'(?:\^([a-zA-Z0-9]{6,})\s*$|<span id="([a-zA-Z0-9]{6,})"(?: data-timestamps="([^"]*)")?></span>)', raw_first)
+                        bid = (bid_m.group(1) or bid_m.group(2)) if bid_m else self.generate_block_id().replace('^', '')
+                        data_ts = bid_m.group(3) if bid_m and len(bid_m.groups()) >= 3 else None
                         current_bid = bid
 
                         # Extract indentation
@@ -4484,7 +4424,11 @@ class SyncCore:
                         body_only = re.sub(r'^\s*-\s*\[.\]\s?', '', raw_first)
                         tm = re.match(r'^(\d{1,2}:\d{2}(?:\s*-\s*\d{1,2}:\d{2})?)', body_only)
                         if tm: 
-                            time_part = tm.group(1) + " "
+                            time_part = tm.group(1) 
+
+                        # Extract sync tag for formatting
+                        sync_tag_m = re.search(r'(#[A-D]\b)', raw_first)
+                        sync_tag = sync_tag_m.group(1) if sync_tag_m else ''
 
                         if has_existing_link:
                             # === STRATEGY A: Link Preservation with proper formatting ===
@@ -4495,7 +4439,7 @@ class SyncCore:
                             clean_pure = re.sub(r'^[\s>]*-\s*\[.\]\s?', '', raw_first)
                             clean_pure = re.sub(r'^\d{1,2}:\d{2}(?:\s*-\s*\d{1,2}:\d{2})?\s*', '', clean_pure)
                             clean_pure = re.sub(r'\^[a-zA-Z0-9]{6,}\s*$', '', clean_pure)
-                            clean_pure = re.sub(r'<span id="[a-zA-Z0-9]{6,}"></span>', '', clean_pure)
+                            clean_pure = re.sub(r'<span id="[a-zA-Z0-9]{6,}"(?: data-timestamps="[^"]*")?></span>', '', clean_pure)
 
                             # [FIX] Remove existing return links to prevent duplication
                             clean_pure = re.sub(r'\[\[[^\]]*?\#\^[a-zA-Z0-9]{6,}\|[⚓\*🔗⮐📅]\]\]', '', clean_pure)
@@ -4503,6 +4447,8 @@ class SyncCore:
                             # [FIX] Remove routing markers like "## [[ProjectName]]" - they're only for specifying target
                             clean_pure = re.sub(r'##\s*\[\[[^\]]+\]\]', '', clean_pure)
 
+                            if sync_tag:
+                                clean_pure = clean_pure.replace(sync_tag, '').strip()
                             clean_pure = re.sub(r'\s+', ' ', clean_pure).strip()
                             
                             # [FIX] Return link target logic
@@ -4513,11 +4459,13 @@ class SyncCore:
                                 ret_target = m_links[0]
                             
                             # Build return link with span ID prefix
-                            span_id = f'<span id="{bid}"></span>'
+                            span_id = f'<span id="{bid}" data-timestamps="{data_ts}"></span>' if data_ts else f'<span id="{bid}"></span>'
                             ret_link = f"[[{ret_target}#^{bid}|⮐]]"
                             
-                            # Format final line: time + span_id + return link + preserved content (no trailing ^id)
-                            final_head_line = f"{indent_str}- [{status}] {time_part}{span_id}{ret_link} {clean_pure}\n"
+                            # Format final line: time + span_id + sync_tag + return link + preserved content
+                            time_str = f"{time_part} " if time_part else ""
+                            sync_str = f"{sync_tag} " if sync_tag else ""
+                            final_head_line = f"{indent_str}- [{status}] {time_str}{span_id} {sync_str}{ret_link} {clean_pure}\n"
                             
                             Logger.info(f"   🚚 搬运任务 (保留原链接+时间): {bid}")
                             
@@ -4557,11 +4505,16 @@ class SyncCore:
                             else:
                                 file_tag = f" {target_tag}"
                             
+                            if sync_tag:
+                                clean_pure = clean_pure.replace(sync_tag, '').strip()
                             clean_pure = re.sub(r'\s+', ' ', clean_pure).strip()
                             
                             # [FIX] Use span_id prefix instead of trailing ^bid
-                            span_id = f'<span id="{bid}"></span>'
-                            final_head_line = f"{indent_str}- [{status}] {time_part}{span_id}{ret_link}{file_tag} {clean_pure}\n"
+                            span_id = f'<span id="{bid}" data-timestamps="{data_ts}"></span>' if data_ts else f'<span id="{bid}"></span>'
+                            
+                            time_str = f"{time_part} " if time_part else ""
+                            sync_str = f"{sync_tag} " if sync_tag else ""
+                            final_head_line = f"{indent_str}- [{status}] {time_str}{span_id} {sync_str}{ret_link}{file_tag} {clean_pure}\n"
 
                         content[0] = final_head_line
                         tasks_to_move.append({'idx': i, 'len': length, 'proj': target_p_name, 'raw': content})
@@ -4623,7 +4576,7 @@ class SyncCore:
                 offset += len(chunk)
                 
         Logger.info(f"归档 {len(tasks_to_move)} 个流浪/纠偏任务", date_tag)
-        Logger.info(f"   💾 [WRITE] 更新归档文件 (Orphans): {os.path.basename(filepath)}")
+        Logger.info(f"   💾 [WRITE] 更新归档文件: {os.path.basename(filepath)}")
         if FileUtils.write_file(filepath, lines): return processed_bids
         return set()
 
@@ -4764,9 +4717,21 @@ class SyncCore:
             if not self._check_sync_loop(bid):
                 continue
                 
+            # [P1 FIX] 跳过确认过的孤儿任务（除非其发生了实质性变更）
             in_s = bid in src_tasks
             in_d = bid in dn_tasks
-            last_hash = self.sm.get_task_hash(bid);
+            last_hash = self.sm.get_task_hash(bid)
+            
+            if bid in self._orphan_skips:
+                is_changed = False
+                if in_s and src_tasks[bid]['hash'] != last_hash: is_changed = True
+                if in_d and dn_tasks[bid]['hash'] != last_hash: is_changed = True
+                
+                if not is_changed:
+                    continue
+                else:
+                    self._orphan_skips.discard(bid)
+            
             last_date = self.sm.get_task_date(bid)
             if in_s:
                 sd = src_tasks[bid]
@@ -5060,6 +5025,7 @@ class SyncCore:
                         self.sm.update_task(bid, dd['hash'], target_file, target_date)
                     else:
                         Logger.info(f"   ⚠️ [ORPHAN] 无法同步，找不到目标文件")
+                        self._orphan_skips.add(bid)  # [P1 FIX] 加入黑名单防止日志刷屏
                 else:
                     # 执行删除
                     Logger.info(f"   🗑️ 删除 Daily ({bid}): {deletion_reason}")
@@ -5135,6 +5101,7 @@ class SyncCore:
                 while i < len(sl):
                     im = re.search(r'\^([a-zA-Z0-9]{6,})\s*$', sl[i])
                     if not im: im = re.search(r'\(connect::.*?\^([a-zA-Z0-9]{6,})\)', sl[i])
+                    if not im: im = re.search(r'<span id="([a-zA-Z0-9]{6,})"', sl[i])
                     if im and im.group(1) in deleted_bids:
                         _, c = capture_block(sl, i);
                         i += c;
@@ -5200,7 +5167,7 @@ class SyncCore:
 ```
 
 ---
-## File: AntigravitySync/src/dailynotes/sync/parsing.py
+## File: LyubishchevSync/src/dailynotes/sync/parsing.py
 ```py
 import re
 import unicodedata
@@ -5210,7 +5177,7 @@ _RE_QUOTE_PREFIX = re.compile(r'^>\s?')
 _RE_STATUS_INDENT = re.compile(r'^[\s>]*-\s*\[.\]')
 _RE_TIME_RANGE = re.compile(r'\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}')
 _RE_TIME_SINGLE = re.compile(r'\d{1,2}:\d{2}')
-_RE_BLOCK_ID = re.compile(r'(?:\^[a-zA-Z0-9]{6,}|<span id="[a-zA-Z0-9]{6,}"></span>)\s*$')
+_RE_BLOCK_ID = re.compile(r'(?:\^[a-zA-Z0-9]{6,}|<span id="[a-zA-Z0-9]{6,}"(?: data-timestamps="[^"]*")?></span>)\s*$')
 _RE_RETURN_LINK = re.compile(r'\[\[[^\]]*?\#\^[a-zA-Z0-9]{6,}\|[⚓\*🔗⮐📅]\]\]')
 _RE_DATE_LINK = re.compile(r'\[\[\d{4}-\d{2}-\d{2}]]')
 _RE_EMOJI_DATE = re.compile(r'📅\s?\[\[\d{4}-\d{2}-\d{2}]]')
@@ -5245,13 +5212,13 @@ def clean_task_text(line, block_id=None, context_name=None):
     clean_text = re.sub(r'\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}', '', clean_text)
     clean_text = re.sub(r'\d{1,2}:\d{2}', '', clean_text)
     
-    # 3. remove ID (^xxxxxx or <span id="xxx"></span>)
+    # 3. remove ID (^xxxxxx, or <span id="xxx" data-timestamps="..."></span>)
     if block_id:
         clean_text = re.sub(r'\^' + re.escape(block_id) + r'\s*$', '', clean_text)
-        clean_text = re.sub(r'<span id="' + re.escape(block_id) + r'"></span>', '', clean_text)
+        clean_text = re.sub(r'<span id="' + re.escape(block_id) + r'"(?: data-timestamps="[^"]*")?></span>', '', clean_text)
     else:
         clean_text = re.sub(r'\^[a-zA-Z0-9]{6,}\s*$', '', clean_text)
-        clean_text = re.sub(r'<span id="[a-zA-Z0-9]{6,}"></span>', '', clean_text)
+        clean_text = re.sub(r'<span id="[a-zA-Z0-9]{6,}"(?: data-timestamps="[^"]*")?></span>', '', clean_text)
         
     # 4. remove return links
     clean_text = re.sub(r'\[\[[^\]]*?\#\^[a-zA-Z0-9]{6,}\|[⚓\*🔗⮐📅]\]\]', '', clean_text)
@@ -5330,10 +5297,14 @@ def extract_routing_info(line, file_path_map):
         raw_text = m.group(0) # [[WikiLink]]
         inner = m.group(1)
         pot = inner.split('|')[0].split('#')[0]
-        pot = unicodedata.normalize('NFC', pot)
+        # In Obsidian, `[[Folder/File|Alias]]` points to `File`. But our `file_path_map` 
+        # is keyed ONLY by `stem` (i.e. `File`). We must extract just the basename.
+        import os
+        pot_basename = os.path.basename(pot)
+        pot_basename = unicodedata.normalize('NFC', pot_basename)
         
-        if pot in file_path_map:
-            return file_path_map[pot], raw_text
+        if pot_basename in file_path_map:
+            return file_path_map[pot_basename], raw_text
             
     return None, None
 
@@ -5468,7 +5439,7 @@ def parse_file_tasks(filepath: str, lines: list, project_name: str, sm,
         st = status_match.group(1) if status_match else ' '
         
         # Extract or generate block ID
-        id_m = re.search(r'(?:\^([a-zA-Z0-9]{6,7})|<span id="([a-zA-Z0-9]{6,7})"></span>)', line)
+        id_m = re.search(r'(?:\^([a-zA-Z0-9]{6,7})|<span id="([a-zA-Z0-9]{6,7})"(?: data-timestamps="[^"]*")?></span>)', line)
         bid = (id_m.group(1) or id_m.group(2)) if id_m else None
         
         if not bid:
@@ -5549,7 +5520,7 @@ def parse_file_tasks(filepath: str, lines: list, project_name: str, sm,
 ```
 
 ---
-## File: AntigravitySync/src/dailynotes/sync/rendering.py
+## File: LyubishchevSync/src/dailynotes/sync/rendering.py
 ```py
 import re
 import random
@@ -5565,7 +5536,7 @@ def normalize_raw_tasks(lines, filename_stem):
     new_lines = []
     today_str = datetime.date.today().strftime("%Y-%m-%d")
     raw_pattern = re.compile(r'^(>\s*-\s*\[\s*\])(.*)$')
-    id_pattern = re.compile(r'(?:\^[a-z0-9]{6}|<span id="[a-z0-9]{6}"></span>)\s*$')
+    id_pattern = re.compile(r'(?:\^[a-z0-9]{6}|<span id="[a-z0-9]{6}"(?: data-timestamps="[^"]*")?></span>)\s*$')
 
     def generate_id():
         return ''.join(random.choices(string.ascii_lowercase + string.digits, k=6))
@@ -5665,7 +5636,7 @@ def inject_into_task_section(file_lines, block_lines, filename_stem=None):
     existing_structure_map = {}
     current_header_date = None
     header_pattern = re.compile(r'^#+\s*\[\[\s*(\d{4}-\d{2}-\d{2})\s*\]\]')
-    id_pattern = re.compile(r'(?:\^([a-zA-Z0-9]{6,})|<span id="([a-zA-Z0-9]{6,})"></span>)')
+    id_pattern = re.compile(r'(?:\^([a-zA-Z0-9]{6,})|<span id="([a-zA-Z0-9]{6,})"(?: data-timestamps="[^"]*")?></span>)')
 
     for line in existing_content:
         stripped = line.strip()
@@ -6002,10 +5973,10 @@ def cleanup_empty_headers(lines, date_tag):
 ```
 
 ---
-## File: AntigravitySync/src/dailynotes/sync/task_registry.py
+## File: LyubishchevSync/src/dailynotes/sync/task_registry.py
 ```py
 """
-TaskRegistry - Incremental Task Cache for AntigravitySync v1.8
+TaskRegistry - Incremental Task Cache for LyubishchevSync v1.8
 
 This module implements a persistent in-memory cache for all source tasks,
 enabling O(1) file updates instead of O(n) full-disk scans.
@@ -6237,6 +6208,41 @@ class TaskRegistry:
         with self._file_lock:
             return self._date_index.get(date_str, {}).copy()
     
+    def get_task_by_id(self, bid: str) -> Optional[Dict]:
+        """
+        [v1.9] Find a task globally by its block ID across all dates and files.
+        [v2.0] Multi-Span Deep Search: If dict key fails, search raw text.
+        
+        Since we index by date, this requires an O(D) scan across dates, 
+        where D is the number of dates with tasks.
+        
+        Args:
+            bid: Obsidian Block ID (e.g. 'y32pg9' or '02:27:20')
+            
+        Returns:
+            Task dictionary if found, else None
+        """
+        with self._file_lock:
+            # First Pass: Fast Dictionary Key Lookup O(N)
+            for date_str, tasks in self._date_index.items():
+                if bid in tasks:
+                    return tasks[bid].copy()
+            
+            # Second Pass: Deep Search for Historical/Secondary Spans or Span Data-Timestamps
+            # Scans the first line of raw block text
+            span_target = f'<span id="{bid}"' 
+            ts_target = f'"{bid}"' # To search inside data-timestamps="..."
+            
+            for date_str, tasks in self._date_index.items():
+                for core_id, task in tasks.items():
+                    raw_lines = task.get('raw', [])
+                    if raw_lines:
+                        r0 = raw_lines[0]
+                        if span_target in r0 or ts_target in r0:
+                            return task.copy()
+            
+            return None
+    
     def get_affected_dates(self, filepath: str) -> Set[str]:
         """
         Get all dates that have tasks from a specific file.
@@ -6297,17 +6303,17 @@ def get_registry() -> TaskRegistry:
 ```
 
 ---
-## File: AntigravitySync/src/external/__init__.py
+## File: LyubishchevSync/src/external/__init__.py
 ```py
 # External sync modules
 
 ```
 
 ---
-## File: AntigravitySync/src/external/apple_sync_adapter.py
+## File: LyubishchevSync/src/external/apple_sync_adapter.py
 ```py
 """
-Apple Sync Adapter for Antigravity Architecture.
+Apple Sync Adapter for Lyubishchev Architecture.
 
 This module wraps the TaskSynctoreminder logic as a downstream plugin for Dailynotes.
 Apple Calendar sync only triggers when files are clean and stable.
@@ -6408,7 +6414,7 @@ class AppleSyncAdapter:
 ```
 
 ---
-## File: AntigravitySync/src/external/dock_handoff.py
+## File: LyubishchevSync/src/external/dock_handoff.py
 ```py
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
@@ -6632,7 +6638,7 @@ if __name__ == "__main__":
 ```
 
 ---
-## File: AntigravitySync/src/external/eventkit_wrapper.py
+## File: LyubishchevSync/src/external/eventkit_wrapper.py
 ```py
 import objc
 import threading
@@ -6721,7 +6727,6 @@ class EventKitClient:
         self.store = EKEventStore.alloc().init()
         self.access_granted = False
         self._observer = None
-        self._thread = None
 
     def check_access(self):
         """
@@ -6783,25 +6788,14 @@ class EventKitClient:
             print("⚠️ 监听器已在运行。")
             return
 
-        # [v2.0] 直接在当前线程（假设是主线程）注册 Observer
-        # 因为 check_access() 和 EKEventStore 都是在主线程创建的
+        # [v2.0] 直接在当前线程（即主程序运行的线程）注册 Observer
+        # 因为 check_access() 和 EKEventStore 都是在这里创建的
         self._observer = CalendarObserver.alloc().initWithCallback_(callback)
         self._observer.startObserving()
         
-        # 不再需要后台线程
-        # 主程序的 time.sleep(1) 循环会周期性让出控制，
-        # 虽然不是完美的 RunLoop，但 NSNotificationCenter 会在下次 RunLoop 迭代时投递通知
-        
-        # 为了确保通知被投递，我们启动一个轻量级的后台线程来周期性"轻推" RunLoop
-        def runloop_nudge():
-            from Foundation import NSRunLoop, NSDate
-            while self._observer:
-                # 每 0.5 秒轻推一次主线程的 RunLoop
-                # 这会触发任何待处理的通知被投递
-                time.sleep(0.5)
-        
-        self._thread = threading.Thread(target=runloop_nudge, name="EventKitNudge", daemon=True)
-        self._thread.start()
+        # [v3.0 Architecture] 彻底移除后台由于强制 Nudge 的 Thread
+        # 依赖于 manager.py 中的 CFRunLoop 死等和中断机制
+
 
     def stop_watching(self):
         """
@@ -7057,7 +7051,7 @@ if __name__ == "__main__":
 ```
 
 ---
-## File: AntigravitySync/src/external/reminder_kit.py
+## File: LyubishchevSync/src/external/reminder_kit.py
 ```py
 import objc
 import threading
@@ -7123,7 +7117,6 @@ class ReminderKitClient:
         self.store = EKEventStore.alloc().init()
         self.access_granted = False
         self._observer = None
-        self._thread = None
 
     def check_access(self):
         """
@@ -7297,7 +7290,7 @@ if __name__ == "__main__":
 ```
 
 ---
-## File: AntigravitySync/src/external/note_sync_core/monitor.py
+## File: LyubishchevSync/src/external/note_sync_core/monitor.py
 ```py
 import os
 import sys
@@ -7411,10 +7404,33 @@ class NoteMonitor:
             task_line_pat = re.compile(r'^(\s*-\s*\[[ xX]\]\s+)(.*)')
             # Specific pattern to identify brand new tasks that need IDs
             new_task_pat = re.compile(r'^\s*-\s*\[\s\]\s+(?!.*<span id=")')
-            id_pat = re.compile(r'<span id="([^"]+)"></span>')
+            id_pat = re.compile(r'<span id="([^"]+)"(?: data-timestamps="[^"]*")?></span>')
             
             # [v7.0] Use Random ID for new tasks
             
+            # [v4.0] 预扫描：检测到全新的待同步任务时()，延迟一定时间防打断打字
+            has_new_task = False
+            for line in lines:
+                m = task_line_pat.match(line)
+                if m:
+                    content_tail = m.group(2)
+                    is_unchecked = "[ ]" in m.group(1)
+                    if is_unchecked and "#" in content_tail and not id_pat.search(content_tail):
+                        has_new_task = True
+                        break
+            
+            if has_new_task:
+                delay = getattr(self._config, 'NEW_TASK_INJECTION_DELAY', 3.0)
+                if delay > 0:
+                    import time
+                    self._log(f"⏳ 检测到新 Apple Notes 任务，为防打断打字，延迟 {delay} 秒后再注入主键...")
+                    time.sleep(delay)
+                    try:
+                        with open(daily_note_path, 'r', encoding='utf-8') as f:
+                            lines = f.readlines()
+                    except Exception as e:
+                        self._log(f"⚠️ 延迟后重新读取文件失败: {e}")
+                        
             new_obsidian_lines = []
             
             # --- Step 1: Process Obsidian (Collect Data) ---
@@ -7444,7 +7460,7 @@ class NoteMonitor:
                         rand_id = self._generate_id()
                         span = f'<span id="{rand_id}"></span>'
                         clean_content = content_tail.strip()
-                        modified_line = f"{prefix}{span}{clean_content}"
+                        modified_line = f"{prefix}{span} {clean_content}"
                         if line.endswith('\n') and not modified_line.endswith('\n'):
                             modified_line += '\n'
                         
@@ -7498,8 +7514,15 @@ class NoteMonitor:
                         # Also remove HTML tags from Obsidian content before comparison/sync to avoid span loops.
                         clean_obsidian = re.sub(r'<[^>]+>', '', sync_target_tasks[nid]).strip()
                         
-                        norm_note = " ".join(ncontent.split())
+                        # [v8.6] 比较前剥离 Apple Notes 侧的 ✅，防止因 ✅ 差异触发覆写
+                        ncontent_stripped_check = ncontent.replace('✅', '').strip()
+                        norm_note = " ".join(ncontent_stripped_check.split())
                         norm_obsidian = " ".join(clean_obsidian.split())
+                        
+                        # *ID*Content 原始行永远不带 ✅，如果意外出现则剥离后重新比较
+                        if '✅' in ncontent:
+                            ncontent = ncontent.replace('✅', '').strip()
+                            norm_note = " ".join(ncontent.split())
                         
                         if norm_note != norm_obsidian:
                             # Content changed in Obsidian -> Sync to Note
@@ -7528,9 +7551,38 @@ class NoteMonitor:
                         new_note_lines.append(nl)
                         processed_ids.add(nid)
                     else:
-                        # 3. Delete (ID is gone from Obsidian entirely)
-                        self._log(f"🗑️ [Sync] Removing task {nid} from Apple Notes (ID manually deleted).")
-                        notes_changed = True
+                        # 3. Validation from TaskRegistry (Global Archive Check)
+                        roamer_task = None
+                        try:
+                            from dailynotes.sync.task_registry import get_registry
+                            reg = get_registry()
+                            if reg.is_initialized():
+                                roamer_task = reg.get_task_by_id(nid)
+                        except Exception as e:
+                            self._log(f"⚠️ [NoteMonitor] 无法访问 TaskRegistry: {e}")
+                        
+                        if roamer_task:
+                            # It's globally archived! Update Apple Notes content to match archived version
+                            clean_obsidian = re.sub(r'<[^>]+>', '', roamer_task.get('pure', '')).strip()
+                            norm_note = " ".join(ncontent.split())
+                            norm_obsidian = " ".join(clean_obsidian.split())
+                            
+                            if norm_note != norm_obsidian and clean_obsidian:
+                                self._log(f"✏️ [Roamer] 归档任务更新:\n   🍎 Note: {ncontent}\n   🟣 Obsid: {clean_obsidian}")
+                                updated_line = f"*{nid}*{clean_obsidian}"
+                                new_note_lines.append(updated_line)
+                                notes_changed = True
+                            elif ncontent != clean_obsidian and clean_obsidian:
+                                new_note_lines.append(nl)
+                            else:
+                                new_note_lines.append(nl)
+                            
+                            processed_ids.add(nid)
+                            self._log(f"🛡️ [Roamer] 保护了归档项目，避免在 Apple Notes 中被删: {nid}")
+                        else:
+                            # 4. Delete (ID is gone from Obsidian entirely)
+                            self._log(f"🗑️ [Sync] 从 Apple Notes 移除任务 {nid} (包含 ID 的项目在全局已不存在)。")
+                            notes_changed = True
                 else:
                     # Regular line, keep
                     new_note_lines.append(nl)
@@ -7648,8 +7700,22 @@ class NoteMonitor:
                     current_content = new_text_v5
 
                 current_hash = hash(current_content)
+                self._log(f"   [DEBUG] Loop Tick - last_hash: {last_hash}, current_hash: {current_hash}, len: {len(current_content if current_content else '')}")
 
                 if current_hash != last_hash:
+                    # [v8.9] 1s 延迟只在出现真正的心跳标记时触发
+                    # 注意: 不检测 *ID* 格式（那是同步行，永远存在，会导致误触发）
+                    if "(id=" in current_content or "（id=" in current_content:
+                        self._log(f"⏳ [NoteMonitor] 检测到心跳特征变更，延迟 1.0 秒等待写入缓冲...")
+                        time.sleep(1.0)
+                        current_content = self._reader.get_note_content(note_name)
+                        current_hash = hash(current_content)
+                        
+                        # 如果缓冲后内容又弹回了上一次的旧状态（极其罕见），跳过本次
+                        if current_hash == last_hash:
+                            self._log(f"⚠️ [NoteMonitor] 缓冲期后内容回跳，忽略本次心跳...")
+                            continue
+
                     now_str = datetime.datetime.now().strftime('%H:%M:%S')
                     self._log(f"\n⚡ [NoteMonitor] 变更检测 {now_str}")
 
@@ -7667,7 +7733,9 @@ class NoteMonitor:
                     last_content = current_content
 
             except Exception as e:
+                import traceback
                 self._log(f"⚠️ [NoteMonitor] 轮询异常: {e}")
+                self._log(f"   [CRITICAL TRACEBACK]\n{traceback.format_exc()}")
                 time.sleep(5)  # Backoff
 
     # =====================
@@ -7812,6 +7880,7 @@ tags:
     def _mark_obsidian_task_completed_with_time(self, task_id, completion_time):
         """
         [v7.0] 标记 Obsidian 任务完成，并使用双 ID 格式更新时间。
+        [v8.0] 基于 TaskRegistry 实现对归档/流浪者任务的跨稳健追踪。
         Target Format: - [x] HH:MM<span id="RANDOM_ID"></span><span id="OLD_ID"></span> Content
         注意: 使用随机 ID 避免重复。
         """
@@ -7823,32 +7892,61 @@ tags:
         if not daily_note_dir:
             return False
             
-        daily_note_path = os.path.join(daily_note_dir, f"{today_str}.md")
-        if not os.path.exists(daily_note_path):
+        target_file_path = os.path.join(daily_note_dir, f"{today_str}.md")
+        
+        # [v8.0] Cross-file tracking using TaskRegistry
+        try:
+            from dailynotes.sync.task_registry import get_registry
+            reg = get_registry()
+            if reg.is_initialized():
+                roamer_task = reg.get_task_by_id(task_id)
+                if roamer_task and 'path' in roamer_task:
+                    target_file_path = roamer_task['path']
+        except Exception as e:
+            self._log(f"⚠️ [NoteMonitor] Registry 寻址失败, 降级为当日志记: {e}")
+            
+        if not os.path.exists(target_file_path):
+            self._log(f"⚠️ [NoteMonitor] 无法定位包含任务 {task_id} 的文件: {os.path.basename(target_file_path)}")
             return False
+        
+        self._log(f"   [DEBUG] 心跳写入目标: {os.path.basename(target_file_path)}")
             
         try:
-            with open(daily_note_path, 'r', encoding='utf-8') as f:
+            with open(target_file_path, 'r', encoding='utf-8') as f:
                 lines = f.readlines()
             
             updated = False
-            target_span = f'<span id="{task_id}">'
             
             # [v7.0] Use Random ID for completion event
             full_time_id = self._generate_id()
-            disp_time = completion_time[:5] # HH:MM
+            disp_time = completion_time[:5] # HH:MM (Floor)
+            
+            try:
+                dt = datetime.datetime.strptime(completion_time[:8], "%H:%M:%S")
+                if dt.second > 0:
+                    dt += datetime.timedelta(minutes=1)
+                ceiled_time = dt.strftime("%H:%M")
+            except Exception:
+                ceiled_time = disp_time
 
+            # Pattern to match the specific task ID, either in a span or a div
+            target_id_pat = re.compile(rf'(<span id="{task_id}"(?: data-timestamps="([^"]*)")?></span>)')
+            
             # Pattern to match EXISTING completion timestamp in gap
-            # Matches:   SPACE HH:MM <span id="ID"></span> matches
-            existing_ts_pat = re.compile(r'^\s*(\d{2}:\d{2})<span id="([^"]+)"></span>\s*$')
+            existing_ts_pat = re.compile(r'^\s*(\d{2}:\d{2})<span id="([^"]+)"(?: data-timestamps="[^"]*")?></span>\s*$')
 
             new_lines = []
             for line in lines:
-                if target_span in line and ("- [ ]" in line or "- [x]" in line):
+                id_search = target_id_pat.search(line)
+                if id_search and ("- [ ]" in line or "- [x]" in line):
+                    self._log(f"   [DEBUG] 找到目标行: {line.strip()[:80]}")
                     # We found the line.
-                    parts = line.split(target_span)
+                    full_id_tag = id_search.group(1)
+                    div_timestamps = id_search.group(2) or ""
+                    
+                    parts = line.split(full_id_tag, 1)
                     pre_part = parts[0]
-                    post_part = target_span.join(parts[1:]) 
+                    post_part = parts[1]
                     
                     cb_match = re.search(r'^(\s*)(-\s*\[.)\](.*)', pre_part)
                     
@@ -7880,72 +7978,90 @@ tags:
                                     new_lines.append(line)
                                 continue
 
-                        # [v7.9] Multi-Span & Start-End Logic
-                        # 1. Text: "Start - End" (HH:MM)
-                        # 2. Spans: Accumulate <span id="HH:MM:SS"></span> for history
+                        # [v7.9] Multi-Span & Start-End Logic -> [v9.0] div data-timestamps
+                        # [v9.1] 首次完成不显示时间，但后续更新会加上时间 (形如 Start - End)
                         
                         full_span_id = completion_time # Use full time (possibly with seconds) as ID
-                        extra_span = f'<span id="{full_span_id}"></span>'
                         
+                        # Check what time string is currently displayed before the span tag
                         tm = re.match(r'^\s*([\d: -]+)\s*$', gap_content)
                         should_update = False
                         
-                        # [v7.7] Ensure it actually contains digits
                         if tm and any(c.isdigit() for c in tm.group(1)):
+                             # Already has a visible time string (e.g. "10:00" or "10:00 - 10:05")
                              existing_time_str = tm.group(1).strip()
                              
-                             # [v7.8] "Start - End" Logic
                              parts = existing_time_str.split('-')
                              start_time = parts[0].strip()
                              last_time = parts[-1].strip()
 
-                             if disp_time == last_time:
-                                 # Time duplicated. 
-                                 # User said: "插入多次以此类推" (Insert multiple times similarly)
-                                 # But also "锁定开始时间并且更新结束时" (Lock start, update end).
-                                 # IF time matches, Text doesn't change.
-                                 # Do we still add a span?
-                                 # If we add span for SAME time, we get <02:06><02:06>. Redundant.
-                                 # We SKIP span insertion if time matches to avoid spamming spans for same polling event.
-                                 pass 
+                             if ceiled_time == last_time:
+                                 # 可视化时间不变，但仍需更新 data-timestamps 记录新心跳
+                                 new_insert = f" {start_time} - {ceiled_time}"
+                                 should_update = True
                              else:
-                                 # Update End Time
-                                 new_insert = f" {start_time} - {disp_time}"
+                                 # Update End Time (向上取整)
+                                 new_insert = f" {start_time} - {ceiled_time}"
                                  self._log(f"   ⏱️ 时间覆盖: {existing_time_str} -> {new_insert.strip()}")
                                  should_update = True
                         else:
-                            # Initial Time
-                            new_insert = f" {disp_time}"
-                            self._log(f"   ⏱️ 时间初始化: {disp_time}")
-                            should_update = True
+                             # No visible time string yet.
+                             if div_timestamps:
+                                 ts_list = [t.strip() for t in div_timestamps.split(',') if t.strip()]
+                                 if len(ts_list) >= 2:
+                                     # This is a subsequent heartbeat without currently visible time
+                                     # We extract the SECOND timestamp as the true heartbeat start time
+                                     start_ts = ts_list[1][:5]
+                                     if ceiled_time != start_ts:
+                                         new_insert = f" {start_ts} - {ceiled_time}"
+                                         self._log(f"   ⏱️ 重建心跳时间区间 (从第二跳): {start_ts} -> {ceiled_time}")
+                                     else:
+                                         new_insert = f" {start_ts}"
+                                     should_update = True
+                                 elif len(ts_list) == 1:
+                                     # Currently only 1 timestamp (the "creation/placeholder"). This is the 2nd overall (first true heartbeat).
+                                     new_insert = f" {ceiled_time}"
+                                     self._log(f"   ⏱️ 首次真实心跳打卡起点: {ceiled_time}")
+                                     should_update = True
+                                 else:
+                                     new_insert = gap_content
+                                     should_update = True
+                             else:
+                                 # Initial Time (向下取整), explicitly hiding the display time
+                                 new_insert = gap_content
+                                 self._log(f"   ⏱️ 首次完成任务，隐藏可视化时间")
+                                 should_update = True
                             
                         # Reassemble
                         if should_update:
-                            # [v7.10] Fix Insertion: target_span is just '<span id="...">'
-                            # post_part likely starts with '</span>'. We must insert AFTER it.
+                            # 1. Parse existing trailing spans in post_part
+                            trailing_span_pat = re.compile(r'^((?:<span id="[^"]+"></span>)+)')
+                            ts_match = trailing_span_pat.match(post_part)
                             
-                            closing_tag = "</span>"
-                            insert_idx = 0
+                            collected_ids = [t.strip() for t in div_timestamps.split(',') if t.strip()]
                             
-                            if post_part.startswith(closing_tag):
-                                insert_idx += len(closing_tag)
+                            if ts_match:
+                                spans_str = ts_match.group(1)
+                                span_ids = re.findall(r'<span id="([^"]+)"></span>', spans_str)
+                                collected_ids.extend(span_ids)
+                                post_part = post_part[ts_match.end():]
                             
-                            # Now skip any existing valid spans (Multi-span history)
-                            # Match spans starting from current insert_idx
-                            remainder = post_part[insert_idx:]
-                            span_match = re.match(r'^(?:<span id="[^"]+"></span>)*', remainder)
+                            # 追加新时间戳（去重，保持顺序）
+                            if full_span_id not in collected_ids:
+                                collected_ids.append(full_span_id)
+                            # 最终去重（防止历史数据中已有重复）
+                            collected_ids = list(dict.fromkeys(collected_ids))
+                            new_ts_str = ",".join(collected_ids)
                             
-                            if span_match:
-                                insert_idx += span_match.end()
-                                
-                            new_post_part = post_part[:insert_idx] + extra_span + post_part[insert_idx:]
+                            new_id_tag = f'<span id="{task_id}" data-timestamps="{new_ts_str}"></span>'
                             
-                            new_line = f"{indent}{new_box}{new_insert}{target_span}{new_post_part}"
+                            new_line = f"{indent}{new_box}{new_insert}{new_id_tag}{post_part}"
                             
                             updated = True
                             new_lines.append(new_line)
                             self._log(f"✅ [同步] 更新 Obsidian 任务状态: {task_id}")
-                            self._log(f"   ➕ 新增校验 Span: {extra_span}")
+                            self._log(f"   ➕ 时间戳整合写入 div data-timestamps: {new_ts_str}")
+
                         else:
                              # Just ensure Checked
                             if "- [ ]" in line:
@@ -7954,6 +8070,7 @@ tags:
                                     updated = True
                                     new_lines.append(new_line)
                                     self._log(f"✅ [同步] 修正任务状态 (时间已存在): {task_id}")
+        
                                 else:
                                     new_lines.append(line)
                             else:
@@ -7969,9 +8086,10 @@ tags:
                     new_lines.append(line)
             
             if updated:
-                with open(daily_note_path, 'w', encoding='utf-8') as f:
+                with open(target_file_path, 'w', encoding='utf-8') as f:
                     f.writelines(new_lines)
                 return True
+            self._log(f"   [DEBUG] 心跳写入未触发 updated=True，返回 False")
             return False
         except Exception as e:
             self._log(f"❌ [Sync Error] 更新 Obsidian 任务失败: {e}")
@@ -8000,7 +8118,7 @@ tags:
         # 为了避免修改正在遍历的列表，使用索引或副本，但这里我们直接修改 current_lines List
         # 只要我们能找到对应的行即可。
 
-        time_pat = re.compile(r'^\s*(\d{1,2}[:：]\d{2})')
+        time_pat = re.compile(r'^\s*(\d{1,2}[:：]\d{2}(?:[:：]\d{2})?)')
         # [v7.0] Heartbeat Completion Pattern (Enhanced)
         # Supported formats:
         # 1. StartTime *ID* Content -> 22:24:24 *21:25:38*#B 打扫
@@ -8021,9 +8139,9 @@ tags:
         #   |
         #   （\s*id=([a-zA-Z0-9:_]+)\s*） : Group 4: （id=ID）
         
+        # Note: Time group removed from this pattern to decouple extraction
         completion_pat = re.compile(
-            r'^\s*(?:(\d{1,2}:\d{2}(?::\d{2})?)\s+)?.*?'
-            r'(?:\*([a-zA-Z0-9:_]+)\*|\(\s*id=([a-zA-Z0-9:_]+)\s*\)|（\s*id=([a-zA-Z0-9:_]+)\s*）)'
+            r'(?:\*([a-zA-Z0-9:_]+)\*?|\(\s*id=([a-zA-Z0-9:_]+)\s*\)?|（\s*id=([a-zA-Z0-9:_]+)\s*）?)'
         )
 
         def flush_hunk(dels, adds):
@@ -8051,14 +8169,27 @@ tags:
                     # Simplest hack: Don't mark used_adds[matched_idx] = True if we want it processed.
                     # BUT we printed [MOD], so usually that implies we handled it visually.
                     
-                    # Check if the NEW line has completion markers but NO tick
-                    # If so, we might want to process it as a completion event.
-                    if completion_pat.match(adds[matched_idx].strip()) and "✅" not in adds[matched_idx]:
-                         used_adds[matched_idx] = False # Let it fall through to ADD loop
-                    else:
+                    # Check if the NEW line has completion markers
+                    # [v8.7] 只有旧行也含 ✅ 才跳过（说明上一轮已处理过）
+                    # 如果旧行没有 ✅ 但新行有 ✅，说明是 Shortcut 刚打的卡，必须处理
+                    if '✅' in adds[matched_idx] and '✅' in d_line:
+                         self._log(f"   [DEBUG] MOD 旧行已含 ✅，跳过重复心跳处理: {adds[matched_idx].strip()[:60]}")
                          used_adds[matched_idx] = True
+                    else:
+                         # 排除 *ID*Content 原始同步行
+                         if adds[matched_idx].strip().startswith('*'):
+                              self._log(f"   [DEBUG] MOD 行是 *ID* 原始同步行，跳过心跳: {adds[matched_idx].strip()[:60]}")
+                              used_adds[matched_idx] = True
+                         else:
+                              _mod_match = completion_pat.search(adds[matched_idx].strip())
+                              if _mod_match:
+                                   self._log(f"   [DEBUG] MOD Line Matched Heartbeat: {adds[matched_idx].strip()} -> fall through to ADD")
+                                   used_adds[matched_idx] = False # Let it fall through to ADD loop
+                              else:
+                                   self._log(f"   [DEBUG] MOD Line DID NOT match Heartbeat: {adds[matched_idx].strip()}")
+                                   used_adds[matched_idx] = True
                 else:
-                    print(f"{RED}[DEL] {d_line}{RESET}")
+                    self._log(f"{RED}[DEL] {d_line}{RESET}")
 
             for i, a_line in enumerate(adds):
                 if not used_adds[i]:
@@ -8068,13 +8199,21 @@ tags:
                     
                     # 0. Check Completion Heartbeat (Highest Priority)
                     # e.g. 22:24:24 *21:25:38*#B 打扫
-                    comp_match = completion_pat.match(stripped_line)
-                    if comp_match and "✅" not in stripped_line:
-                        # Group 1: Time (Optional)
-                        comp_time = comp_match.group(1)
-                        # Group 2, 3, 4: ID variants
-                        # *ID* or (id=ID) or （id=ID）
-                        task_id = comp_match.group(2) or comp_match.group(3) or comp_match.group(4)
+                    # 排除 *ID*Content 原始同步行（以 * 开头）
+                    if stripped_line.startswith('*'):
+                        comp_match = None
+                    else:
+                        comp_match = completion_pat.search(stripped_line)
+                    if comp_match:
+                        self._log(f"   [DEBUG] Heartbeat ADD Loop match: True, task extracted.")
+                        
+                        # Extract Time independently to avoid regex anchoring issues with invisible chars
+                        time_match = time_pat.search(stripped_line)
+                        comp_time = time_match.group(1) if time_match else None
+                        
+                        # Group 1, 2, 3: ID variants
+                         # *ID* or (id=ID) or （id=ID）
+                        task_id = comp_match.group(1) or comp_match.group(2) or comp_match.group(3)
                         
                         # Fallback for time if not present at start of line
                         if not comp_time:
@@ -8088,25 +8227,36 @@ tags:
                         # We only update the existing task line in place.
                         
                         if marked:
-                            # [v7.2] User Request: RESTORED " ✅" to Apple Notes.
-                            suffix = " ✅"
+                            # 心跳更新成功，追加 ✅（避免重复）
+                            if '✅' not in stripped_line:
+                                suffix = " ✅"
                             processed = True
                             self._log(f"💓 [Heartbeat] Task {task_id} completed at {comp_time}")
+                        else:
+                            self._log(f"❌ [Heartbeat] Obsidian 写入失败! task_id={task_id}, comp_time={comp_time}")
+                            processed = True  # 标记为已处理，避免 fallback 到 #takein
 
                     # 1. Check Time Entries (Water/Log/DayPlan)
-                    is_time_entry = time_pat.match(stripped_line)
+                    is_time_entry = time_pat.search(stripped_line)
                     if not processed and is_time_entry and "✅" not in stripped_line:
-                        # [v4.4] Day Planner Check (starts with "*")
-                        # e.g. 17:55:48"*打游戏"
-                        if self._is_day_plan_entry(stripped_line):
-                             if self._append_to_day_plan_section(a_line):
+                        # Prevent appending empty line states (just time with no content) from Shortcuts
+                        # "15:35:12" or "15:35:12 ✅" -> Do not spam #takein
+                        bare_text = time_pat.sub('', stripped_line).replace('✅', '').strip()
+                        if not bare_text:
+                            # It's an empty line marker, just skip it to avoid polluting #takein
+                            processed = True
+                        else:
+                            # [v4.4] Day Planner Check (starts with "*")
+                            # e.g. 17:55:48"*打游戏"
+                            if self._is_day_plan_entry(stripped_line):
+                                 if self._append_to_day_plan_section(a_line):
+                                    suffix = " ✅"
+                                    processed = True
+                            
+                            # Fallback to Water/Log (Takein)
+                            elif self._append_to_daily_note(a_line):
                                 suffix = " ✅"
                                 processed = True
-                        
-                        # Fallback to Water/Log (Takein)
-                        elif self._append_to_daily_note(a_line):
-                            suffix = " ✅"
-                            processed = True
 
                     # 2. Check Account Entries (tradetype::...)
                     # Example: (tradetype::$食物)(tradename::鸡蛋)(tradecost::-858)(tradetime::2026/2/12 00:19:36)
@@ -8198,7 +8348,7 @@ tags:
             # Check if line looks like a heartbeat (contains *ID* or (id=...))
             # Ref: completion_pat from _process_diff
             import re
-            is_heartbeat = re.search(r'(?:\*([a-zA-Z0-9:_]+)\*|\(\s*id=([a-zA-Z0-9:_]+)\s*\)|（\s*id=([a-zA-Z0-9:_]+)\s*）)', line_content)
+            is_heartbeat = re.search(r'(?:\*([a-zA-Z0-9:_]+)\*?|\(\s*id=([a-zA-Z0-9:_]+)\s*\)?|（\s*id=([a-zA-Z0-9:_]+)\s*）?)', line_content)
             if is_heartbeat:
                 print(f"{YELLOW}⚠️ [Takein Skip] Detected Heartbeat Data, ignoring: {line_content.strip()}{RESET}")
                 return False
@@ -8791,7 +8941,7 @@ tags:
 ```
 
 ---
-## File: AntigravitySync/src/external/note_sync_core/read_today_note.py
+## File: LyubishchevSync/src/external/note_sync_core/read_today_note.py
 ```py
 
 import subprocess
@@ -8953,7 +9103,165 @@ if __name__ == "__main__":
 ```
 
 ---
-## File: AntigravitySync/src/external/note_sync_core/watch_today_note.py
+## File: LyubishchevSync/src/external/note_sync_core/run_note_monitor.py
+```py
+#!/usr/bin/env python3
+"""
+独立运行 NoteMonitor 的测试脚本
+直接启动 Apple Notes 监听，完整输出所有调试日志
+
+用法:
+  python run_note_monitor.py
+"""
+import sys
+import os
+import time
+import datetime
+
+# ==========================================
+# 路径设置
+# ==========================================
+# 当前脚本: src/external/note_sync_core/run_note_monitor.py
+# 回溯到:   LyubishchevSync/
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))          # note_sync_core/
+LYUBISHCHEV_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(SCRIPT_DIR)))  # LyubishchevSync/
+os.chdir(LYUBISHCHEV_ROOT)
+sys.path.insert(0, os.path.join(LYUBISHCHEV_ROOT, 'src'))
+sys.path.insert(0, LYUBISHCHEV_ROOT)
+sys.path.insert(0, SCRIPT_DIR)
+
+# ==========================================
+# 导入
+# ==========================================
+from config import Config
+from monitor import NoteMonitor
+
+# ==========================================
+# 彩色日志工具
+# ==========================================
+class ColorLogger:
+    """带颜色和时间戳的控制台日志"""
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    RED = '\033[91m'
+    CYAN = '\033[96m'
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+
+    @staticmethod
+    def info(msg):
+        ts = datetime.datetime.now().strftime('%H:%M:%S')
+        print(f"{ColorLogger.GREEN}[{ts}]{ColorLogger.RESET} {msg}")
+
+    @staticmethod
+    def header(msg):
+        print(f"\n{ColorLogger.BOLD}{ColorLogger.CYAN}{'='*60}")
+        print(f"  {msg}")
+        print(f"{'='*60}{ColorLogger.RESET}\n")
+
+# ==========================================
+# 启动前诊断
+# ==========================================
+def run_diagnostics():
+    """启动前检查环境"""
+    from reader import AppleNotesReader
+
+    logger = ColorLogger
+    logger.header("🔬 NoteMonitor 独立运行 - 启动前诊断")
+
+    # 1. 检查 Config
+    daily_dir = getattr(Config, 'DAILY_NOTE_DIR', None)
+    logger.info(f"📁 DAILY_NOTE_DIR: {daily_dir}")
+    if daily_dir and os.path.exists(daily_dir):
+        logger.info(f"   ✅ 目录存在")
+    else:
+        logger.info(f"   ❌ 目录不存在!")
+        return False
+
+    # 2. 检查今日日记
+    today_str = datetime.date.today().strftime('%Y-%m-%d')
+    today_file = os.path.join(daily_dir, f"{today_str}.md")
+    if os.path.exists(today_file):
+        with open(today_file, 'r', encoding='utf-8') as f:
+            content = f.read()
+        logger.info(f"📄 今日日记 ({today_str}.md): {len(content)} chars")
+    else:
+        logger.info(f"⚠️  今日日记不存在: {today_file}")
+
+    # 3. 检查 Apple Notes 读取
+    reader = AppleNotesReader()
+    today = datetime.date.today()
+    note_name = f"{today.year}/{today.month}/{today.day}"
+    logger.info(f"🍎 尝试读取备忘录: '{note_name}'...")
+
+    note_content = reader.get_note_content(note_name)
+    if note_content and note_content != "NOT_FOUND":
+        logger.info(f"   ✅ 备忘录内容: {len(note_content)} chars, Hash: {hash(note_content)}")
+        lines = note_content.splitlines()
+        logger.info(f"   📋 行数: {len(lines)}")
+        for i, line in enumerate(lines):
+            logger.info(f"   [{i:2d}] {line}")
+    else:
+        logger.info(f"   ❌ 备忘录未找到!")
+        return False
+
+    # 4. 检查 TaskRegistry
+    try:
+        from dailynotes.sync.task_registry import get_registry
+        reg = get_registry()
+        if reg.is_initialized():
+            logger.info(f"📦 TaskRegistry: ✅ 已初始化")
+        else:
+            logger.info(f"📦 TaskRegistry: ⚠️ 未初始化 (心跳可能无法跨文件寻址)")
+    except Exception as e:
+        logger.info(f"📦 TaskRegistry: ❌ 不可用 ({e})")
+
+    logger.info("")
+    return True
+
+# ==========================================
+# 主入口
+# ==========================================
+def main():
+    logger = ColorLogger
+
+    # 诊断
+    ok = run_diagnostics()
+    if not ok:
+        logger.info("❌ 诊断失败，无法启动")
+        sys.exit(1)
+
+    # 启动 NoteMonitor
+    logger.header("🚀 启动 NoteMonitor (Ctrl+C 停止)")
+    monitor = NoteMonitor(config=Config, logger=logger)
+
+    try:
+        monitor.start()
+        logger.info("✅ NoteMonitor 已在后台运行 (daemon 线程)")
+        logger.info("💡 现在去 Apple Notes 编辑备忘录，观察终端输出...")
+        logger.info("")
+
+        # 保持主线程运行
+        while True:
+            time.sleep(1)
+
+    except KeyboardInterrupt:
+        print(f"\n{ColorLogger.YELLOW}🛑 正在停止...{ColorLogger.RESET}")
+        monitor.stop()
+        print(f"{ColorLogger.GREEN}✅ 已停止{ColorLogger.RESET}")
+    except Exception as e:
+        print(f"{ColorLogger.RED}❌ 异常: {e}{ColorLogger.RESET}")
+        import traceback
+        traceback.print_exc()
+        monitor.stop()
+
+if __name__ == "__main__":
+    main()
+
+```
+
+---
+## File: LyubishchevSync/src/external/note_sync_core/watch_today_note.py
 ```py
 
 import sys
@@ -8966,17 +9274,17 @@ import logging
 # ==========================================
 # 1. 当前脚本所在目录: src/external/note_sync_core/
 current_dir = os.path.dirname(os.path.abspath(__file__))
-# 2. 项目根目录 (AntigravitySync 的父目录，即 Beta Folder)
-# src/external/note_sync_core/ -> src/external/ -> src/ -> AntigravitySync -> Root
+# 2. 项目根目录 (LyubishchevSync 的父目录，即 Beta Folder)
+# src/external/note_sync_core/ -> src/external/ -> src/ -> LyubishchevSync -> Root
 beta_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(current_dir))))
 
 if beta_root not in sys.path:
     sys.path.append(beta_root)
 
-# 3. AntigravitySync 根目录
-antigravity_root = os.path.join(beta_root, 'AntigravitySync')
-if antigravity_root not in sys.path:
-    sys.path.append(antigravity_root)
+# 3. LyubishchevSync 根目录
+lyubishchev_root = os.path.join(beta_root, 'LyubishchevSync')
+if lyubishchev_root not in sys.path:
+    sys.path.append(lyubishchev_root)
 
 # ==========================================
 # 导入模块
@@ -9037,14 +9345,14 @@ if __name__ == "__main__":
 ```
 
 ---
-## File: AntigravitySync/src/external/task_sync_core/__init__.py
+## File: LyubishchevSync/src/external/task_sync_core/__init__.py
 ```py
 # TaskSynctoreminder core modules
 
 ```
 
 ---
-## File: AntigravitySync/src/external/task_sync_core/apple_state_manager.py
+## File: LyubishchevSync/src/external/task_sync_core/apple_state_manager.py
 ```py
 """
 Apple Sync State Manager - Manages sync state for Apple Calendar integration.
@@ -9122,7 +9430,7 @@ class StateManager:
 ```
 
 ---
-## File: AntigravitySync/src/external/task_sync_core/calendar_service.py
+## File: LyubishchevSync/src/external/task_sync_core/calendar_service.py
 ```py
 """
 Apple Calendar Service - EventKit Native Implementation (v2.0)
@@ -9491,7 +9799,7 @@ class BatchExecutor:
 ```
 
 ---
-## File: AntigravitySync/src/external/task_sync_core/obsidian_service.py
+## File: LyubishchevSync/src/external/task_sync_core/obsidian_service.py
 ```py
 """
 Obsidian Service - Adapted for unified config.
@@ -9628,7 +9936,7 @@ def get_obsidian_state(file_path):
 ```
 
 ---
-## File: AntigravitySync/src/external/task_sync_core/sync_engine.py
+## File: LyubishchevSync/src/external/task_sync_core/sync_engine.py
 ```py
 """
 Bidirectional Sync Engine - Adapted for unified config.
@@ -10034,7 +10342,7 @@ def perform_bidirectional_sync(date_str, obs_path, state_manager, target_dt):
 ```
 
 ---
-## File: AntigravitySync/src/external/task_sync_core/utils.py
+## File: LyubishchevSync/src/external/task_sync_core/utils.py
 ```py
 """
 TaskSynctoreminder utilities adapted for unified config.

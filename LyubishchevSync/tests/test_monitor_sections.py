@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import MagicMock
 
 # Add src to path
-sys.path.append(os.path.abspath('/Users/user999/Documents/【Liang_project】/Code_Scripits/2025_DailynoteSync_complete_beta/AntigravitySync/src/external/note_sync_core'))
+sys.path.append(os.path.abspath('/Users/user999/Documents/【Liang_project】/Code_Scripits/2025_DailynoteSync_complete_beta/LyubishchevSync/src/external/note_sync_core'))
 
 # Mock config before importing monitor
 class MockConfig:

@@ -9,17 +9,17 @@ import logging
 # ==========================================
 # 1. 当前脚本所在目录: src/external/note_sync_core/
 current_dir = os.path.dirname(os.path.abspath(__file__))
-# 2. 项目根目录 (AntigravitySync 的父目录，即 Beta Folder)
-# src/external/note_sync_core/ -> src/external/ -> src/ -> AntigravitySync -> Root
+# 2. 项目根目录 (LyubishchevSync 的父目录，即 Beta Folder)
+# src/external/note_sync_core/ -> src/external/ -> src/ -> LyubishchevSync -> Root
 beta_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(current_dir))))
 
 if beta_root not in sys.path:
     sys.path.append(beta_root)
 
-# 3. AntigravitySync 根目录
-antigravity_root = os.path.join(beta_root, 'AntigravitySync')
-if antigravity_root not in sys.path:
-    sys.path.append(antigravity_root)
+# 3. LyubishchevSync 根目录
+lyubishchev_root = os.path.join(beta_root, 'LyubishchevSync')
+if lyubishchev_root not in sys.path:
+    sys.path.append(lyubishchev_root)
 
 # ==========================================
 # 导入模块

@@ -1,5 +1,5 @@
 """
-Apple Sync Adapter for Antigravity Architecture.
+Apple Sync Adapter for Lyubishchev Architecture.
 
 This module wraps the TaskSynctoreminder logic as a downstream plugin for Dailynotes.
 Apple Calendar sync only triggers when files are clean and stable.

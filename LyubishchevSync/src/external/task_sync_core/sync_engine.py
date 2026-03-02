@@ -81,8 +81,9 @@ def perform_bidirectional_sync(date_str, obs_path, state_manager, target_dt):
                         end_t = datetime.strptime(c_data['start_time'], "%H:%M") + timedelta(minutes=c_data['duration'])
                         end_time_str = f" - {end_t.strftime('%H:%M')}"
                     tag_part = f"{tag_suffix} " if tag_suffix else ""
+                    span_part = f"{current_obs[old_o_key].get('span_tag')} " if current_obs[old_o_key].get('span_tag') else ""
                     status_char = current_obs[old_o_key]['status']
-                    new_line = f"- [{status_char}] {c_data['start_time']}{end_time_str} {tag_part}{c_data['name']}\n"
+                    new_line = f"- [{status_char}] {span_part}{c_data['start_time']}{end_time_str} {tag_part}{c_data['name']}\n"
                     lines_to_modify[line_idx] = new_line
                     file_dirty = True
                     handled_obs_keys.add(old_o_key)
@@ -115,8 +116,10 @@ def perform_bidirectional_sync(date_str, obs_path, state_manager, target_dt):
                         end_t = datetime.strptime(c_data['start_time'], "%H:%M") + timedelta(minutes=c_data['duration'])
                         end_time_str = f" - {end_t.strftime('%H:%M')}"
                     
+                    
                     status_char = current_obs[found_old_key]['status']
-                    new_line = f"- [{status_char}] {c_data['start_time']}{end_time_str} {tag_part}{c_data['name']}\n"
+                    span_part = f"{current_obs[found_old_key].get('span_tag')} " if current_obs[found_old_key].get('span_tag') else ""
+                    new_line = f"- [{status_char}] {span_part}{c_data['start_time']}{end_time_str} {tag_part}{c_data['name']}\n"
                     lines_to_modify[line_idx] = new_line
                     file_dirty = True
                     
@@ -282,6 +285,7 @@ def perform_bidirectional_sync(date_str, obs_path, state_manager, target_dt):
                 'end_time': end_t.strftime('%H:%M') if c_data['duration'] != 30 else None,
                 'target_calendar': c_data['current_calendar'],
                 'tag': tag_suffix,
+                'span_tag': None,
                 'status': status_char,
                 'line_index': -1 # Placeholder, won't be used next run (re-parsed)
             }
@@ -307,8 +311,9 @@ def perform_bidirectional_sync(date_str, obs_path, state_manager, target_dt):
                     end_t = datetime.strptime(c_data['start_time'], "%H:%M") + timedelta(minutes=c_data['duration'])
                     end_time_str = f" - {end_t.strftime('%H:%M')}"
                 tag_part = f"{tag_suffix} " if tag_suffix else ""
+                span_part = f"{current_obs[sem_key].get('span_tag')} " if current_obs[sem_key].get('span_tag') else ""
                 status_char = 'x' if c_data['is_completed'] else ' '
-                new_line = f"- [{status_char}] {c_data['start_time']}{end_time_str} {tag_part}{c_data['name']}\n"
+                new_line = f"- [{status_char}] {span_part}{c_data['start_time']}{end_time_str} {tag_part}{c_data['name']}\n"
                 lines_to_modify[line_idx] = new_line
                 file_dirty = True
                 

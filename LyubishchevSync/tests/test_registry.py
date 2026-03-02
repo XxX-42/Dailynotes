@@ -1,5 +1,5 @@
 """
-AntigravitySync Test Suite - test_registry.py
+LyubishchevSync Test Suite - test_registry.py
 Unit tests for src/dailynotes/sync/task_registry.py
 
 Critical tests for v1.8 core value:
@@ -21,9 +21,9 @@ from typing import Dict, List, Set
 # PATH SETUP
 # ============================================================================
 
-ANTIGRAVITY_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SRC_DIR = os.path.join(ANTIGRAVITY_DIR, 'src')
-for path in [ANTIGRAVITY_DIR, SRC_DIR]:
+LYUBISHCHEV_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SRC_DIR = os.path.join(LYUBISHCHEV_DIR, 'src')
+for path in [LYUBISHCHEV_DIR, SRC_DIR]:
     if path not in sys.path:
         sys.path.insert(0, path)
 

@@ -12,7 +12,7 @@ def run_git_commands():
     env["LANG"] = "en_US.UTF-8"
 
     commands = [
-        ["git", "add", "AntigravitySync/config.py", "AntigravitySync/src/dailynotes/format_core.py", "AntigravitySync/src/dailynotes/sync/rendering.py"],
+        ["git", "add", "LyubishchevSync/config.py", "LyubishchevSync/src/dailynotes/format_core.py", "LyubishchevSync/src/dailynotes/sync/rendering.py"],
         ["git", "commit", "-m", "Disable debug mode, adjust sync range, and fix header blank line issues"],
         ["git", "push", "origin", "HEAD"]
     ]

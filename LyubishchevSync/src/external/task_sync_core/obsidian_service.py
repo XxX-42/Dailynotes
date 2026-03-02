@@ -37,13 +37,13 @@ def parse_obsidian_line(line, line_index):
     if not re.search(r"^\s*- \[[ xX]\]", line):
         return None
 
-    # Flexible regex to match task format
-    pattern = re.compile(r"^\s*- \[(.)\]\s+(?:(\d{1,2}:\d{2})(?:\s*-\s*(\d{1,2}:\d{2}))?\s+)?(.*)")
+    # Flexible regex to match task format (now supports optional HTML span tags before time)
+    pattern = re.compile(r"^\s*- \[(.)\]\s+(?:(<span[^>]*>.*?</span>)\s*)?(?:(\d{1,2}:\d{2})(?:\s*-\s*(\d{1,2}:\d{2}))?\s+)?(.*)")
     match = pattern.match(line)
     if not match:
         return None
 
-    status, start_time, end_time, raw_text = match.groups()
+    status, span_tag, start_time, end_time, raw_text = match.groups()
 
     # Normalize time format
     if not start_time:
@@ -74,6 +74,7 @@ def parse_obsidian_line(line, line_index):
         'end_time': end_time,
         'target_calendar': target_calendar,
         'tag': found_tag,
+        'span_tag': span_tag,
         'line_index': line_index,
         'raw_text': raw_text.strip(),
         'status': status.lower()

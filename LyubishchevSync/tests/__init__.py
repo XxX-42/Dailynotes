@@ -1,3 +1,0 @@
-"""
-LyubishchevSync Test Suite
-"""

@@ -380,32 +380,28 @@ def reconstruct_daily_block(sd, target_date, preserved_time=None):
     return [parent_line] + children
 
 def ensure_structure(lines):
-    has_dp = any(l.strip() == "# Day planner" for l in lines)
-    j_idx = -1
-    try:
-        j_idx = next(i for i, l in enumerate(lines) if l.strip() == "# Journey")
-    except StopIteration:
-        pass
-    
-    # [FIX] 计算正确的插入位置：跳过 YAML frontmatter
-    # Frontmatter 格式: 第一行 "---"，然后在某行再遇到 "---" 结束
-    insert_pos = 0
-    if lines and lines[0].strip() == '---':
-        # 有 frontmatter，找到结束位置
-        for i in range(1, len(lines)):
-            if lines[i].strip() == '---':
-                insert_pos = i + 1
-                break
-    
-    if not has_dp:
-        if j_idx != -1:
-            # [FIX] 使用单换行，避免多余空行
-            lines.insert(j_idx, "# Day planner\n")
-        else:
-            # [FIX] 插入到 frontmatter 之后，而非索引 0
-            lines.insert(insert_pos, "# Day planner\n")
-            lines.append("\n# Journey\n")
-    if has_dp and j_idx == -1: lines.append("\n# Journey\n")
+    # 彻底告别原有的 `# Day planner` 和 `# Journey`
+    # 现在核心骨架至少是包含 `# Deployment` 外加 `## Single` 跟 `## Archive`
+    has_deploy = any(l.strip() == "# Deployment" for l in lines)
+    if not has_deploy:
+        insert_pos = 0
+        if lines and lines[0].strip() == '---':
+            for i in range(1, len(lines)):
+                if lines[i].strip() == '---':
+                    insert_pos = i + 1
+                    break
+        scaffold = ["# Deployment\n", "\n", "## Single\n", "\n", "## Archive\n", "\n"]
+        lines[insert_pos:insert_pos] = scaffold
+    else:
+        # 如果有 deployment 但是没有 Single 或 Archive 则补齐
+        has_single = any(re.match(r'^##\s+Single\b', l.strip()) for l in lines)
+        has_archive = any(re.match(r'^##\s+Archive\b', l.strip()) for l in lines)
+        d_idx = next(i for i, l in enumerate(lines) if l.strip() == "# Deployment")
+        if not has_archive:
+            lines.insert(d_idx + 1, "## Archive\n")
+        if not has_single:
+            lines.insert(d_idx + 1, "## Single\n")
+            
     return lines
 
 def cleanup_empty_headers(lines, date_tag):
@@ -414,7 +410,7 @@ def cleanup_empty_headers(lines, date_tag):
     i = 0
     modified = False
     current_section = None
-    target_sections = ['# Day planner', '# Journey']
+    target_sections = ['# Deployment']
     while i < len(lines):
         line = lines[i]
         s_line = line.strip()
@@ -428,6 +424,12 @@ def cleanup_empty_headers(lines, date_tag):
             i += 1;
             continue
         if s_line.startswith('## '):
+            # 保护内置必须存在的项，不将其删除
+            if re.match(r'^##\s+(Single|Archive)\b', s_line):
+                cleaned_lines.append(line)
+                i += 1
+                continue
+                
             has_content = False
             j = i + 1
             while j < len(lines):
@@ -445,3 +447,4 @@ def cleanup_empty_headers(lines, date_tag):
             cleaned_lines.append(line);
             i += 1
     return cleaned_lines, modified
+

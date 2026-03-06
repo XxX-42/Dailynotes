@@ -53,11 +53,14 @@ class FormatCore:
     def get_header_sorting_key(title_line: str) -> str:
         """
         [FIX] 修复中文标题被过滤为空字符串导致排序混乱的问题
+        [vX] 剥离尾部的百分比数值（如 %100），防止标题名变化引发分类组重复扩散
         """
+        # 0. 剥离进度标识符（百分比）
+        title_line = re.sub(r'(?:\s+\d+%)+[ \t]*$', '', title_line)
+        
         # 1. 移除 Markdown 标记 (#, [[, ]])
         clean_title = re.sub(r'[#\[\]]', '', title_line).strip().lower()
         # 2. 如果清理后不为空，直接使用；否则（纯符号标题）使用原字符串
-        # 这样确保 "测试" 和 "调试" 有不同的 Key
         return clean_title if clean_title else title_line.strip()
 
     @staticmethod
@@ -221,6 +224,461 @@ class FormatCore:
         
         return cls._safe_strip("\n\n".join(output))
 
+    @classmethod
+    def update_progress_percentage(cls, content: str) -> str:
+        """
+        [vX] 自动基于最深任务（叶子节点）打卡状态计算上级与根项目（### 标题）的进度比率。
+        """
+        lines = content.splitlines()
+        
+        # [ICE加权] 前置步骤：从 Insights 表格解析 ICE Score 映射
+        ice_map = cls._parse_ice_scores(content)
+        
+        class Node:
+            def __init__(self, idx, indent, text, is_header):
+                self.idx = idx
+                self.indent = indent
+                self.text = text
+                self.children = []
+                self.is_header = is_header
+                self.is_task = text.lstrip().startswith("- [")
+                self.is_checked = "[x]" in text.lower() if self.is_task else False
+
+        forest = []
+        stack = []
+
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            # [MOD] 增加对 ## Archive 的识别，使其参与汇总
+            if stripped.startswith("## Archive"):
+                # 二级标题深度设为 -2，使其成为 ### (深度-1) 的父级
+                node = Node(i, -2, line, is_header=True)
+                forest.append(node)
+                stack = [(-2, node)]
+            elif line.startswith("### "):
+                node = Node(i, -1, line, is_header=True)
+                # 如果栈里有 ## Archive，则作为其子节点
+                while stack and stack[-1][0] >= -1:
+                    stack.pop()
+                if stack:
+                    stack[-1][1].children.append(node)
+                else:
+                    forest.append(node)
+                stack.append((-1, node))
+            elif stripped.startswith("- ["):
+                indent_match = re.match(r'^([ \t]*)- \[[xX\s]\]', line)
+                if indent_match:
+                    indent = len(indent_match.group(1).replace('\t', '    '))
+                    node = Node(i, indent, line, is_header=False)
+                    
+                    while stack and stack[-1][0] >= indent:
+                        stack.pop()
+                    
+                    if stack:
+                        stack[-1][1].children.append(node)
+                    else:
+                        forest.append(node)
+                    
+                    stack.append((indent, node))
+            else:
+                pass 
+
+        def get_stats(node):
+            # 时间统计累加器
+            node_time_mins = 0
+            
+            # 提取自身可能包含的时间段 (hh:mm - hh:mm)
+            if node.is_task:
+                tm = re.search(r'(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})', node.text)
+                if tm:
+                    t_start, t_end = tm.groups()
+                    try:
+                        h1, m1 = map(int, t_start.split(':'))
+                        h2, m2 = map(int, t_end.split(':'))
+                        mins = (h2 * 60 + m2) - (h1 * 60 + m1)
+                        if mins < 0: mins += 24 * 60
+                        node_time_mins += mins
+                    except:
+                        pass
+                        
+            if not node.is_task and not node.children:
+                return (0, 0, 0)
+            if node.is_task and not node.children:
+                return (1, 1 if node.is_checked else 0, node_time_mins)
+                
+            total, checked, total_mins = 0, 0, node_time_mins
+            for child in node.children:
+                t, c, mins = get_stats(child)
+                total += t
+                checked += c
+                total_mins += mins
+            return (total, checked, total_mins)
+            
+        updates = {}
+        # 为了给外部报表提供数据，挂载节点对象的信息
+        cls._last_calculated_costs = getattr(cls, '_last_calculated_costs', {})
+        cls._last_calculated_costs.clear()
+        
+        def traverse(node):
+            total, checked, total_mins = get_stats(node)
+            # 剥开可能遗留的百分比数值
+            # 支持旧格式: "Text 100%"
+            # 支持新格式: "[[...|⮐ 100%]]"
+            base_text = re.sub(r'(?:\s+\d+%)+[ \t]*$', '', node.text)
+            # 针对新格式的剥离：将 [[...|⮐ 100%]] 还原为 [[...|⮐]]
+            base_text = re.sub(r'(\|⮐)\s+\d+%', r'\1', base_text)
+            
+            # [FIX] 反向链接去重：如果同一个 [[xxx#^bid|⮐]] 出现多次，只保留第一个
+            seen_backlinks = set()
+            def _dedup_backlink(m):
+                link = m.group(0)
+                if link in seen_backlinks:
+                    return ''  # 删除重复的
+                seen_backlinks.add(link)
+                return link
+            base_text = re.sub(r'\[\[[^\]]+\|⮐\]\]', _dedup_backlink, base_text)
+            base_text = re.sub(r'\s{2,}', ' ', base_text)  # 清理多余空格
+            
+            if total > 0 and node.children:
+                # [ICE加权] 三级标题使用 ICE Score 按链接分组加权计算
+                if node.is_header and ice_map:
+                    link_groups = {}
+                    header_name = None
+                    m_h = re.search(r'\[\[(.*?)\]\]', node.text)
+                    if m_h:
+                        header_name = m_h.group(1).split('|')[0].strip()
+                    
+                    for child in node.children:
+                        # 提取子任务归属的链接名
+                        link = None
+                        m_link = re.search(r'\[\[(.*?)(?:[#|])', child.text)
+                        if m_link:
+                            link = m_link.group(1).strip()
+                        if not link:
+                            m_link2 = re.search(r'\[\[(.*?)\]\]', child.text)
+                            if m_link2:
+                                link = m_link2.group(1).strip()
+                        if not link:
+                            link = header_name or "_default"
+                        
+                        if link not in link_groups:
+                            link_groups[link] = [0, 0]
+                        t, c, _ = get_stats(child)
+                        link_groups[link][0] += t
+                        link_groups[link][1] += c
+                    
+                    weighted_sum = 0
+                    weight_total = 0
+                    for link, (t, c) in link_groups.items():
+                        if t > 0:
+                            group_pct = c / t
+                            weight = ice_map.get(link, 1)
+                            weighted_sum += group_pct * weight
+                            weight_total += weight
+                    
+                    if weight_total > 0:
+                        pct = int(round(weighted_sum / weight_total * 100))
+                    else:
+                        pct = int(round(checked / total * 100))
+                else:
+                    pct = int(round(checked / total * 100))
+                
+                # [新功能] 寻找 [[测试aaa#^2qss78|⮐]] 这种反向链接语法
+                # 如果存在，则把百分比塞进链接文字里，形如 [[...|⮐ 67%]]
+                backlink_pattern = r'(\[\[[^\]]+\|⮐)\]\]'
+                if node.is_task and re.search(backlink_pattern, base_text):
+                    updates[node.idx] = re.sub(backlink_pattern, rf'\1 {pct}%]]', base_text)
+                else:
+                    updates[node.idx] = f"{base_text.rstrip()} {pct}%"
+                
+                # 记录对于顶级标题级项目的 cost
+                if node.is_header:
+                    m_title = re.search(r'\[\[(.*?)\]\]', base_text)
+                    if m_title:
+                        cls._last_calculated_costs[m_title.group(1).split('|')[0]] = total_mins
+            elif node.is_header or node.is_task:
+                # 已经是独立的、没有子任务的项，去除了旧百分比，恢复原状
+                updates[node.idx] = base_text
+                
+            for child in node.children:
+                traverse(child)
+
+        for f in forest:
+            traverse(f)
+        
+        new_lines = []
+        for i, line in enumerate(lines):
+            if i in updates:
+                new_lines.append(updates[i])
+            else:
+                new_lines.append(line)
+        
+        return "\n".join(new_lines)
+
+    @staticmethod
+    def _parse_ice_scores(content: str) -> dict:
+        """
+        [ICE加权] 从 ## Insights 表格中萃取 ICE Score 映射。
+        返回: {项目名(str): ICE数值(float)}
+        """
+        lines = content.splitlines()
+        ice_map = {}
+        in_insights = False
+        rows_seen = 0
+        
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("## "):
+                if stripped.replace(" ", "") == "##Insights":
+                    in_insights = True
+                    rows_seen = 0
+                    continue
+                elif in_insights:
+                    break
+            
+            if in_insights and stripped.startswith("|"):
+                rows_seen += 1
+                if rows_seen <= 2:
+                    continue  # 跳过表头和分隔线
+                
+                cols = [c.strip() for c in stripped.split('|')[1:-1]]
+                if len(cols) >= 8:
+                    proj_name = re.sub(r'[\[\]]', '', cols[0]).strip()
+                    ice_raw = cols[7]
+                    # 萃取 HTML/Markdown 中的纯数字 (如 <font color='red'>**16**</font>)
+                    m = re.search(r'(\d+(?:\.\d+)?)', ice_raw)
+                    if m and proj_name:
+                        ice_map[proj_name] = float(m.group(1))
+        
+        return ice_map
+
+    @classmethod
+    def update_insights_table(cls, content: str) -> str:
+        """
+        [vX] 自动扫描 `## Archive` 下的三级标题及其进度，将其映射更新到 `## Insights` 的表格中。
+        """
+        # 1. 扫描出所有的统计数据，放开视野限制，遍历全文所有 `### [[xxx]]`
+        lines = content.splitlines()
+        
+        archive_projects = {}
+        
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("### "):
+                # 解析 ### [[项目名]] 100%
+                m = re.match(r'^###\s+\[\[(.*?)\]\](?:\s+(\d+%))?', stripped)
+                if m:
+                    proj_name = m.group(1).split('|')[0]
+                    pct = m.group(2) if m.group(2) else ""
+                    archive_projects[proj_name] = pct
+                    
+        if not archive_projects:
+            return content
+            
+        # 2. 寻找与替换 Insights 区域中的表格
+        in_insights = False
+        in_table = False
+        table_start_idx = -1
+        table_end_idx = -1
+        
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith("## "):
+                if stripped.replace(" ", "") == "##Insights":
+                    in_insights = True
+                else:
+                    if in_insights and in_table:
+                        table_end_idx = i
+                        break
+                    in_insights = False
+            elif in_insights:
+                if stripped.startswith("|"):
+                    if not in_table:
+                        table_start_idx = i
+                        in_table = True
+                else:
+                    if in_table and stripped == "":
+                         table_end_idx = i
+                         break
+                    
+        # 如果达到了文件尾部仍未找到终点
+        if in_table and table_end_idx == -1:
+            table_end_idx = len(lines)
+            
+        if table_start_idx != -1 and table_end_idx != -1:
+            # 提取现有的表格保留 id(项目名)、cost、aim to 等手工字段
+            old_table_lines = lines[table_start_idx:table_end_idx]
+            old_data_map = {}
+            header = []
+            divider = []
+            
+            for row in old_table_lines:
+                if not row.strip().startswith('|'): continue
+                cols = [c.strip() for c in row.split('|')[1:-1]]
+                if not cols: continue
+                
+                if not header:
+                    header = cols
+                elif not divider:
+                    divider = cols
+                else:
+                    # Data row
+                    if len(cols) > 0 and cols[0]:
+                         # 第一列默认为 id / project name
+                         proj_name_cleaned = re.sub(r'[\[\]]', '', cols[0]).strip()
+                         old_data_map[proj_name_cleaned] = cols
+                         
+            # 重新构建表格内容
+            new_table_lines = []
+            
+            # [行内刷新逻辑] 动态检查旧表头是否可用，保留排版以防 Obsidian 无限格式化死循环
+            if len(old_table_lines) >= 2 and old_table_lines[0].count('|') >= 9:
+                new_table_lines.append(old_table_lines[0])
+                new_table_lines.append(old_table_lines[1])
+            else:
+                new_header = ["id", "cost", "aim to", "progress", "Impact", "Confidence", "Ease", "ICE Score"]
+                new_table_lines.append("| " + " | ".join(new_header) + " |")
+                new_table_lines.append("| --- | ---- | ------ | -------- | ------ | ---------- | ---- | --------- |")
+            
+            # 使用 Archive 扫描到的数据为主键遍历
+            for proj, pct in archive_projects.items():
+                clean_proj = re.sub(r'[\[\]]', '', proj).strip()
+                
+                # 寻找旧表中的对应行，以便尽量复用它的空格
+                old_row_line = None
+                old_cols = []
+                for row in old_table_lines[2:]:
+                    if not row.strip().startswith('|'): continue
+                    cols_tmp = [c.strip() for c in row.split('|')[1:-1]]
+                    if cols_tmp and re.sub(r'[\[\]]', '', cols_tmp[0]).strip() == clean_proj:
+                        old_row_line = row
+                        old_cols = cols_tmp
+                        break
+                        
+                if not old_cols:
+                    old_cols = []
+                
+                # 更新传承或覆盖旧的手工数据
+                cost_mins = cls._last_calculated_costs.get(clean_proj, 0) if hasattr(cls, '_last_calculated_costs') else 0
+                if cost_mins > 0:
+                    cost = f"{cost_mins // 60:02d}:{cost_mins % 60:02d}"
+                else:
+                    cost = old_cols[1] if len(old_cols) > 1 else ""
+                    
+                aim = old_cols[2] if len(old_cols) > 2 else ""
+                
+                # 构建进度列
+                progress_col = ""
+                if pct:
+                    pct_val = pct.replace('%', '')
+                    progress_col = f"{pct_val}%"
+                
+                # 读取新建的四个列（容错）
+                impact_val = old_cols[4] if len(old_cols) > 4 else ""
+                confidence_val = old_cols[5] if len(old_cols) > 5 else ""
+                ease_val = old_cols[6] if len(old_cols) > 6 else ""
+                
+                # 尝试计算 ICE Score
+                ice_score = ""
+                i_str, c_str, e_str = impact_val.strip(), confidence_val.strip(), ease_val.strip()
+                
+                # 如果有任意一个填写了，我们就进行严格校验
+                if i_str or c_str or e_str:
+                    try:
+                        def _extract_score(text: str, name: str) -> float:
+                            if not text: raise ValueError(f"缺{name}")
+                            # 试图匹配文本中的第一个数字（允许小数点）
+                            m = re.search(r'(\d+(?:\.\d+)?)', text)
+                            if m: return float(m.group(1))
+                            raise ValueError(f"{name}无数字")
+                            
+                        # 逐层萃取，即使夹杂长文章批注，我们也能把数字抠出来
+                        i_val = _extract_score(i_str, "I")
+                        c_val = _extract_score(c_str, "C")
+                        e_val = _extract_score(e_str, "E")
+                        
+                        if not (1 <= i_val <= 10) or not (1 <= c_val <= 10) or not (1 <= e_val <= 10):
+                            ice_score = "⚠️越界(1-10)"
+                        else:
+                            score_num = int(i_val * c_val * e_val)
+                            # 使用 HTML font 标签渲染红色粗体
+                            ice_score = f"<font color='red'>**{score_num}**</font>"
+                    except ValueError as e:
+                        # 抛出具体的缺失或异常错误原因代替死板的“数据无效”
+                        ice_score = f"⚠️{str(e)}"
+                else:
+                    ice_score = old_cols[7] if len(old_cols) > 7 else ""
+                
+                # === 判断是否发生实质性变动 ===
+                old_cost = old_cols[1] if len(old_cols) > 1 else ""
+                old_progress = old_cols[3] if len(old_cols) > 3 else ""
+                old_impact = old_cols[4] if len(old_cols) > 4 else ""
+                old_confidence = old_cols[5] if len(old_cols) > 5 else ""
+                old_ease = old_cols[6] if len(old_cols) > 6 else ""
+                old_ice_score = old_cols[7] if len(old_cols) > 7 else ""
+                
+                if old_row_line and cost == old_cost and progress_col == old_progress and impact_val == old_impact and confidence_val == old_confidence and ease_val == old_ease and ice_score == old_ice_score:
+                    # 原行参数未变（无实质变更），直接复用原行的大段文本（保留了所有的原始空格排版）
+                    new_table_lines.append(old_row_line)
+                else:
+                    # 如果这行真的需要刷新（例如你刚填入了 Ease 的值），就重组成精简紧凑的一行
+                    # (下一次脚本再读此文件的时候就会变成无实质变更，从而停止修改死循环)
+                    row_str = f"| [[{clean_proj}]] | {cost} | {aim} | {progress_col} | {impact_val} | {confidence_val} | {ease_val} | {ice_score} |"
+                    new_table_lines.append(row_str)
+                
+            # 执行文本替换
+            new_content_lines = lines[:table_start_idx] + new_table_lines + lines[table_end_idx:]
+            return "\n".join(new_content_lines)
+            
+        else:
+            # === 如果表格甚至 Insights 标题不存在，我们自动生成 ===
+            # 构建一个由底层向上渲染的全新空表格
+            new_table_lines = []
+            new_header = ["id", "cost", "aim to", "progress", "Impact", "Confidence", "Ease", "ICE Score"]
+            new_table_lines.append("| " + " | ".join(new_header) + " |")
+            new_table_lines.append("| --- | ---- | ------ | -------- | ------ | ---------- | ---- | --------- |")
+            
+            for proj, pct in archive_projects.items():
+                clean_proj = re.sub(r'[\[\]]', '', proj).strip()
+                
+                cost_mins = cls._last_calculated_costs.get(clean_proj, 0) if hasattr(cls, '_last_calculated_costs') else 0
+                cost = f"{cost_mins // 60:02d}:{cost_mins % 60:02d}" if cost_mins > 0 else ""
+                
+                aim = ""
+                progress_col = ""
+                if pct:
+                    pct_val = pct.replace('%', '')
+                    progress_col = f"{pct_val}%"
+                    
+                row_str = f"| [[{clean_proj}]] | {cost} | {aim} | {progress_col} |  |  |  |  |"
+                new_table_lines.append(row_str)
+            new_table_lines.append("") # 行尾空行缓冲
+            
+            insights_line_idx = -1
+            log_line_idx = -1
+            
+            for i, line in enumerate(lines):
+                stripped = line.strip().replace(" ", "")
+                if stripped == "##Insights":
+                    insights_line_idx = i
+                elif stripped == "#Log":
+                    log_line_idx = i
+                    
+            if insights_line_idx != -1:
+                # 存在 Insights，无表，插入在下一行并且给足换行
+                new_lines = lines[:insights_line_idx+1] + [""] + new_table_lines + [""] + lines[insights_line_idx+1:]
+                return "\n".join(new_lines)
+            elif log_line_idx != -1:
+                # 存在 Log，无 Insights
+                new_lines = lines[:log_line_idx+1] + ["", "## Insights", ""] + new_table_lines + [""] + lines[log_line_idx+1:]
+                return "\n".join(new_lines)
+            else:
+                # 都没找到，作为顶级块附加
+                new_lines = lines + ["", "# Log", "", "## Insights", ""] + new_table_lines + [""]
+                return "\n".join(new_lines)
+                
+        return content
+
     @staticmethod
     def _log_diff(step_name: str, old_content: str, new_content: str):
         if old_content == new_content: return
@@ -254,6 +712,12 @@ class FormatCore:
         fname = os.path.basename(filepath)
         prev_text = c
         c = cls.sort_markdown_sections(c, filename=fname)
+
+        # Step 4: 注入并计算任务深度的百分比进度
+        c = cls.update_progress_percentage(c)
+        
+        # Step 5: 更新 Insights 数据报表
+        c = cls.update_insights_table(c)
 
         cls._log_diff("FormatCore", prev_text, c)
 

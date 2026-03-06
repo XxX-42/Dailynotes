@@ -7,7 +7,8 @@ _RE_STATUS_INDENT = re.compile(r'^[\s>]*-\s*\[.\]')
 _RE_TIME_RANGE = re.compile(r'\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}')
 _RE_TIME_SINGLE = re.compile(r'\d{1,2}:\d{2}')
 _RE_BLOCK_ID = re.compile(r'(?:\^[a-zA-Z0-9]{6,}|<span id="[a-zA-Z0-9]{6,}"(?: data-timestamps="[^"]*")?></span>)\s*$')
-_RE_RETURN_LINK = re.compile(r'\[\[[^\]]*?\#\^[a-zA-Z0-9]{6,}\|[⚓\*🔗⮐📅]\]\]')
+# [FIX] 允许匹配带百分比后缀的反向链接 (如 [[xxx#^bid|⮐ 67%]])
+_RE_RETURN_LINK = re.compile(r'\[\[[^\]]*?\#\^[a-zA-Z0-9]{6,}\|[⚓\*🔗⮐📅][^\]]*\]\]')
 _RE_DATE_LINK = re.compile(r'\[\[\d{4}-\d{2}-\d{2}]]')
 _RE_EMOJI_DATE = re.compile(r'📅\s?\[\[\d{4}-\d{2}-\d{2}]]')
 _RE_MULTI_SPACE = re.compile(r'\s+')
@@ -50,7 +51,8 @@ def clean_task_text(line, block_id=None, context_name=None):
         clean_text = re.sub(r'<span id="[a-zA-Z0-9]{6,}"(?: data-timestamps="[^"]*")?></span>', '', clean_text)
         
     # 4. remove return links
-    clean_text = re.sub(r'\[\[[^\]]*?\#\^[a-zA-Z0-9]{6,}\|[⚓\*🔗⮐📅]\]\]', '', clean_text)
+    # [FIX] 允许匹配带百分比后缀的反向链接
+    clean_text = re.sub(r'\[\[[^\]]*?\#\^[a-zA-Z0-9]{6,}\|[⚓\*🔗⮐📅][^\]]*\]\]', '', clean_text)
     
     # 5. remove date links
     clean_text = re.sub(r'\[\[\d{4}-\d{2}-\d{2}]]', '', clean_text)
@@ -119,7 +121,8 @@ def extract_routing_info(line, file_path_map):
     Returns: (absolute_path_to_file, raw_link_text)
     """
     # Remove return links first to avoid false positives
-    clean = re.sub(r'\[\[[^\]]*?\#\^[a-zA-Z0-9]{6,}\|[⚓\*🔗⮐📅]\]\]', '', line)
+    # [FIX] 允许匹配带百分比后缀的反向链接
+    clean = re.sub(r'\[\[[^\]]*?\#\^[a-zA-Z0-9]{6,}\|[⚓\*🔗⮐📅][^\]]*\]\]', '', line)
     
     matches = re.finditer(r'\[\[(.*?)\]\]', clean)
     for m in matches:

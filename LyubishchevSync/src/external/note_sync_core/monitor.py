@@ -406,9 +406,11 @@ class NoteMonitor:
                     current_content = new_text_v5
 
                 current_hash = hash(current_content)
-                self._log(f"   [DEBUG] Loop Tick - last_hash: {last_hash}, current_hash: {current_hash}, len: {len(current_content if current_content else '')}")
+                # 使用 ANSI 清行序列来执行干净的行内刷新，防残影
+                print(f"\r\033[2K   [DEBUG] Loop Tick - last_hash: {last_hash}, current_hash: {current_hash}, len: {len(current_content if current_content else '')}", end="", flush=True)
 
                 if current_hash != last_hash:
+                    print() # 退出单行刷新状态，补一个换行，防其他日志粘连
                     # [v8.9] 1s 延迟只在出现真正的心跳标记时触发
                     # 注意: 不检测 *ID* 格式（那是同步行，永远存在，会导致误触发）
                     if "(id=" in current_content or "（id=" in current_content:

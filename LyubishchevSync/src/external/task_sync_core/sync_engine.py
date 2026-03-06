@@ -360,16 +360,9 @@ def perform_bidirectional_sync(date_str, obs_path, state_manager, target_dt):
                 return False, False
 
             if insert_idx == len(file_lines):
-                has_header = False
-                for line in file_lines:
-                    if "#dayplanner" in line.lower().replace(" ", ""):
-                        has_header = True
-                        break
-                if not has_header:
-                    if file_lines and not file_lines[-1].endswith("\n"):
-                        file_lines[-1] += "\n"
-                    file_lines.append("\n# Day planner\n")
-                    insert_idx = len(file_lines)
+                # [v4.0] 不再插入旧的 # Day planner 标题
+                # 新架构使用 # Deployment > ## Archive/Single
+                pass
 
             for idx, new_content in lines_to_modify.items():
                 if 0 <= idx < len(file_lines):

@@ -250,6 +250,7 @@ class SyncCore:
         3. Dynamic Stale Link Removal (only for generated links).
         4. Correction Move: Moves tasks even if they are already under a project header, if that header is wrong.
         5. Link Preservation: If a task has an existing link, it is moved AS-IS.
+        6. [NEW] Orphan Routing: Automatically route unparented sync tasks to # Deployment -> ## Single/Archive
         """
         lines = FileUtils.read_file(filepath)
         if not lines: return set()
@@ -266,23 +267,36 @@ class SyncCore:
             
             # Context Detection
             m_header = re.match(r'^##\s*\[\[(.*?)\]\]', l)
+            m_orphan = re.match(r'^##\s*(Single|Archive)\b', l)
+            # [FIX] 追踪三级标题 ### [[xxx]]，避免 Archive 下的任务被误判为"纠偏移动"
+            m_sub_header = re.match(r'^###\s*\[\[(.*?)\]\]', l)
             if m_header:
                 current_header_project = m_header.group(1).split('|')[0]
+                ctx = 'PROJECT'
+                i += 1
+                continue
+            elif m_orphan:
+                current_header_project = m_orphan.group(1)
+                ctx = 'PROJECT'
+                i += 1
+                continue
+            elif m_sub_header:
+                # 三级标题更新上下文为子项目名（覆盖父级 Archive 的上下文）
+                current_header_project = m_sub_header.group(1).split('|')[0]
                 ctx = 'PROJECT'
                 i += 1
                 continue
             
             if l.startswith('# '):
                 current_header_project = None 
-                if l == '# Journey': ctx = 'JOURNEY'
-                elif l == '# Day planner': ctx = 'PLANNER'
+                if l == '# Deployment': ctx = 'DEPLOYMENT'
                 else: ctx = 'OTHER'
                 i += 1; continue
             
             # Capture Tasks
             if re.match(r'^[\s>]*-\s*\[.\]', lines[i]):
                 is_task_candidate = False
-                if ctx in ['JOURNEY', 'PLANNER']: is_task_candidate = True
+                if ctx == 'DEPLOYMENT': is_task_candidate = True
                 if ctx == 'PROJECT': is_task_candidate = True
                 
                 if is_task_candidate:
@@ -292,9 +306,7 @@ class SyncCore:
                     # 2. Calculate Correct Target
                     target_p_name = self.calculate_nearest_project(routing_path)
                     
-                    # [RESTORE] ORIGINAL WANDERER LOGIC
-                    # Users want tasks with `#A, #B, #C, #D` to be archived to Orphans if they
-                    # don't strictly belong to an explicitly matching known project.
+                    # [RESTORE & UPGRADE] WANDERER LOGIC
                     should_move = False
                     
                     st_m = re.search(r'-\s*\[(.)\]', lines[i])
@@ -302,10 +314,20 @@ class SyncCore:
                     has_sync_tag = bool(re.search(r'#[A-D]\b', lines[i]))
                     
                     if not target_p_name:
-                        # [BUG] 这里原本如果目标不存在就直接跳过（导致流浪者完全被无视）
-                        # 今天原本是要修这个 BUG 的，按照您的要求，先完全退回到没修之前的旧代码
-                        should_move = False
-                    elif ctx in ['JOURNEY', 'PLANNER']:
+                        # [FIX] 所有孤儿任务统一归 Archive，禁止自动向 Single 写入
+                        target_p_name = f"__ORPHAN__Archive"
+                        if ctx == 'DEPLOYMENT':
+                            should_move = True
+                        elif ctx == 'PROJECT' and current_header_project:
+                            # Single 中的任务也移到 Archive
+                            if current_header_project == 'Single':
+                                should_move = True
+                            elif current_header_project == 'Archive':
+                                pass  # 已在正确位置
+                            else:
+                                should_move = True
+                    elif ctx == 'DEPLOYMENT':
+                        # Valid Project found but it was dumped into Deployment natively -> move out!
                         should_move = True
                     elif ctx == 'PROJECT' and current_header_project:
                         if current_header_project != target_p_name:
@@ -347,6 +369,8 @@ class SyncCore:
                         # Extract sync tag for formatting
                         sync_tag_m = re.search(r'(#[A-D]\b)', raw_first)
                         sync_tag = sync_tag_m.group(1) if sync_tag_m else ''
+                        
+                        is_orphan = target_p_name and target_p_name.startswith("__ORPHAN__")
 
                         if has_existing_link:
                             # === STRATEGY A: Link Preservation with proper formatting ===
@@ -360,7 +384,8 @@ class SyncCore:
                             clean_pure = re.sub(r'<span id="[a-zA-Z0-9]{6,}"(?: data-timestamps="[^"]*")?></span>', '', clean_pure)
 
                             # [FIX] Remove existing return links to prevent duplication
-                            clean_pure = re.sub(r'\[\[[^\]]*?\#\^[a-zA-Z0-9]{6,}\|[⚓\*🔗⮐📅]\]\]', '', clean_pure)
+                            # [FIX] 允许匹配带百分比后缀的反向链接 (如 [[xxx#^bid|⮐ 67%]])
+                            clean_pure = re.sub(r'\[\[[^\]]*?\#\^[a-zA-Z0-9]{6,}\|[⚓\*🔗⮐📅][^\]]*\]\]', '', clean_pure)
 
                             # [FIX] Remove routing markers like "## [[ProjectName]]" - they're only for specifying target
                             clean_pure = re.sub(r'##\s*\[\[[^\]]+\]\]', '', clean_pure)
@@ -369,21 +394,19 @@ class SyncCore:
                                 clean_pure = clean_pure.replace(sync_tag, '').strip()
                             clean_pure = re.sub(r'\s+', ' ', clean_pure).strip()
                             
-                            # [FIX] Return link target logic
-                            ret_target = target_p_name
-                            # Extract potential file links from the cleaned content
-                            m_links = re.findall(r'\[\[(.*?)(?:[\|#].*)?\]\]', clean_pure)
-                            if m_links:
-                                ret_target = m_links[0]
-                            
-                            # Build return link with span ID prefix
                             span_id = f'<span id="{bid}" data-timestamps="{data_ts}"></span>' if data_ts else f'<span id="{bid}"></span>'
-                            ret_link = f"[[{ret_target}#^{bid}|⮐]]"
-                            
-                            # Format final line: time + span_id + sync_tag + return link + preserved content
                             time_str = f"{time_part} " if time_part else ""
                             sync_str = f"{sync_tag} " if sync_tag else ""
-                            final_head_line = f"{indent_str}- [{status}] {time_str}{span_id} {sync_str}{ret_link} {clean_pure}\n"
+
+                            if is_orphan:
+                                final_head_line = f"{indent_str}- [{status}] {time_str}{span_id} {sync_str}{clean_pure}\n"
+                            else:
+                                ret_target = target_p_name
+                                m_links = re.findall(r'\[\[(.*?)(?:[\|#].*)?\]\]', clean_pure)
+                                if m_links:
+                                    ret_target = m_links[0]
+                                ret_link = f"[[{ret_target}#^{bid}|⮐]]"
+                                final_head_line = f"{indent_str}- [{status}] {time_str}{span_id} {sync_str}{ret_link} {clean_pure}\n"
                             
                             Logger.info(f"   🚚 搬运任务 (保留原链接+时间): {bid}")
                             
@@ -407,37 +430,39 @@ class SyncCore:
                                 link_clean = link.split('|')[0].split('#')[0] 
                                 if link_clean in known_projects and link_clean != target_p_name:
                                     clean_pure = re.sub(rf'\[\[{re.escape(link)}.*?\]\]', '', clean_pure).strip()
-
-                            # [FIX] Return link should point to the original file if possible, not the project main file
-                            ret_target = target_p_name
-                            if raw_link_text:
-                                m = re.match(r'\[\[(.*?)(?:[\|#].*)?\]\]', raw_link_text)
-                                if m:
-                                    ret_target = m.group(1)
-
-                            ret_link = f"[[{ret_target}#^{bid}|⮐]]"
-
-                            target_tag = f"[[{target_p_name}]]"
-                            if target_tag in clean_pure:
-                                file_tag = "" 
-                            else:
-                                file_tag = f" {target_tag}"
                             
                             if sync_tag:
                                 clean_pure = clean_pure.replace(sync_tag, '').strip()
                             clean_pure = re.sub(r'\s+', ' ', clean_pure).strip()
                             
-                            # [FIX] Use span_id prefix instead of trailing ^bid
                             span_id = f'<span id="{bid}" data-timestamps="{data_ts}"></span>' if data_ts else f'<span id="{bid}"></span>'
-                            
                             time_str = f"{time_part} " if time_part else ""
                             sync_str = f"{sync_tag} " if sync_tag else ""
-                            final_head_line = f"{indent_str}- [{status}] {time_str}{span_id} {sync_str}{ret_link}{file_tag} {clean_pure}\n"
+
+                            if is_orphan:
+                                final_head_line = f"{indent_str}- [{status}] {time_str}{span_id} {sync_str}{clean_pure}\n"
+                            else:
+                                ret_target = target_p_name
+                                if raw_link_text:
+                                    m = re.match(r'\[\[(.*?)(?:[\|#].*)?\]\]', raw_link_text)
+                                    if m:
+                                        ret_target = m.group(1)
+                                ret_link = f"[[{ret_target}#^{bid}|⮐]]"
+
+                                target_tag = f"[[{target_p_name}]]"
+                                file_tag = "" if target_tag in clean_pure else f" {target_tag}"
+                                final_head_line = f"{indent_str}- [{status}] {time_str}{span_id} {sync_str}{ret_link}{file_tag} {clean_pure}\n"
 
                         content[0] = final_head_line
                         tasks_to_move.append({'idx': i, 'len': length, 'proj': target_p_name, 'raw': content})
                         if current_bid: processed_bids.add(current_bid)
                         i += length
+                        continue
+                    else:
+                        # [FIX] 即使不移动，也跳过整个任务块（含子任务），
+                        # 防止缩进子任务被下一轮循环错误识别为独立孤儿
+                        _, skip_len = capture_block(lines, i)
+                        i += skip_len
                         continue
             i += 1
         
@@ -453,28 +478,31 @@ class SyncCore:
             if t['proj'] not in grouped: grouped[t['proj']] = []
             grouped[t['proj']].extend(t['raw'])
             
-        # === Logic 4: Safe Insertion ===
-        j_idx = -1
-        for idx, line in enumerate(lines):
-            if line.strip() == "# Journey":
-                j_idx = idx
-                break
-        
-        if j_idx == -1: j_idx = len(lines)
-        
+        normal_grouped = {k: v for k, v in grouped.items() if not k.startswith("__ORPHAN__")}
+        orphan_grouped = {k.replace("__ORPHAN__", ""): v for k, v in grouped.items() if k.startswith("__ORPHAN__")}
+
+        # [NEW TRANSITION] 按照新设计，所有 "正常识别的分类项目" 都应该算是 "被归档"，
+        # 统一转交给 Archive 层级利用 Logic 5 重新分组并生成 `### [[xxx]]`。
+        if "Archive" not in orphan_grouped:
+            orphan_grouped["Archive"] = []
+        for proj, blocks in normal_grouped.items():
+            orphan_grouped["Archive"].extend(blocks)
+        normal_grouped.clear()
+
+        # === Logic 4: Safe Insertion (Normal Projects) - DEPRECATED ===
+        # 寻找合适的插入点: 避开内置结构 (# Deployment / # Log)
         ins_pt = len(lines)
-        for i in range(j_idx + 1, len(lines)):
-            if lines[i].startswith('# '): 
-                ins_pt = i
+        for idx, line in enumerate(lines):
+            if line.strip() == "# Log":
+                ins_pt = idx
                 break
                 
         offset = 0
-        for proj, blocks in grouped.items():
+        for proj, blocks in normal_grouped.items():
             target_header_clean = f"## [[{proj}]]".replace(" ", "")
             h_idx = -1
-            for k in range(j_idx, ins_pt + offset):
-                current_line_clean = lines[k].strip().replace(" ", "")
-                if current_line_clean == target_header_clean:
+            for k in range(0, ins_pt + offset):
+                if lines[k].strip().replace(" ", "") == target_header_clean:
                     h_idx = k
                     break
             
@@ -492,6 +520,117 @@ class SyncCore:
                 chunk = [f"\n## [[{proj}]]\n"] + blocks
                 lines[ins_pt + offset:ins_pt + offset] = chunk
                 offset += len(chunk)
+
+        # === Logic 5: Safe Insertion (Orphans to # Deployment) ===
+        if orphan_grouped:
+            deploy_idx = -1
+            for idx, line in enumerate(lines):
+                if line.strip() == "# Deployment":
+                    deploy_idx = idx
+                    break
+            
+            if deploy_idx == -1:
+                # Add it right before the last offset (or EOF)
+                lines.insert(ins_pt + offset, "\n# Deployment\n")
+                deploy_idx = ins_pt + offset
+                offset += 1
+                
+            sub_ins_pt = len(lines)
+            for i in range(deploy_idx + 1, len(lines)):
+                if lines[i].startswith('# '): 
+                    sub_ins_pt = i
+                    break
+                    
+            for proj_key, blocks in orphan_grouped.items():
+                # proj_key 可能是 "Archive" 或 "Single"
+                # 但是根据用户要求，由于孤儿可能携带子项目（哪怕不是被识别的根目录），
+                # 我们需要在 Archive (如果 proj_key == Archive 的话) 下生成 `### [[xxx]]`
+                
+                sub_grouped = {}
+                i_blk = 0
+                while i_blk < len(blocks):
+                    line_text = blocks[i_blk]
+                    next_idx = i_blk + 1
+                    base_indent = get_indent_depth(line_text)
+                    # 寻找包含多少行是一个完整的 task block
+                    while next_idx < len(blocks):
+                        curr_line = blocks[next_idx]
+                        if re.match(r'^[\s>]*-\s*\[.\]', curr_line):
+                            if get_indent_depth(curr_line) <= base_indent:
+                                break
+                        next_idx += 1
+                    
+                    task_chunk = blocks[i_blk:next_idx]
+                    
+                    # 尝试从该任务第一行提取出一个代表其归属的双链（即使用户手动写的临时连接）
+                    first_link_m = re.findall(r'\[\[(.*?)(?:[\|#].*)?\]\]', line_text)
+                    sub_proj = "Uncategorized"
+                    if first_link_m:
+                        sub_proj = first_link_m[0]
+                        
+                    if sub_proj not in sub_grouped:
+                        sub_grouped[sub_proj] = []
+                    sub_grouped[sub_proj].extend(task_chunk)
+                    
+                    i_blk = next_idx
+
+                # 为当前大分组（## Single 或 ## Archive）生成或寻找定位点
+                target_header_clean = f"## {proj_key}".replace(" ", "")
+                h_idx = -1
+                for k in range(deploy_idx, sub_ins_pt):
+                    # [FIX] 剥离尾部百分比后再比较，防止 "## Archive 100%" 无法匹配
+                    current_line_clean = re.sub(r'(?:\s+\d+%)+[\s]*$', '', lines[k].strip()).replace(" ", "")
+                    if current_line_clean == target_header_clean:
+                        h_idx = k
+                        break
+                
+                if h_idx == -1:
+                    lines.insert(sub_ins_pt, f"\n## {proj_key}\n")
+                    h_idx = sub_ins_pt
+                    sub_ins_pt += 2
+                    
+                # 在 ## proj_key 内部分别插入每个 sub_proj
+                for sub_proj, sub_blocks in sub_grouped.items():
+                    if sub_blocks and not sub_blocks[-1].endswith('\n'): sub_blocks[-1] += '\n'
+                    
+                    # 如果是没有连接的普通流浪者，直接挂载到 二级标题下
+                    if sub_proj == "Uncategorized":
+                        insert_here = h_idx + 1
+                        lines[insert_here:insert_here] = sub_blocks
+                        sub_ins_pt += len(sub_blocks)
+                        continue
+                        
+                    sub_header_clean = f"### [[{sub_proj}]]".replace(" ", "")
+                    sh_idx = -1
+                    insert_here = sub_ins_pt
+                    
+                    # 寻找同名三级标题
+                    for k in range(h_idx + 1, sub_ins_pt):
+                        if lines[k].startswith('## '):
+                            insert_here = k
+                            break
+                        
+                        # [FIX] 剥离目标行的进度百分比，防止 "###[[xxx]]50%" 这类标题被遗漏而重复创建
+                        current_title_clean = lines[k].strip()
+                        current_title_clean = re.sub(r'(?:\s+\d+%)+[ \t]*$', '', current_title_clean).replace(" ", "")
+                        
+                        if current_title_clean == sub_header_clean:
+                            sh_idx = k
+                            continue
+                            
+                    if sh_idx != -1:
+                        # 追加到已知的三级标题后（碰到下一个 # 或者 ## 或者 ### 停止）
+                        target_idx = sub_ins_pt
+                        for k in range(sh_idx + 1, sub_ins_pt):
+                            if lines[k].startswith('#'):
+                                target_idx = k
+                                break
+                        lines[target_idx:target_idx] = sub_blocks
+                        sub_ins_pt += len(sub_blocks)
+                    else:
+                        chunk = [f"\n### [[{sub_proj}]]\n"] + sub_blocks
+                        lines[insert_here:insert_here] = chunk
+                        sub_ins_pt += len(chunk)
                 
         Logger.info(f"归档 {len(tasks_to_move)} 个流浪/纠偏任务", date_tag)
         Logger.info(f"   💾 [WRITE] 更新归档文件: {os.path.basename(filepath)}")
@@ -515,7 +654,7 @@ class SyncCore:
                     Logger.error_once(f"tmpl_fail_{target_date}", f"模版创建失败: {e}")
             else:
                 Logger.info(f"   ⚠️ 未找到模版文件 ({Config.REL_TEMPLATE_FILE})，创建基础骨架: {target_date}.md")
-                base_scaffold = ["# Day planner\n", "\n", "# Journey\n", "\n"]
+                base_scaffold = ["# Deployment\n", "\n", "## Single\n", "\n", "## Archive\n", "\n"]
                 FileUtils.write_file(daily_path, base_scaffold)
 
         organized_bids = set()

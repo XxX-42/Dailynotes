@@ -9,7 +9,7 @@ class Config:
     # ==========================
     VAULT_ROOT = r'/Users/user999/Documents/【Liang_project】/远程仓库1'
     REL_ATTACHMENT_DIR = r'【ATTACHMENT】'
-    REL_TEMPLATE_FILE = r'【002_Infobox】/Templates/DayPlanTemplate_beta.md'
+    REL_TEMPLATE_FILE = r'00_Infobox/Templates/DayPlanTemplate_beta 2.md'
 
     # 自动拼接
     DAILY_NOTE_DIR = os.path.join(VAULT_ROOT, REL_ATTACHMENT_DIR, r'【DAILYNOTE】')
@@ -32,7 +32,7 @@ class Config:
 
     # 运行参数
     SYNC_START_DATE = "2025-12-08"
-    TYPING_COOLDOWN_SECONDS = 6
+    TYPING_COOLDOWN_SECONDS = 0
     IMAGE_PARAM_SUFFIX = "|L|200"
     DEBUG_MODE = True
     
@@ -41,7 +41,7 @@ class Config:
     DEBUG_TODAY_ONLY = 0
     
     # [v1.4] 事件驱动模式参数
-    EVENT_DEBOUNCE_SECONDS = 0.5   # 事件触发防抖时间（秒）
+    EVENT_DEBOUNCE_SECONDS = 0.1   # 事件触发防抖时间（秒）
     
     # [v4.0] 新任务主键注入延迟
     # 当检测到新创建的待同步任务（如 #B）时，延迟 X 秒再注入主键，防止破坏用户打字体验
@@ -69,7 +69,7 @@ class Config:
     # [v2.0] EventKit Sync
     # No file watching required for calendar
     # 范围限制
-    DAILY_NOTE_SECTIONS = ['# Day planner', '# Journey']
+    DAILY_NOTE_SECTIONS = ['# Deployment', '## Single', '## Archive']
     SOURCE_FILE_CALLOUTS = ['> [!note] Tasks', '> [!note]- Tasks', '> [!note]+ Tasks']
 
     # ==========================
@@ -86,6 +86,15 @@ class Config:
         {"tag": "#B", "calendar": "重要不紧急"},
         {"tag": "#C", "calendar": "紧急不重要"},
         {"tag": "#D", "calendar": "不重要不紧急"}
+    ]
+
+    # [NEW] ICE 模型评分段配置
+    # 策略：如果任务包含 ICE 分数，则根据分数自动分配象限标签
+    ICE_THRESHOLDS = [
+        {"min": 500, "tag": "#A", "calendar": "重要紧急"},
+        {"min": 250, "tag": "#B", "calendar": "重要不紧急"},
+        {"min": 100, "tag": "#C", "calendar": "紧急不重要"},
+        {"min": 0,   "tag": "#D", "calendar": "不重要不紧急"}
     ]
 
     # 警报规则

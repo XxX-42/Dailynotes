@@ -237,33 +237,33 @@ class ObsidianEventHandler(FileSystemEventHandler):
                 Logger.debug(f"[Event] 忽略自写入事件: {os.path.basename(filepath)}")
                 return
             
-            # [v3.6] 根据来源类型等待不同时间，避免打断用户或同步过程
+            # [v4.0] 两阶段响应：即时格式化 + 延迟归档
+            # 阶段1：毫秒级即时响应 — 立即执行 FormatCore（更新进度百分比、ICE 指数）
+            time.sleep(0.1)  # 最短等待，确保文件写入完成
+            
+            # 即时执行格式化（进度、ICE 指数更新），仅限日记文件
+            filename = os.path.basename(filepath)
+            is_daily = bool(re.match(r'^\d{4}-\d{2}-\d{2}\.md$', filename))
+            if is_daily:
+                try:
+                    if FormatCore.execute(filepath):
+                        Logger.info(f"⚡ [Instant] 进度即时更新: {filename}")
+                except Exception as e:
+                    Logger.error_once(f"instant_fmt_{filepath}", f"即时格式化异常: {e}")
+            
+            # 阶段2：延迟归档同步 — 等待用户停止输入后再执行重量级操作
             if change_source == 'OBSIDIAN_TYPING':
-                delay = Config.CHANGE_SOURCE_TYPING_DELAY
-                Logger.debug(f"[Event] 用户打字中，等待 {delay}s 后处理...")
+                delay = Config.CHANGE_SOURCE_TYPING_DELAY  # 15 秒
+                Logger.debug(f"[Event] 用户输入中，等待 {delay}s 后执行归档同步...")
             elif change_source == 'OBSIDIAN_SYNC':
-                delay = Config.CHANGE_SOURCE_SYNC_DELAY
-                Logger.debug(f"[Event] 后台同步中，等待 {delay}s 后处理...")
+                delay = Config.CHANGE_SOURCE_SYNC_DELAY  # 25 秒
+                Logger.debug(f"[Event] 后台同步中，等待 {delay}s 后执行归档同步...")
             else:
-                delay = Config.CHANGE_SOURCE_TYPING_DELAY  # 默认使用较短延迟
+                delay = Config.CHANGE_SOURCE_TYPING_DELAY  # 默认使用打字延迟
             
             time.sleep(delay)
             
-            # 等待后再次检查文件是否仍然存在且内容未再次变化
-            # 如果在等待期间文件又被修改了，新的事件会被触发，这里可以跳过
-            try:
-                new_content = FileUtils.read_content(filepath)
-                if new_content is None:
-                    Logger.debug(f"[Event] 文件已不存在，跳过: {os.path.basename(filepath)}")
-                    return
-                new_hash = FileUtils.calculate_hash(new_content)
-                if new_hash != content_hash:
-                    Logger.debug(f"[Event] 文件在等待期间已变化，跳过本次处理: {os.path.basename(filepath)}")
-                    return
-            except Exception:
-                pass
-            
-            Logger.info(f"📝 [Event] 检测到用户变更: {os.path.basename(filepath)}")
+            Logger.info(f"📝 [Event] 延迟归档触发: {os.path.basename(filepath)}")
             self.manager.on_file_changed(filepath)
             
         except Exception as e:

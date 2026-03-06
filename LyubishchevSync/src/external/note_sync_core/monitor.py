@@ -1551,94 +1551,146 @@ tags:
                 return False
 
             # 解析并格式化
+            # 解析并提取数据
             groups = re.findall(r'\(([^)]+)\)', line_content)
             if not groups:
                 return False
 
-            formatted_lines = []
-            
-            # 使用字典暂存以便排序或过滤 (虽然这里顺序重要)
-            # 用户期望顺序: type, name, cost, time
-            
+            data = {}
             for g in groups:
                 if '::' in g:
                     k, v = g.split('::', 1)
                     k = k.strip()
-                    v = v.strip()
+                    v = v.strip().replace('$', '')
                     
-                    # 1. 清理 $ 符号
-                    if '$' in v:
-                        v = v.replace('$', '')
-                    
-                    # 2. 只有看到要求的字段才保留? 或者保留全量但格式化特定字段?
-                    # 用户列出了 type, name, cost, time。如果有其他字段，暂且保留以免丢失数据。
-                    
-                    # 3. 格式化时间
-                    if k == 'tradetime':
-                        # v is like "2026/2/12 00:19:36"
-                        # Extract HH:MM
-                        # Try regex or split
-                        time_match = re.search(r'(\d{1,2}[:：]\d{2})', v)
-                        if time_match:
-                            v = time_match.group(1) # 00:19
-                    
-                    formatted_lines.append(f"({k}::{v})\n")
-                else:
-                    formatted_lines.append(f"({g})\n")
+                    # [v2.1] 保留原始名称，不进行 KEYWORD_MAPPING 映射 (除非用户明确要求)
+                    # 之前由于解析逻辑可能会误触映射，这里显式保留原始格式
+                    data[k] = v
             
-            # 添加空行分隔 (Entry Spacer)
-            formatted_lines.append('\n')
+            # 必须包含核心字段
+            if 'tradetype' not in data and 'tradecost' not in data:
+                return False
+
+            # 字段预处理
+            t_time = data.get('tradetime', datetime.datetime.now().strftime('%H:%M'))
+            time_match = re.search(r'(\d{1,2}[:：]\d{2})', t_time)
+            if time_match:
+                t_time = time_match.group(1)
+
+            t_type = data.get('tradetype', '').strip()
+            t_name = data.get('tradename', '').strip()
+            t_cost = data.get('tradecost', '0').strip()
+
+            # 构造表格行字符串 (Markdown 风格)
+            new_table_row = f"| {t_time} | {t_type} | {t_name} | {t_cost} |\n"
 
             # 读取文件并插入
             with open(daily_note_path, 'r', encoding='utf-8') as f:
                 lines = f.readlines()
             
+            # 二、防重复检测与清洗
+            # 1. 检查表格行是否已存在
+            row_content_to_check = f"| {t_time} | {t_type} | {t_name} | {t_cost} |"
+            is_duplicate = False
+            
+            # 2. 构建需要清洗的原始括号行匹配集合
+            # 原始数据是多行格式, 每行一个 (tradeXXX::value), 需要逐行匹配
+            raw_patterns_to_clean = set()
+            for field_key, field_val in data.items():
+                raw_patterns_to_clean.add(f"({field_key}::{field_val})")
+            
+            new_doc_lines = []
+            cleaned_any_raw = False
+            
+            for line in lines:
+                # 检查是否是表格行重复
+                if row_content_to_check in line:
+                    is_duplicate = True
+                
+                # 检查当前行是否是残留的原始括号行 (逐行独立匹配)
+                # 例如: "(tradetype::-食物)\n" 或 "(tradename::99)\n"
+                line_stripped = line.strip()
+                if line_stripped in raw_patterns_to_clean:
+                    cleaned_any_raw = True
+                    continue  # 剔除此行
+                
+                new_doc_lines.append(line)
+            
+            # 如果剔除了原始行，需要写回文件
+            if cleaned_any_raw:
+                lines = new_doc_lines
+                self._log(f"🧹 [Account] 已清洗 {len(raw_patterns_to_clean)} 条残留原始括号行")
+            
+            if is_duplicate:
+                # 表格行已存在，不需要再插入
+                if cleaned_any_raw:
+                    # 虽然表格已存在，但需要写回清洗结果
+                    with open(daily_note_path, 'w', encoding='utf-8') as f:
+                        f.writelines(lines)
+                self._log(f"⏭️ [Account] 跳过重复记账: {t_time} - {t_name} ({t_cost})")
+                return True
+
+
             target_section = "## #account"
-            insert_idx = -1
+            section_start_idx = -1
             
             # 寻找章节
             for i, line in enumerate(lines):
-                if line.strip() == target_section:
-                    insert_idx = i + 1
+                if line.strip().lower() == target_section.lower():
+                    section_start_idx = i
                     break
             
-            if insert_idx != -1:
-                # 确保章节下有空行
-                if insert_idx < len(lines) and lines[insert_idx].strip() != "":
-                    lines.insert(insert_idx, '\n')
-                    insert_idx += 1 # 移动插入点到空行之后
-                elif insert_idx == len(lines):
-                    lines.append('\n')
-                    insert_idx += 1
-
-                # 寻找下一个章节的位置
-                next_section_idx = len(lines)
-                for i in range(insert_idx, len(lines)):
-                    if lines[i].strip().startswith("## "):
-                        next_section_idx = i
-                        break
-                
-                # 追加到该章节末尾（next_section_idx 之前）
-                # 检查前一行是否为空行，如果不是则添加
-                if next_section_idx > 0 and lines[next_section_idx - 1].strip() != "":
-                    lines.insert(next_section_idx, '\n')
-                    next_section_idx += 1
-                
-                # 插入内容
-                for fl in reversed(formatted_lines):
-                    lines.insert(next_section_idx, fl)
-            else:
+            if section_start_idx == -1:
                 # 章节不存在，追加
-                # 确保前文有换行
                 if lines and not lines[-1].endswith('\n'):
                     lines.append('\n')
+                lines.append(f"\n{target_section}\n\n")
+                lines.append("| 时间 | 类型 | 名称 | 金额 |\n")
+                lines.append("| --- | --- | --- | --- |\n")
+                lines.append(new_table_row)
+                self._log(f"📝 [Account] 已创建 #account 章节并写入: {t_name}")
+            else:
+                # 章节存在，寻找表格或在章节下方创建
+                # 扫描章节下方内容
+                table_header_idx = -1
+                last_table_row_idx = -1
                 
-                lines.append(f"\n{target_section}\n") # Section header
-                lines.append('\n') # Spacer after header
-                lines.extend(formatted_lines)
+                next_header_idx = len(lines)
+                for i in range(section_start_idx + 1, len(lines)):
+                    l_strip = lines[i].strip()
+                    if l_strip.startswith("## "):
+                        next_header_idx = i
+                        break
+                    if l_strip.startswith("| 时间 |") or (l_strip.startswith("|") and "金额" in l_strip):
+                        table_header_idx = i
+                    elif table_header_idx != -1 and l_strip.startswith("|"):
+                        last_table_row_idx = i
+                
+                if table_header_idx == -1:
+                    # 没找到表格，在章节下方插入新表格
+                    insert_pos = section_start_idx + 1
+                    # 确保有一个空行
+                    if insert_pos < len(lines) and lines[insert_pos].strip() != "":
+                         lines.insert(insert_pos, "\n")
+                         insert_pos += 1
+                    
+                    lines.insert(insert_pos, "| 时间 | 类型 | 名称 | 金额 |\n")
+                    lines.insert(insert_pos + 1, "| --- | --- | --- | --- |\n")
+                    lines.insert(insert_pos + 2, new_table_row)
+                    self._log(f"📝 [Account] 已新建表格并写入: {t_name}")
+                else:
+                    # 找到表格，追加到末尾
+                    if last_table_row_idx != -1:
+                        # 在原有表格最后一行之后插入
+                        lines.insert(last_table_row_idx + 1, new_table_row)
+                    else:
+                        # 只有表头和分隔行，在分隔行 (table_header_idx + 1) 后插入
+                        lines.insert(table_header_idx + 2, new_table_row)
+                    self._log(f"📝 [Account] 已同步至表格: {t_name}")
             
             with open(daily_note_path, 'w', encoding='utf-8') as f:
                 f.writelines(lines)
+
                 
             return True
 

@@ -563,10 +563,21 @@ class SyncCore:
                     task_chunk = blocks[i_blk:next_idx]
                     
                     # 尝试从该任务第一行提取出一个代表其归属的双链（即使用户手动写的临时连接）
-                    first_link_m = re.findall(r'\[\[(.*?)(?:[\|#].*)?\]\]', line_text)
+                    first_link_m = re.findall(r'\[\[(.*?)(?:[\|#].*?)?\]\]', line_text)
                     sub_proj = "Uncategorized"
                     if first_link_m:
-                        sub_proj = first_link_m[0]
+                        for candidate_link in first_link_m:
+                            pot_link = unicodedata.normalize('NFC', candidate_link.strip())
+                            # 优先：链接本身就是 main 项目
+                            if pot_link in self.project_path_map:
+                                sub_proj = pot_link
+                                break
+                            # 回退：链接指向的文件不是 main，但同级/祖先级有 main 项目
+                            if pot_link in self.file_path_map:
+                                nearest = self.calculate_nearest_project(self.file_path_map[pot_link])
+                                if nearest:
+                                    sub_proj = nearest
+                                    break
                         
                     if sub_proj not in sub_grouped:
                         sub_grouped[sub_proj] = []
@@ -591,7 +602,11 @@ class SyncCore:
                     
                 # 在 ## proj_key 内部分别插入每个 sub_proj
                 for sub_proj, sub_blocks in sub_grouped.items():
-                    if sub_blocks and not sub_blocks[-1].endswith('\n'): sub_blocks[-1] += '\n'
+                    # [FIX] 去除块末尾的多余空行，防止归档后产生大量连续空行
+                    while len(sub_blocks) > 0 and not sub_blocks[-1].strip():
+                        sub_blocks.pop()
+                    if not sub_blocks: continue
+                    if not sub_blocks[-1].endswith('\n'): sub_blocks[-1] += '\n'
                     
                     # 如果是没有连接的普通流浪者，直接挂载到 二级标题下
                     if sub_proj == "Uncategorized":
@@ -709,19 +724,23 @@ class SyncCore:
                             if link_match:
                                 pot = link_match.group(1).strip()
                                 pot = unicodedata.normalize('NFC', pot)
-                                target_file = None
+                                linked_file_path = None
                                 if pot in self.project_path_map:
-                                    target_file = self.project_path_map[pot]
+                                    linked_file_path = self.project_path_map[pot]
                                 elif pot in self.file_path_map:
-                                    target_file = self.file_path_map[pot]
-                                if target_file:
-                                    raw_indent = get_indent_depth(line)  # [MODIFIED]
-                                    raw, c = capture_block(dn_lines, i)
-                                    new_dn_tasks.append(
-                                        {'proj': self.project_map.get(os.path.dirname(target_file), pot), 'idx': i,
-                                         'len': c, 'raw': raw, 'st': tm.group(1), 'indent': raw_indent})
-                                    i += c;
-                                    continue
+                                    linked_file_path = self.file_path_map[pot]
+                                    
+                                if linked_file_path:
+                                    # [FIX] 获取该文件所在的离它最近的含有 main 标签的项目
+                                    target_proj_name = self.calculate_nearest_project(linked_file_path)
+                                    if target_proj_name:
+                                        raw_indent = get_indent_depth(line)
+                                        raw, c = capture_block(dn_lines, i)
+                                        new_dn_tasks.append(
+                                            {'proj': target_proj_name, 'idx': i,
+                                             'len': c, 'raw': raw, 'st': tm.group(1), 'indent': raw_indent})
+                                        i += c
+                                        continue
                 i += 1
 
         dn_mod = False
@@ -731,7 +750,8 @@ class SyncCore:
                 p_name = nt['proj'];
                 txt = nt['raw'][0];
                 clean = clean_task_text(txt)
-                tgt = extract_routing_target(txt, self.file_path_map) or self.project_path_map.get(p_name)
+                # [FIX] 严格校验 target 目标，必须是包含 main 标签的项目 (project_path_map)
+                tgt = extract_routing_target(txt, self.project_path_map) or self.project_path_map.get(p_name)
                 if not tgt: continue
                 bid = self.generate_block_id().replace('^', '')
                 fname = os.path.splitext(os.path.basename(tgt))[0]

@@ -79,6 +79,9 @@ class ObsidianEventHandler(FileSystemEventHandler):
         super().__init__()
         self.manager = manager
         self._last_event_time = {}
+        
+        # [v4.1] 新增延迟打字重置定时器映射表
+        self._delayed_timers = {}
 
     def _detect_change_source(self, filepath: str, is_system_write: bool) -> str:
         """
@@ -246,25 +249,36 @@ class ObsidianEventHandler(FileSystemEventHandler):
             is_daily = bool(re.match(r'^\d{4}-\d{2}-\d{2}\.md$', filename))
             if is_daily:
                 try:
-                    if FormatCore.execute(filepath):
+                    if FormatCore.execute(filepath, instant=True):
                         Logger.info(f"⚡ [Instant] 进度即时更新: {filename}")
                 except Exception as e:
                     Logger.error_once(f"instant_fmt_{filepath}", f"即时格式化异常: {e}")
             
-            # 阶段2：延迟归档同步 — 等待用户停止输入后再执行重量级操作
+            # [v4.1] 阶段2：动态重置（防抖）定时器的延迟归档
+            def delayed_archiving_task():
+                Logger.info(f"📝 [Event] 计时结束，延迟归档触发: {os.path.basename(filepath)}")
+                try:
+                    self.manager.on_file_changed(filepath)
+                except Exception as e:
+                    Logger.error_once(f"timer_err_{filepath}", f"定时器触发同步异常: {e}")
+
+            # 清理之前的定时器（如果你在 15 秒内又打字了，系统重新开始倒计时 15 秒）
+            if filepath in self._delayed_timers:
+                self._delayed_timers[filepath].cancel()
+
             if change_source == 'OBSIDIAN_TYPING':
-                delay = Config.CHANGE_SOURCE_TYPING_DELAY  # 15 秒
-                Logger.debug(f"[Event] 用户输入中，等待 {delay}s 后执行归档同步...")
+                delay = getattr(Config, 'CHANGE_SOURCE_TYPING_DELAY', 15.0)
+                Logger.debug(f"[Event] 检测到用户输入，已重置倒计时 {delay}s...")
             elif change_source == 'OBSIDIAN_SYNC':
-                delay = Config.CHANGE_SOURCE_SYNC_DELAY  # 25 秒
-                Logger.debug(f"[Event] 后台同步中，等待 {delay}s 后执行归档同步...")
+                delay = getattr(Config, 'CHANGE_SOURCE_SYNC_DELAY', 25.0)
+                Logger.debug(f"[Event] 检测到后台同步，已重置倒计时 {delay}s...")
             else:
-                delay = Config.CHANGE_SOURCE_TYPING_DELAY  # 默认使用打字延迟
-            
-            time.sleep(delay)
-            
-            Logger.info(f"📝 [Event] 延迟归档触发: {os.path.basename(filepath)}")
-            self.manager.on_file_changed(filepath)
+                delay = getattr(Config, 'CHANGE_SOURCE_TYPING_DELAY', 15.0)
+                
+            # 设置新的倒计时线程
+            new_timer = threading.Timer(delay, delayed_archiving_task)
+            self._delayed_timers[filepath] = new_timer
+            new_timer.start()
             
         except Exception as e:
             Logger.error_once(f"event_err_{filepath}", f"事件处理异常: {e}")

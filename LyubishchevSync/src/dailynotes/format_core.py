@@ -603,9 +603,9 @@ class FormatCore:
                 new_table_lines.append(old_table_lines[0])
                 new_table_lines.append(old_table_lines[1])
             else:
-                new_header = ["id", "cost", "aim to", "progress", "Impact", "Confidence", "Ease", "ICE Score"]
+                new_header = ["id", "cost", "aim to", "progress", "Impact", "Confidence", "Ease", "ICE Score", "complete"]
                 new_table_lines.append("| " + " | ".join(new_header) + " |")
-                new_table_lines.append("| --- | ---- | ------ | -------- | ------ | ---------- | ---- | --------- |")
+                new_table_lines.append("| --- | ---- | ------ | -------- | ------ | ---------- | ---- | --------- | -------- |")
             
              # 使用 Archive 扫描到的数据为主键遍历
             for display_label, data_obj in archive_projects.items():
@@ -690,6 +690,12 @@ class FormatCore:
                     else:
                         ice_score = old_cols[7] if len(old_cols) > 7 else ""
                 
+                # 判断是否读取了 complete 列，旧表格可能没有该列
+                old_complete = old_cols[8] if len(old_cols) > 8 else ""
+                
+                # 新增计算 complete 逻辑。默认如果 pct 达到 100% 则输出 ✅，否则输出 ❌或空，此处我们先设为空，您可以自行修改
+                complete_val = "✅" if progress_col == "100%" else old_complete
+                
                 # === 判断是否发生实质性变动 ===
                 old_cost = old_cols[1] if len(old_cols) > 1 else ""
                 old_progress = old_cols[3] if len(old_cols) > 3 else ""
@@ -698,7 +704,7 @@ class FormatCore:
                 old_ease = old_cols[6] if len(old_cols) > 6 else ""
                 old_ice_score = old_cols[7] if len(old_cols) > 7 else ""
                 
-                if old_row_line and cost == old_cost and progress_col == old_progress and impact_val == old_impact and confidence_val == old_confidence and ease_val == old_ease and ice_score == old_ice_score:
+                if old_row_line and cost == old_cost and progress_col == old_progress and impact_val == old_impact and confidence_val == old_confidence and ease_val == old_ease and ice_score == old_ice_score and complete_val == old_complete:
                     # 原行参数未变（无实质变更），复用旧行但确保链接内 | 已转义
                     def _escape_row_links(row_text):
                         def _esc(tm):
@@ -709,7 +715,7 @@ class FormatCore:
                 else:
                     # 如果这行真的需要刷新（例如你刚填入了 Ease 的值），就重组成精简紧凑的一行
                     # (下一次脚本再读此文件的时候就会变成无实质变更，从而停止修改死循环)
-                    row_str = f"| {display_label} | {cost} | {aim} | {progress_col} | {impact_val} | {confidence_val} | {ease_val} | {ice_score} |"
+                    row_str = f"| {display_label} | {cost} | {aim} | {progress_col} | {impact_val} | {confidence_val} | {ease_val} | {ice_score} | {complete_val} |"
                     new_table_lines.append(row_str)
                 
             # 执行文本替换
@@ -720,9 +726,9 @@ class FormatCore:
             # === 如果表格甚至 Insights 标题不存在，我们自动生成 ===
             # 构建一个由底层向上渲染的全新空表格
             new_table_lines = []
-            new_header = ["id", "cost", "aim to", "progress", "Impact", "Confidence", "Ease", "ICE Score"]
+            new_header = ["id", "cost", "aim to", "progress", "Impact", "Confidence", "Ease", "ICE Score", "complete"]
             new_table_lines.append("| " + " | ".join(new_header) + " |")
-            new_table_lines.append("| --- | ---- | ------ | -------- | ------ | ---------- | ---- | --------- |")
+            new_table_lines.append("| --- | ---- | ------ | -------- | ------ | ---------- | ---- | --------- | -------- |")
             
             for display_label, data_obj in archive_projects.items():
                 pct = data_obj["pct"]
@@ -737,11 +743,14 @@ class FormatCore:
                 
                 aim = ""
                 progress_col = ""
+                complete_val = ""
                 if pct:
                     pct_val = pct.replace('%', '')
                     progress_col = f"{pct_val}%"
+                    if progress_col == "100%":
+                        complete_val = "✅"
                     
-                row_str = f"| {display_label} | {cost} | {aim} | {progress_col} |  |  |  |  |"
+                row_str = f"| {display_label} | {cost} | {aim} | {progress_col} |  |  |  |  | {complete_val} |"
                 new_table_lines.append(row_str)
             new_table_lines.append("") # 行尾空行缓冲
             

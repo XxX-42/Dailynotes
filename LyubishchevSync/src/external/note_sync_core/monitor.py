@@ -1130,9 +1130,9 @@ tags:
         existing_lines = lines[start_idx:end_idx]
         entries = []
         
-        # 将新条目加入列表
-        entries.append(new_parsed)
-
+        # **修复策略：先解析旧条目，然后开启严格的复合指纹匹配**
+        # 取消对新条目的无脑追加，转而验证是否重复
+        
         # 解析旧条目
         # 预期格式: HH:MM<span id="HH:MM:SS"></span> Key::Value
         # 或者旧格式: - HH:MM...
@@ -1176,6 +1176,20 @@ tags:
                     'content': line,
                     'raw': line + '\n'
                 })
+
+        # **去重拦截核心逻辑**：检查是否已有完全一样的数据
+        is_duplicate = False
+        new_ts = new_parsed.get('full_ts', '')
+        new_content = new_parsed.get('content', '')
+        
+        for e in entries:
+            if e.get('full_ts') == new_ts and e.get('content') == new_content:
+                is_duplicate = True
+                break
+                
+        # 通过验证：无重复历史档案，方可加入合并序列
+        if not is_duplicate:
+            entries.append(new_parsed)
 
         # 4. 排序与分组
         # 先按 Key 字母序，再按 Time 倒序 (最新的在最前)

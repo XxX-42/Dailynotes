@@ -21,7 +21,7 @@ from dailynotes.utils import ProcessLock, Logger
 
 class LyubishchevApp(rumps.App):
     def __init__(self):
-        super(LyubishchevApp, self).__init__("AG", title="⏳ AG")
+        super(LyubishchevApp, self).__init__("柳比歇夫", title="⏳ 柳比歇夫")
         self.menu = [
             rumps.MenuItem("Status: Initializing...", callback=None),
             None,
@@ -77,7 +77,7 @@ class LyubishchevApp(rumps.App):
         Logger.info("✅ [GUI] Lock acquired. Starting engine...")
         try:
              # Update Status UI (Safely?)
-            self.title = "🚀 AG"
+            self.title = "🚀 柳比歇夫"
             self.menu["Status: Initializing..."].title = "Status: Running"
         except: pass
 
@@ -109,7 +109,21 @@ class LyubishchevApp(rumps.App):
 
     @rumps.clicked("Restart Sync")
     def restart_sync(self, _):
-        rumps.alert("Restart Required", "Please usage 'Quit' to stop the app completely, then restart it via the script.")
+        # 弹窗提示正在重启
+        rumps.notification("柳比歇夫", "Restarting...", "The synchronization engine is restarting.")
+        
+        # 组装完整的后台启动 shell 命令
+        python_path = "/Users/user999/Documents/【Liang_project】/Code_Scripits/2025_DailynoteSync_complete_beta_v2/.venv/bin/python"
+        script_path = "/Users/user999/Documents/【Liang_project】/Code_Scripits/2025_DailynoteSync_complete_beta_v2/LyubishchevSync/gui_main.py"
+        log_path = "/tmp/LyubishchevSync_startup.log"
+        
+        cmd = f'export PYTHONIOENCODING=utf-8; "{python_path}" -u "{script_path}" > "{log_path}" 2>&1 &'
+        
+        # 使用 subprocess 启动全新分离的后台进程
+        subprocess.Popen(cmd, shell=True)
+        
+        # 退出当前进程（完成替换接力）
+        rumps.quit_application()
 
     def start(self):
         # Start the sync logic thread

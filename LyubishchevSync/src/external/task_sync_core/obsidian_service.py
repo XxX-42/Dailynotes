@@ -55,40 +55,44 @@ def parse_obsidian_line(line, line_index):
         end_time = end_time.zfill(5)
 
     target_calendar = DEFAULT_CALENDAR
-    clean_name = raw_text.strip()
+    
+    # [安全增强] 提取展示层专用名称（过滤 HTML 标签、双向链接方括号）
+    display_name = raw_text.strip()
+    display_name = re.sub(r"<[^>]*>", "", display_name).strip() 
+    display_name = re.sub(r"\[\[(.*?)\]\]", r"\1", display_name).strip()
+
     found_tag = ""
 
     # [NEW] ICE 模型自适应路由逻辑
-    # 如果任务行包含 🚀ICE:数字 或 ICE:数字，则根据数字自动分配日历和标签
-    ice_match = re.search(r'(?:🚀ICE:|ICE:)\s*(\d+)', clean_name)
+    ice_match = re.search(r'(?:🚀ICE:|ICE:)\s*(\d+)', display_name)
     if ice_match:
         try:
             score = int(ice_match.group(1))
-            # 查找符合阈值的配置
             for entry in Config.ICE_THRESHOLDS:
                 if score >= entry["min"]:
                     target_calendar = entry["calendar"]
                     found_tag = entry["tag"]
-                    # 将匹配到的分数标记从 clean_name 中移除（作为元数据处理）
-                    # 或者选择保留它以在日历里看到分数
                     break
+            # 将 ICE 分数从日历展示名中剔除，保持清爽
+            display_name = re.sub(r'(?:🚀ICE:|ICE:)\s*\d+', '', display_name).strip()
         except ValueError:
             pass
 
-    # 如果没有 ICE 分数，或者 ICE 分数解析失败，则回退到旧的标签映射逻辑
+    # 如果没有 ICE 分数，则回退到旧的标签映射逻辑
     if not found_tag:
         for mapping in TAG_MAPPINGS:
             tag = mapping["tag"]
-            if tag in clean_name:
+            if tag in display_name:
                 target_calendar = mapping["calendar"]
-                clean_name = clean_name.replace(tag, "", 1).strip()
-                clean_name = re.sub(r'\s+', ' ', clean_name).strip()
+                display_name = display_name.replace(tag, "", 1).strip()
                 found_tag = tag
                 break
 
-    key = f"{clean_name}_{start_time}"
+    display_name = re.sub(r'\s+', ' ', display_name).strip()
+
+    key = f"{display_name}_{start_time}"
     return key, {
-        'name': clean_name,
+        'name': display_name,
         'start_time': start_time,
         'end_time': end_time,
         'target_calendar': target_calendar,

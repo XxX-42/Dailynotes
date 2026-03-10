@@ -81,9 +81,10 @@ def perform_bidirectional_sync(date_str, obs_path, state_manager, target_dt):
                         end_t = datetime.strptime(c_data['start_time'], "%H:%M") + timedelta(minutes=c_data['duration'])
                         end_time_str = f" - {end_t.strftime('%H:%M')}"
                     tag_part = f"{tag_suffix} " if tag_suffix else ""
-                    span_part = f"{current_obs[old_o_key].get('span_tag')} " if current_obs[old_o_key].get('span_tag') else ""
-                    status_char = current_obs[old_o_key]['status']
-                    new_line = f"- [{status_char}] {span_part}{c_data['start_time']}{end_time_str} {tag_part}{c_data['name']}\n"
+                    # [外科手术级回写] 保留所有原始隐藏格式（ID、双链），仅替换时间块
+                    orig_line = file_lines[line_idx]
+                    new_line = re.sub(r'\d{1,2}:\d{2}(?:\s*-\s*\d{1,2}:\d{2})?', f"{c_data['start_time']}{end_time_str}", orig_line, count=1)
+                    
                     lines_to_modify[line_idx] = new_line
                     file_dirty = True
                     handled_obs_keys.add(old_o_key)
@@ -117,9 +118,14 @@ def perform_bidirectional_sync(date_str, obs_path, state_manager, target_dt):
                         end_time_str = f" - {end_t.strftime('%H:%M')}"
                     
                     
-                    status_char = current_obs[found_old_key]['status']
-                    span_part = f"{current_obs[found_old_key].get('span_tag')} " if current_obs[found_old_key].get('span_tag') else ""
-                    new_line = f"- [{status_char}] {span_part}{c_data['start_time']}{end_time_str} {tag_part}{c_data['name']}\n"
+                    # [外科手术级回写] 替换时间和名字，保护外层嵌套结构
+                    orig_line = file_lines[line_idx]
+                    old_display_name = current_obs[found_old_key]['name']
+                    
+                    new_line = re.sub(r'\d{1,2}:\d{2}(?:\s*-\s*\d{1,2}:\d{2})?', f"{c_data['start_time']}{end_time_str}", orig_line, count=1)
+                    if old_display_name in new_line:
+                        new_line = new_line.replace(old_display_name, c_data['name'])
+                        
                     lines_to_modify[line_idx] = new_line
                     file_dirty = True
                     
@@ -310,10 +316,20 @@ def perform_bidirectional_sync(date_str, obs_path, state_manager, target_dt):
                 if c_data['duration'] != 30:
                     end_t = datetime.strptime(c_data['start_time'], "%H:%M") + timedelta(minutes=c_data['duration'])
                     end_time_str = f" - {end_t.strftime('%H:%M')}"
-                tag_part = f"{tag_suffix} " if tag_suffix else ""
-                span_part = f"{current_obs[sem_key].get('span_tag')} " if current_obs[sem_key].get('span_tag') else ""
                 status_char = 'x' if c_data['is_completed'] else ' '
-                new_line = f"- [{status_char}] {span_part}{c_data['start_time']}{end_time_str} {tag_part}{c_data['name']}\n"
+                orig_line = file_lines[line_idx]
+                
+                # [外科手术级回写] 状态和时间的精准替换
+                new_line = re.sub(r'\d{1,2}:\d{2}(?:\s*-\s*\d{1,2}:\d{2})?', f"{c_data['start_time']}{end_time_str}", orig_line, count=1)
+                new_line = re.sub(r'- \[[ xX]\]', f"- [{status_char}]", new_line, count=1)
+                
+                # 安全更新标签（如果不一致）
+                old_tag = current_obs[sem_key].get('tag', '')
+                if old_tag and tag_suffix and old_tag != tag_suffix:
+                    new_line = new_line.replace(old_tag, tag_suffix)
+                elif old_tag and not tag_suffix:
+                    new_line = new_line.replace(f" {old_tag}", "").replace(old_tag, "")
+                    
                 lines_to_modify[line_idx] = new_line
                 file_dirty = True
                 

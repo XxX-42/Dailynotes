@@ -314,18 +314,9 @@ class SyncCore:
                     has_sync_tag = bool(re.search(r'#[A-D]\b', lines[i]))
                     
                     if not target_p_name:
-                        # [FIX] 所有孤儿任务统一归 Archive，禁止自动向 Single 写入
-                        target_p_name = f"__ORPHAN__Archive"
-                        if ctx == 'DEPLOYMENT':
-                            should_move = True
-                        elif ctx == 'PROJECT' and current_header_project:
-                            # Single 中的任务也移到 Archive
-                            if current_header_project == 'Single':
-                                should_move = True
-                            elif current_header_project == 'Archive':
-                                pass  # 已在正确位置
-                            else:
-                                should_move = True
+                        # [NEW 终极安全策略] 凡是不具备 main 级血统（含普通内链或纯文本），
+                        # 均禁止被打包送入流浪者归档库。无论用户把它们写在哪里，均留在原地保持静默。
+                        should_move = False
                     elif ctx == 'DEPLOYMENT':
                         # Valid Project found but it was dumped into Deployment natively -> move out!
                         should_move = True

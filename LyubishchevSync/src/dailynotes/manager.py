@@ -82,6 +82,8 @@ class ObsidianEventHandler(FileSystemEventHandler):
         
         # [v4.1] 新增延迟打字重置定时器映射表
         self._delayed_timers = {}
+        # [v5.0] 保存最新读取的内容，用以比对是否仅为时间戳修改，实现毫秒同步
+        self._last_file_content = {}
 
     def _detect_change_source(self, filepath: str, is_system_write: bool) -> str:
         """
@@ -238,7 +240,29 @@ class ObsidianEventHandler(FileSystemEventHandler):
             # [P0 FIX] 使用已经求值的 check_system_write 结果，避免二次调用消耗 hash
             if is_sys_write:
                 Logger.debug(f"[Event] 忽略自写入事件: {os.path.basename(filepath)}")
+                self._last_file_content[filepath] = content
                 return
+            
+            # [NEW FIX] 纯时间判定 (毫秒级无缝同步)
+            is_time_only_change = False
+            old_str = self._last_file_content.get(filepath, "")
+            self._last_file_content[filepath] = content
+            
+            if old_str and len(old_str.splitlines()) == len(content.splitlines()):
+                old_lines = old_str.splitlines()
+                new_lines = content.splitlines()
+                changed_lines = [(o, n) for o, n in zip(old_lines, new_lines) if o != n]
+                if len(changed_lines) == 1:
+                    o_l, n_l = changed_lines[0]
+                    # 必须都是有效任务行
+                    if re.match(r'^\s*- \[[ xX]\]', o_l) and re.match(r'^\s*- \[[ xX]\]', n_l):
+                        time_pat = r'\d{1,2}:\d{2}(?:\s*-\s*\d{1,2}:\d{2})?'
+                        o_clean = re.sub(time_pat, '', o_l).strip()
+                        n_clean = re.sub(time_pat, '', n_l).strip()
+                        # 剔除时间后其余部分完全一致，且包含有效的修改后时间
+                        if o_clean == n_clean and o_clean != "":
+                            if re.search(r'\d{1,2}:\d{2}', n_l):
+                                is_time_only_change = True
             
             # [v4.0] 两阶段响应：即时格式化 + 延迟归档
             # 阶段1：毫秒级即时响应 — 立即执行 FormatCore（更新进度百分比、ICE 指数）
@@ -266,7 +290,10 @@ class ObsidianEventHandler(FileSystemEventHandler):
             if filepath in self._delayed_timers:
                 self._delayed_timers[filepath].cancel()
 
-            if change_source == 'OBSIDIAN_TYPING':
+            if is_time_only_change:
+                delay = 0.1
+                Logger.info("⚡ [InstantSync] 检测到任务纯时间修改，绕过系统打字延迟，即刻触发日历同步!")
+            elif change_source == 'OBSIDIAN_TYPING':
                 delay = getattr(Config, 'CHANGE_SOURCE_TYPING_DELAY', 15.0)
                 Logger.debug(f"[Event] 检测到用户输入，已重置倒计时 {delay}s...")
             elif change_source == 'OBSIDIAN_SYNC':

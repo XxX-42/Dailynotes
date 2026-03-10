@@ -87,7 +87,16 @@ def perform_bidirectional_sync(date_str, obs_path, state_manager, target_dt):
                     
                     lines_to_modify[line_idx] = new_line
                     file_dirty = True
+                    
+                    # [NEW FIX] 必须同步更新内存中的 `current_obs` 字典，以确保后续快照被正确刷新
+                    new_obs_key = f"{c_data['name']}_{c_data['start_time']}"
+                    new_o_data = current_obs[old_o_key].copy()
+                    new_o_data['start_time'] = c_data['start_time']
+                    del current_obs[old_o_key]
+                    current_obs[new_obs_key] = new_o_data
+                    
                     handled_obs_keys.add(old_o_key)
+                    handled_obs_keys.add(new_obs_key)
                     handled_cal_keys.add(c_key)
                     break
 
@@ -104,8 +113,12 @@ def perform_bidirectional_sync(date_str, obs_path, state_manager, target_dt):
             if found_old_key:
                 print(f"🕵️ [Move/Rename C->O] 捕捉变动: {last_cal[found_old_key]['name']}@{last_cal[found_old_key]['start_time']} -> {c_data['name']}@{c_data['start_time']}")
                 rename_success = False
-                if found_old_key in current_obs:
-                    line_idx = current_obs[found_old_key]['line_index']
+                
+                # [NEW FIX] found_old_key 是带 ID 尾巴的日历格式键，不能直接去查无 ID 的 current_obs，必须转为对应的语义键
+                old_sem_key = last_cal[found_old_key].get('semantic_key', found_old_key)
+                
+                if old_sem_key in current_obs:
+                    line_idx = current_obs[old_sem_key]['line_index']
                     tag_suffix = CAL_TO_TAG.get(c_data['current_calendar'], "")
                     if tag_suffix == "#D":
                         tag_suffix = ""
@@ -120,7 +133,7 @@ def perform_bidirectional_sync(date_str, obs_path, state_manager, target_dt):
                     
                     # [外科手术级回写] 替换时间和名字，保护外层嵌套结构
                     orig_line = file_lines[line_idx]
-                    old_display_name = current_obs[found_old_key]['name']
+                    old_display_name = current_obs[old_sem_key]['name']
                     
                     new_line = re.sub(r'\d{1,2}:\d{2}(?:\s*-\s*\d{1,2}:\d{2})?', f"{c_data['start_time']}{end_time_str}", orig_line, count=1)
                     if old_display_name in new_line:
@@ -131,15 +144,15 @@ def perform_bidirectional_sync(date_str, obs_path, state_manager, target_dt):
                     
                     # [v1.7.2/v1.7.4] Critical State Update (Name AND Time):
                     new_obs_key = f"{c_data['name']}_{c_data['start_time']}"
-                    new_o_data = current_obs[found_old_key].copy()
+                    new_o_data = current_obs[old_sem_key].copy()
                     new_o_data['name'] = c_data['name']
                     new_o_data['start_time'] = c_data['start_time']
                     new_o_data['end_time'] = end_t.strftime('%H:%M') if c_data['duration'] != 30 else None
                     
-                    del current_obs[found_old_key]
+                    del current_obs[old_sem_key]
                     current_obs[new_obs_key] = new_o_data
                     
-                    handled_obs_keys.add(found_old_key)
+                    handled_obs_keys.add(old_sem_key)
                     handled_obs_keys.add(new_obs_key)
                     rename_success = True
                 # [v1.7.1] Fix: Always mark as handled if rename detected to prevent duplicate append

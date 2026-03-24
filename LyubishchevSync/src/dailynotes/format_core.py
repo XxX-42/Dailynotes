@@ -208,7 +208,9 @@ class FormatCore:
             full_section_content = cls._safe_strip("\n\n".join(processed_sub_sections))
 
             if full_section_content:
-                output.append(f"{title}\n\n{full_section_content}")
+                # [FIX] 如果内容以 ## 开头，一级和二级标题之间不留空行
+                sep = "\n" if full_section_content.startswith("##") else "\n\n"
+                output.append(f"{title}{sep}{full_section_content}")
             else:
                 output.append(title)
 
@@ -497,7 +499,10 @@ class FormatCore:
                             cost_str = f"{diff // 60:02d}:{diff % 60:02d}"
                         except: pass
 
+                    # [FIX] 同时匹配行尾百分比和双链内 ⮐ XX% 格式
                     m_pct = re.search(r'(\d+)%$', stripped)
+                    if not m_pct:
+                        m_pct = re.search(r'⮐\s*(\d+)%', stripped)
                     if m_pct:
                         pct = m_pct.group(1) + "%"
                     else:
@@ -526,6 +531,38 @@ class FormatCore:
                     archive_projects[display_label] = {"pct": pct, "cost": cost_str}
                     
         if not archive_projects:
+            # [FIX] 即使没有任务，也要清空 Insights 表格中的残留数据行
+            # 定位现有表格位置
+            in_insights = False
+            in_table = False
+            table_start_idx = -1
+            table_end_idx = -1
+            for i, line in enumerate(lines):
+                stripped = line.strip()
+                if stripped.startswith("## "):
+                    if stripped.replace(" ", "") == "##Insights":
+                        in_insights = True
+                    else:
+                        if in_insights and in_table:
+                            table_end_idx = i
+                            break
+                        in_insights = False
+                elif in_insights:
+                    if stripped.startswith("|"):
+                        if not in_table:
+                            table_start_idx = i
+                            in_table = True
+                    else:
+                        if in_table and stripped == "":
+                            table_end_idx = i
+                            break
+            if in_table and table_end_idx == -1:
+                table_end_idx = len(lines)
+            # 如果存在表格且有数据行(超过2行=表头+分隔线)，只保留表头
+            if table_start_idx != -1 and table_end_idx != -1 and (table_end_idx - table_start_idx) > 2:
+                header_lines = lines[table_start_idx:table_start_idx + 2]
+                new_lines = lines[:table_start_idx] + header_lines + [""] + lines[table_end_idx:]
+                return "\n".join(new_lines)
             return content
             
         # 2. 寻找与替换 Insights 区域中的表格
@@ -603,9 +640,9 @@ class FormatCore:
                 new_table_lines.append(old_table_lines[0])
                 new_table_lines.append(old_table_lines[1])
             else:
-                new_header = ["id", "cost", "aim to", "progress", "Impact", "Confidence", "Ease", "ICE Score", "complete"]
+                new_header = ["id", "cost", "aim to", "progress", "Impact", "Confidence", "Ease", "ICE Score"]
                 new_table_lines.append("| " + " | ".join(new_header) + " |")
-                new_table_lines.append("| --- | ---- | ------ | -------- | ------ | ---------- | ---- | --------- | -------- |")
+                new_table_lines.append("| --- | ---- | ------ | -------- | ------ | ---------- | ---- | --------- |")
             
              # 使用 Archive 扫描到的数据为主键遍历
             for display_label, data_obj in archive_projects.items():
@@ -690,12 +727,6 @@ class FormatCore:
                     else:
                         ice_score = old_cols[7] if len(old_cols) > 7 else ""
                 
-                # 判断是否读取了 complete 列，旧表格可能没有该列
-                old_complete = old_cols[8] if len(old_cols) > 8 else ""
-                
-                # 新增计算 complete 逻辑。默认如果 pct 达到 100% 则输出 ✅，否则输出 ❌或空，此处我们先设为空，您可以自行修改
-                complete_val = "✅" if progress_col == "100%" else old_complete
-                
                 # === 判断是否发生实质性变动 ===
                 old_cost = old_cols[1] if len(old_cols) > 1 else ""
                 old_progress = old_cols[3] if len(old_cols) > 3 else ""
@@ -704,7 +735,7 @@ class FormatCore:
                 old_ease = old_cols[6] if len(old_cols) > 6 else ""
                 old_ice_score = old_cols[7] if len(old_cols) > 7 else ""
                 
-                if old_row_line and cost == old_cost and progress_col == old_progress and impact_val == old_impact and confidence_val == old_confidence and ease_val == old_ease and ice_score == old_ice_score and complete_val == old_complete:
+                if old_row_line and cost == old_cost and progress_col == old_progress and impact_val == old_impact and confidence_val == old_confidence and ease_val == old_ease and ice_score == old_ice_score:
                     # 原行参数未变（无实质变更），复用旧行但确保链接内 | 已转义
                     def _escape_row_links(row_text):
                         def _esc(tm):
@@ -713,9 +744,7 @@ class FormatCore:
                         return re.sub(r'\[\[(.*?)\]\]', _esc, row_text)
                     new_table_lines.append(_escape_row_links(old_row_line))
                 else:
-                    # 如果这行真的需要刷新（例如你刚填入了 Ease 的值），就重组成精简紧凑的一行
-                    # (下一次脚本再读此文件的时候就会变成无实质变更，从而停止修改死循环)
-                    row_str = f"| {display_label} | {cost} | {aim} | {progress_col} | {impact_val} | {confidence_val} | {ease_val} | {ice_score} | {complete_val} |"
+                    row_str = f"| {display_label} | {cost} | {aim} | {progress_col} | {impact_val} | {confidence_val} | {ease_val} | {ice_score} |"
                     new_table_lines.append(row_str)
                 
             # 执行文本替换
@@ -726,9 +755,9 @@ class FormatCore:
             # === 如果表格甚至 Insights 标题不存在，我们自动生成 ===
             # 构建一个由底层向上渲染的全新空表格
             new_table_lines = []
-            new_header = ["id", "cost", "aim to", "progress", "Impact", "Confidence", "Ease", "ICE Score", "complete"]
+            new_header = ["id", "cost", "aim to", "progress", "Impact", "Confidence", "Ease", "ICE Score"]
             new_table_lines.append("| " + " | ".join(new_header) + " |")
-            new_table_lines.append("| --- | ---- | ------ | -------- | ------ | ---------- | ---- | --------- | -------- |")
+            new_table_lines.append("| --- | ---- | ------ | -------- | ------ | ---------- | ---- | --------- |")
             
             for display_label, data_obj in archive_projects.items():
                 pct = data_obj["pct"]
@@ -743,14 +772,11 @@ class FormatCore:
                 
                 aim = ""
                 progress_col = ""
-                complete_val = ""
                 if pct:
                     pct_val = pct.replace('%', '')
                     progress_col = f"{pct_val}%"
-                    if progress_col == "100%":
-                        complete_val = "✅"
                     
-                row_str = f"| {display_label} | {cost} | {aim} | {progress_col} |  |  |  |  | {complete_val} |"
+                row_str = f"| {display_label} | {cost} | {aim} | {progress_col} |  |  |  |  |"
                 new_table_lines.append(row_str)
             new_table_lines.append("") # 行尾空行缓冲
             

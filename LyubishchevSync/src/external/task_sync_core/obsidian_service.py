@@ -151,7 +151,8 @@ def get_obsidian_state(file_path):
 
     for i, line in enumerate(lines):
         clean_line = line.strip().lower().replace(" ", "")
-        if line.strip().startswith("#") and "#dayplanner" in clean_line:
+        # 优先查找 ## Single（新架构），其次 # Day planner（旧架构）
+        if line.strip().startswith("#") and ("##single" in clean_line or "#dayplanner" in clean_line):
             header_line_index = i
             break
 

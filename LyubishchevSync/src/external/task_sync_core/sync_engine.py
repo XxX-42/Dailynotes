@@ -3,6 +3,7 @@ Bidirectional Sync Engine - Adapted for unified config.
 Core synchronization logic between Obsidian and Apple Calendar.
 """
 import os
+import re
 from datetime import datetime, timedelta
 from config import Config
 from .utils import calculate_duration_minutes

@@ -386,6 +386,9 @@ class NoteMonitor:
                     last_hash = 0
                     last_content = ""
                     self._tomorrow_note_created = False
+                    # 跨天后先确保新一天的 Obsidian 日记和 Apple Note 已存在，
+                    # 否则后续 get_note_content 会一直拿到 NOT_FOUND，导致当天无法进入同步流程。
+                    self._check_and_create_today_notes(today)
 
                 # [v4.0] 23:55 自动创建次日日记
                 self._check_create_tomorrow_note()

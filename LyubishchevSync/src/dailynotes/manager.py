@@ -254,13 +254,13 @@ class ObsidianEventHandler(FileSystemEventHandler):
                 changed_lines = [(o, n) for o, n in zip(old_lines, new_lines) if o != n]
                 if len(changed_lines) == 1:
                     o_l, n_l = changed_lines[0]
-                    # 必须都是有效任务行
                     if re.match(r'^\s*- \[[ xX]\]', o_l) and re.match(r'^\s*- \[[ xX]\]', n_l):
-                        time_pat = r'\d{1,2}:\d{2}(?:\s*-\s*\d{1,2}:\d{2})?'
-                        o_clean = re.sub(time_pat, '', o_l).strip()
-                        n_clean = re.sub(time_pat, '', n_l).strip()
-                        # 剔除时间后其余部分完全一致，且包含有效的修改后时间
-                        if o_clean == n_clean and o_clean != "":
+                        # 自定义模糊匹配，剔除任务行左侧所有疑似时间的字符 (数字、冒号、连划线、空格)
+                        o_fuzzy = re.sub(r'^\s*- \[[ xX]\][\d\s:-]+', '', o_l).strip()
+                        n_fuzzy = re.sub(r'^\s*- \[[ xX]\][\d\s:-]+', '', n_l).strip()
+                        
+                        # 如果剔除前缀后的“任务名字主体”完全一致，并且当前行包含完整的时间
+                        if o_fuzzy == n_fuzzy and o_fuzzy != "":
                             if re.search(r'\d{1,2}:\d{2}', n_l):
                                 is_time_only_change = True
             
@@ -725,14 +725,8 @@ class FusionManager:
                 # [v3.0] 纯事件驱动：仅处理标志位
                 if self._calendar_dirty_flag:
                     self._calendar_dirty_flag = False
-                    now = time.time()
-                    # [P2 FIX] 防抖机制，5秒内仅执行一次日历全量/窗口查询
-                    if now - self._last_calendar_sync_time > 5.0:
-                        Logger.info(f"⚡ [Chronos] 检测到日历变更")
-                        self.sync_recent_window()
-                        self._last_calendar_sync_time = now
-                    else:
-                        Logger.debug(f"⏳ [Chronos] 防抖生效：忽略短时间内的重复日历变更 ({now - self._last_calendar_sync_time:.1f}s)")
+                    Logger.info(f"⚡ [Chronos] 检测到日历变更")
+                    self.sync_recent_window()
                 
                 if self._reminder_dirty_flag:
                     Logger.info(f"⚡ [Chronos] 检测到提醒事项变更")

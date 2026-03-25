@@ -172,7 +172,12 @@ class FormatCore:
             content = sections[i + 1] if i + 1 < len(sections) else ""
 
             l1_key = cls.get_header_sorting_key(title)
-            is_target_section = "dayplanner" in l1_key or "journey" in l1_key
+            deployment_key = cls.get_header_sorting_key(Config.DEPLOYMENT_HEADER)
+            is_target_section = l1_key in {
+                deployment_key,
+                cls.get_header_sorting_key("# Day planner"),
+                cls.get_header_sorting_key("# Journey"),
+            }
 
             # [FIX] 使用 unicodedata.normalize 确保内容处理的一致性
             sub_blocks = re.split(r'^(##\s.*)$', content, flags=re.MULTILINE)
@@ -251,15 +256,12 @@ class FormatCore:
 
         for i, line in enumerate(lines):
             stripped = line.strip()
-            # [MOD] 增加对 ## Archive 的识别，使其参与汇总
-            if stripped.startswith("## Archive"):
-                # 二级标题深度设为 -2，使其成为 ### (深度-1) 的父级
+            if stripped in (Config.DEPLOYMENT_HEADER, "# Deployment"):
                 node = Node(i, -2, line, is_header=True)
                 forest.append(node)
                 stack = [(-2, node)]
-            elif line.startswith("### "):
+            elif line.startswith("## ") or line.startswith("### "):
                 node = Node(i, -1, line, is_header=True)
-                # 如果栈里有 ## Archive，则作为其子节点
                 while stack and stack[-1][0] >= -1:
                     stack.pop()
                 if stack:
@@ -417,18 +419,19 @@ class FormatCore:
     @staticmethod
     def _parse_ice_scores(content: str) -> dict:
         """
-        [ICE加权] 从 ## Insights 表格中萃取 ICE Score 映射。
+        [ICE加权] 从 # Thinking 🧠 表格中萃取 ICE Score 映射。
         返回: {项目名(str): ICE数值(float)}
         """
         lines = content.splitlines()
         ice_map = {}
         in_insights = False
         rows_seen = 0
+        thinking_header = Config.THINKING_HEADER.replace(" ", "")
         
         for line in lines:
             stripped = line.strip()
-            if stripped.startswith("## "):
-                if stripped.replace(" ", "") == "##Insights":
+            if stripped.startswith("# "):
+                if stripped.replace(" ", "") == thinking_header:
                     in_insights = True
                     rows_seen = 0
                     continue
@@ -470,7 +473,7 @@ class FormatCore:
     @classmethod
     def update_insights_table(cls, content: str, instant: bool = False) -> str:
         """
-        [vX] 自动扫描 `## Archive` 下的三级标题及其进度，将其映射更新到 `## Insights` 的表格中。
+        [vX] 自动扫描 `# Deployment 🚀` 下的三级标题及其进度，将其映射更新到 `# Thinking 🧠` 的表格中。
         """
         # 1. 扫描出所有的统计数据，放开视野限制，遍历全文所有 `### [[xxx]]`
         lines = content.splitlines()
@@ -531,7 +534,7 @@ class FormatCore:
                     archive_projects[display_label] = {"pct": pct, "cost": cost_str}
                     
         if not archive_projects:
-            # [FIX] 即使没有任务，也要清空 Insights 表格中的残留数据行
+            # [FIX] 即使没有任务，也要清空 Thinking 表格中的残留数据行
             # 定位现有表格位置
             in_insights = False
             in_table = False
@@ -539,8 +542,8 @@ class FormatCore:
             table_end_idx = -1
             for i, line in enumerate(lines):
                 stripped = line.strip()
-                if stripped.startswith("## "):
-                    if stripped.replace(" ", "") == "##Insights":
+                if stripped.startswith("# "):
+                    if stripped.replace(" ", "") == Config.THINKING_HEADER.replace(" ", ""):
                         in_insights = True
                     else:
                         if in_insights and in_table:
@@ -565,7 +568,7 @@ class FormatCore:
                 return "\n".join(new_lines)
             return content
             
-        # 2. 寻找与替换 Insights 区域中的表格
+        # 2. 寻找与替换 Thinking 区域中的表格
         in_insights = False
         in_table = False
         table_start_idx = -1
@@ -573,8 +576,8 @@ class FormatCore:
         
         for i, line in enumerate(lines):
             stripped = line.strip()
-            if stripped.startswith("## "):
-                if stripped.replace(" ", "") == "##Insights":
+            if stripped.startswith("# "):
+                if stripped.replace(" ", "") == Config.THINKING_HEADER.replace(" ", ""):
                     in_insights = True
                 else:
                     if in_insights and in_table:
@@ -752,7 +755,7 @@ class FormatCore:
             return "\n".join(new_content_lines)
             
         else:
-            # === 如果表格甚至 Insights 标题不存在，我们自动生成 ===
+            # === 如果表格甚至 Thinking 标题不存在，我们自动生成 ===
             # 构建一个由底层向上渲染的全新空表格
             new_table_lines = []
             new_header = ["id", "cost", "aim to", "progress", "Impact", "Confidence", "Ease", "ICE Score"]
@@ -780,27 +783,20 @@ class FormatCore:
                 new_table_lines.append(row_str)
             new_table_lines.append("") # 行尾空行缓冲
             
-            insights_line_idx = -1
-            log_line_idx = -1
+            thinking_line_idx = -1
             
             for i, line in enumerate(lines):
                 stripped = line.strip().replace(" ", "")
-                if stripped == "##Insights":
-                    insights_line_idx = i
-                elif stripped == "#Log":
-                    log_line_idx = i
+                if stripped == Config.THINKING_HEADER.replace(" ", ""):
+                    thinking_line_idx = i
                     
-            if insights_line_idx != -1:
-                # 存在 Insights，无表，插入在下一行并且给足换行
-                new_lines = lines[:insights_line_idx+1] + [""] + new_table_lines + [""] + lines[insights_line_idx+1:]
-                return "\n".join(new_lines)
-            elif log_line_idx != -1:
-                # 存在 Log，无 Insights
-                new_lines = lines[:log_line_idx+1] + ["", "## Insights", ""] + new_table_lines + [""] + lines[log_line_idx+1:]
+            if thinking_line_idx != -1:
+                # 存在 Thinking，无表，插入在下一行并且给足换行
+                new_lines = lines[:thinking_line_idx+1] + [""] + new_table_lines + [""] + lines[thinking_line_idx+1:]
                 return "\n".join(new_lines)
             else:
                 # 都没找到，作为顶级块附加
-                new_lines = lines + ["", "# Log", "", "## Insights", ""] + new_table_lines + [""]
+                new_lines = lines + ["", Config.THINKING_HEADER, ""] + new_table_lines + [""]
                 return "\n".join(new_lines)
                 
         return content

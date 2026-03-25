@@ -3,6 +3,7 @@ import random
 import string
 import datetime
 import unicodedata
+from config import Config
 from ..utils import Logger
 from .parsing import clean_task_text, get_indent_depth
 
@@ -226,7 +227,7 @@ def aggressive_daily_clean(lines: list) -> list:
 
     footer_idx = len(lines)
     for i, line in enumerate(lines):
-        if line.strip().startswith('# Day planner') or line.strip().startswith('# Journey'):
+        if line.strip() in set(Config.TOP_LEVEL_DAILY_HEADERS) | {"# Day planner", "# Journey", "# Deployment"}:
             footer_idx = i
             break
 
@@ -380,28 +381,20 @@ def reconstruct_daily_block(sd, target_date, preserved_time=None):
     return [parent_line] + children
 
 def ensure_structure(lines):
-    # 彻底告别原有的 `# Day planner` 和 `# Journey`
-    # 现在核心骨架至少是包含 `# Deployment` 外加 `## Single` 跟 `## Archive`
-    has_deploy = any(l.strip() == "# Deployment" for l in lines)
-    if not has_deploy:
+    existing_headers = {l.strip() for l in lines if l.strip().startswith('# ')}
+    missing_headers = [h for h in Config.TOP_LEVEL_DAILY_HEADERS if h not in existing_headers]
+    if missing_headers:
         insert_pos = 0
         if lines and lines[0].strip() == '---':
             for i in range(1, len(lines)):
                 if lines[i].strip() == '---':
                     insert_pos = i + 1
                     break
-        scaffold = ["# Deployment\n", "\n", "## Single\n", "\n", "## Archive\n", "\n"]
+        scaffold = []
+        for header in missing_headers:
+            scaffold.extend([header + "\n", "\n"])
         lines[insert_pos:insert_pos] = scaffold
-    else:
-        # 如果有 deployment 但是没有 Single 或 Archive 则补齐
-        has_single = any(re.match(r'^##\s+Single\b', l.strip()) for l in lines)
-        has_archive = any(re.match(r'^##\s+Archive\b', l.strip()) for l in lines)
-        d_idx = next(i for i, l in enumerate(lines) if l.strip() == "# Deployment")
-        if not has_archive:
-            lines.insert(d_idx + 1, "## Archive\n")
-        if not has_single:
-            lines.insert(d_idx + 1, "## Single\n")
-            
+
     return lines
 
 def cleanup_empty_headers(lines, date_tag):
@@ -410,7 +403,7 @@ def cleanup_empty_headers(lines, date_tag):
     i = 0
     modified = False
     current_section = None
-    target_sections = ['# Deployment']
+    target_sections = [Config.DEPLOYMENT_HEADER]
     while i < len(lines):
         line = lines[i]
         s_line = line.strip()
@@ -424,12 +417,6 @@ def cleanup_empty_headers(lines, date_tag):
             i += 1;
             continue
         if s_line.startswith('## '):
-            # 保护内置必须存在的项，不将其删除
-            if re.match(r'^##\s+(Single|Archive)\b', s_line):
-                cleaned_lines.append(line)
-                i += 1
-                continue
-                
             has_content = False
             j = i + 1
             while j < len(lines):
@@ -447,4 +434,3 @@ def cleanup_empty_headers(lines, date_tag):
             cleaned_lines.append(line);
             i += 1
     return cleaned_lines, modified
-

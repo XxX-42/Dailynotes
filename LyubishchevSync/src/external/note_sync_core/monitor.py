@@ -14,6 +14,10 @@ if _current_dir not in sys.path:
     sys.path.insert(0, _current_dir)
 
 from read_today_note import AppleNotesReader
+try:
+    from dailynotes.daily_sections import find_daily_section, normalize_daily_note_lines
+except ImportError:
+    from src.dailynotes.daily_sections import find_daily_section, normalize_daily_note_lines
 
 
 class NoteMonitor:
@@ -64,6 +68,17 @@ class NoteMonitor:
             self._thread.join(timeout=5)
             self._log("🛑 [NoteMonitor] 备忘录监听已停止")
 
+    def _cfg_header(self, attr_name, default_value):
+        if not self._config:
+            return default_value
+        return getattr(self._config, attr_name, default_value)
+
+    def _normalize_daily_note_lines(self, lines):
+        return normalize_daily_note_lines(lines, self._config)
+
+    def _find_daily_section(self, lines, primary_header, legacy_headers=None):
+        return find_daily_section(lines, primary_header, legacy_headers)
+
     def _sync_obsidian_tasks_to_notes(self, note_name, current_notes_content):
         """
         [v5.4] 单向同步: Obsidian Unchecked Tasks -> Apple Notes
@@ -97,6 +112,8 @@ class NoteMonitor:
         try:
             with open(daily_note_path, 'r', encoding='utf-8') as f:
                 lines = f.readlines()
+
+            lines = self._normalize_daily_note_lines(lines)
             
             obsidian_changed = False
             # Key: ID, Value: Clean Content (Includes Checked & Unchecked)
@@ -524,25 +541,25 @@ class NoteMonitor:
             except Exception as e:
                 self._log(f"⚠️ [NoteMonitor] 模板读取失败，使用默认骨架: {e}")
 
-        # 内置默认模板（与 DayPlanTemplate.md 一致）
+        # 内置默认模板（与 beta 3 模板一致）
         return """---
 tags:
   - DayPlan
   - timecost
   - tradecost
 ---
-# Day planner
+# Deployment 🚀
 
-# Journey
+# Thinking 🧠
 
-# Log
-## #stateofmind
+| id  |     |
+| --- | --- |
 
-## #takein
+# Takein 🍱
 
-## #exercice
+# Exercice 🏋️
 
-## #account
+# Economic 📈
 """
 
     def _check_and_create_today_notes(self, today):
@@ -1055,6 +1072,8 @@ tags:
             with open(daily_note_path, 'r', encoding='utf-8') as f:
                 lines = f.readlines()
 
+            lines = self._normalize_daily_note_lines(lines)
+
             # [v7.12] Defense: Prevent Heartbeat Data from entering Takein
             # Check if line looks like a heartbeat (contains *ID* or (id=...))
             # Ref: completion_pat from _process_diff
@@ -1106,28 +1125,22 @@ tags:
                 new_parsed['raw'] += '\n'
 
         # 2. 定位章节范围
-        target_section = "## #takein"
-        start_idx = -1
-        end_idx = -1
-        
-        for i, line in enumerate(lines):
-            stripped = line.strip()
-            if stripped == target_section:
-                start_idx = i + 1
-            elif start_idx != -1 and stripped.startswith('## '):
-                end_idx = i
-                break
-        
-        if start_idx == -1:
+        target_section = self._cfg_header("TAKEIN_HEADER", "# Takein 🍱")
+        header_idx, start_idx, end_idx, matched_header = self._find_daily_section(
+            lines,
+            target_section,
+            legacy_headers=["## #takein"],
+        )
+
+        if header_idx == -1:
             # 章节不存在，追加到末尾
             if lines and not lines[-1].endswith('\n'):
                 lines.append('\n')
             lines.append(f"\n{target_section}\n")
             lines.append(new_parsed['raw'])
             return lines
-
-        if end_idx == -1:
-            end_idx = len(lines)
+        if matched_header != target_section:
+            lines[header_idx] = target_section + "\n"
 
         # 3. 提取现有条目
         existing_lines = lines[start_idx:end_idx]
@@ -1336,28 +1349,35 @@ tags:
             with open(daily_note_path, 'r', encoding='utf-8') as f:
                 lines = f.readlines()
 
-            # 3. 定位 # Day planner 章节
-            target_section = "# Day planner"
-            start_idx = -1
-            end_idx = -1
+            lines = self._normalize_daily_note_lines(lines)
 
-            for i, line in enumerate(lines):
-                stripped = line.strip()
-                if stripped == target_section:
-                    start_idx = i + 1
-                elif start_idx != -1:
-                    if stripped.startswith('# ') or stripped.startswith('## '):
-                        end_idx = i
-                        break
-            
-            if start_idx == -1:
-                return False
+            # 3. 定位 # Deployment 🚀 章节，兼容旧的 # Day planner
+            target_section = self._cfg_header("DEPLOYMENT_HEADER", "# Deployment 🚀")
+            header_idx, start_idx, end_idx, matched_header = self._find_daily_section(
+                lines,
+                target_section,
+                legacy_headers=["# Day planner"],
+            )
 
-            if end_idx == -1:
+            if header_idx == -1:
+                if lines and not lines[-1].endswith('\n'):
+                    lines.append('\n')
+                lines.append(f"\n{target_section}\n")
+                header_idx = len(lines) - 1
+                start_idx = header_idx + 1
                 end_idx = len(lines)
+            elif matched_header != target_section:
+                lines[header_idx] = target_section + "\n"
+
+            # 在 beta 3 结构中，仅重写 deployment 顶部的直属条目，保留后续项目分组。
+            section_end_idx = end_idx
+            for i in range(start_idx, end_idx):
+                if re.match(r'^\s*(?:##|###)\s+\[\[', lines[i]):
+                    section_end_idx = i
+                    break
 
             # 4. 提取章节内容并解析 existing entries
-            section_lines = lines[start_idx:end_idx]
+            section_lines = lines[start_idx:section_end_idx]
             all_entries = []
             
             # 正则: 支持 "HH:MM" 或 "HH:MM -HH:MM"
@@ -1500,7 +1520,7 @@ tags:
             new_content_lines.append('\n')
 
             # 8. Replace in file
-            final_lines = lines[:start_idx] + new_content_lines + lines[end_idx:]
+            final_lines = lines[:start_idx] + new_content_lines + lines[section_end_idx:]
             
             with open(daily_note_path, 'w', encoding='utf-8') as f:
                 f.writelines(final_lines)
@@ -1546,7 +1566,7 @@ tags:
 
     def _append_to_account_section(self, line_content):
         """
-        处理记账条目并插入到 ## #Account 章节
+        处理记账条目并插入到 # Economic 📈 章节
         输入示例: (tradetype::$食物)(tradename::鸡蛋)(tradecost::-858)(tradetime::2026/2/12 00:19:36)
         目标格式:
         (tradetype::食物)
@@ -1604,7 +1624,9 @@ tags:
             # 读取文件并插入
             with open(daily_note_path, 'r', encoding='utf-8') as f:
                 lines = f.readlines()
-            
+
+            lines = self._normalize_daily_note_lines(lines)
+
             # 二、防重复检测与清洗
             # 1. 检查表格行是否已存在
             row_content_to_check = f"| {t_time} | {t_type} | {t_name} | {t_cost} |"
@@ -1648,62 +1670,48 @@ tags:
                 return True
 
 
-            target_section = "## #account"
-            section_start_idx = -1
-            
-            # 寻找章节
-            for i, line in enumerate(lines):
-                if line.strip().lower() == target_section.lower():
-                    section_start_idx = i
-                    break
-            
-            if section_start_idx == -1:
+            target_section = self._cfg_header("ECONOMIC_HEADER", "# Economic 📈")
+            header_idx, section_start_idx, next_header_idx, matched_header = self._find_daily_section(
+                lines,
+                target_section,
+                legacy_headers=["## #account"],
+            )
+
+            if header_idx == -1:
                 # 章节不存在，追加
                 if lines and not lines[-1].endswith('\n'):
                     lines.append('\n')
                 lines.append(f"\n{target_section}\n\n")
-                lines.append("| 时间 | 类型 | 名称 | 金额 |\n")
-                lines.append("| --- | --- | --- | --- |\n")
-                lines.append(new_table_row)
-                self._log(f"📝 [Account] 已创建 #account 章节并写入: {t_name}")
-            else:
-                # 章节存在，寻找表格或在章节下方创建
-                # 扫描章节下方内容
-                table_header_idx = -1
-                last_table_row_idx = -1
-                
+                header_idx = len(lines) - 2
+                section_start_idx = len(lines)
                 next_header_idx = len(lines)
-                for i in range(section_start_idx + 1, len(lines)):
-                    l_strip = lines[i].strip()
-                    if l_strip.startswith("## "):
-                        next_header_idx = i
-                        break
-                    if l_strip.startswith("| 时间 |") or (l_strip.startswith("|") and "金额" in l_strip):
-                        table_header_idx = i
-                    elif table_header_idx != -1 and l_strip.startswith("|"):
-                        last_table_row_idx = i
-                
-                if table_header_idx == -1:
-                    # 没找到表格，在章节下方插入新表格
-                    insert_pos = section_start_idx + 1
-                    # 确保有一个空行
-                    if insert_pos < len(lines) and lines[insert_pos].strip() != "":
-                         lines.insert(insert_pos, "\n")
-                         insert_pos += 1
-                    
-                    lines.insert(insert_pos, "| 时间 | 类型 | 名称 | 金额 |\n")
-                    lines.insert(insert_pos + 1, "| --- | --- | --- | --- |\n")
-                    lines.insert(insert_pos + 2, new_table_row)
-                    self._log(f"📝 [Account] 已新建表格并写入: {t_name}")
-                else:
-                    # 找到表格，追加到末尾
-                    if last_table_row_idx != -1:
-                        # 在原有表格最后一行之后插入
-                        lines.insert(last_table_row_idx + 1, new_table_row)
-                    else:
-                        # 只有表头和分隔行，在分隔行 (table_header_idx + 1) 后插入
-                        lines.insert(table_header_idx + 2, new_table_row)
-                    self._log(f"📝 [Account] 已同步至表格: {t_name}")
+            elif matched_header != target_section:
+                lines[header_idx] = target_section + "\n"
+
+            existing_rows = []
+            seen_rows = set()
+            section_lines = lines[section_start_idx:next_header_idx]
+            for line in section_lines:
+                stripped = line.strip()
+                if not stripped.startswith("|"):
+                    continue
+                if stripped.startswith("| 时间 |") or "---" in stripped:
+                    continue
+                if stripped not in seen_rows:
+                    seen_rows.add(stripped)
+                    existing_rows.append(stripped)
+
+            if row_content_to_check not in seen_rows:
+                existing_rows.append(row_content_to_check)
+                self._log(f"📝 [Account] 已同步至 Economic 表格: {t_name}")
+
+            rebuilt_section = [
+                "| 时间 | 类型 | 名称 | 金额 |\n",
+                "| --- | --- | --- | --- |\n",
+            ]
+            rebuilt_section.extend(row + "\n" for row in existing_rows)
+            rebuilt_section.append("\n")
+            lines[section_start_idx:next_header_idx] = rebuilt_section
             
             with open(daily_note_path, 'w', encoding='utf-8') as f:
                 f.writelines(lines)

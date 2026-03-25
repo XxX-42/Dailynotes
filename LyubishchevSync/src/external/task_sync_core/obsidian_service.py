@@ -6,6 +6,10 @@ import os
 import re
 import shutil
 from config import Config
+try:
+    from dailynotes.daily_sections import normalize_daily_note_lines
+except ImportError:
+    from src.dailynotes.daily_sections import normalize_daily_note_lines
 
 # Use config values
 TAG_MAPPINGS = Config.TAG_MAPPINGS
@@ -118,17 +122,19 @@ def get_obsidian_state(file_path):
     mod_time = os.path.getmtime(file_path)
     with open(file_path, 'r', encoding='utf-8') as f:
         lines = f.readlines()
+    lines = normalize_daily_note_lines(lines, Config)
 
-    # --- 1. [NEW] 预解析 Insights 表格以获取项目 ICE 权重 ---
+    # --- 1. [NEW] 预解析 Thinking 表格以获取项目 ICE 权重 ---
     project_ice_map = {}
     in_insights = False
+    thinking_header = Config.THINKING_HEADER.lower().replace(" ", "")
     for line in lines:
         stripped = line.strip().lower().replace(" ", "")
-        if stripped == "##insights":
+        if stripped == thinking_header:
             in_insights = True
             continue
         if in_insights:
-            if stripped.startswith("#"): # 结束 Insights 区域
+            if line.strip().startswith("# "): # 结束 Thinking 区域
                 in_insights = False
                 continue
             # 解析表格行: | [[项目名]] | ... | Impact | Conf | Ease | ICE Score |
@@ -151,14 +157,18 @@ def get_obsidian_state(file_path):
 
     for i, line in enumerate(lines):
         clean_line = line.strip().lower().replace(" ", "")
-        # 优先查找 ## Single（新架构），其次 # Day planner（旧架构）
-        if line.strip().startswith("#") and ("##single" in clean_line or "#dayplanner" in clean_line):
+        if clean_line in (
+            Config.DEPLOYMENT_HEADER.lower().replace(" ", ""),
+            "#deployment",
+            "#dayplanner",
+            "##single",
+        ):
             header_line_index = i
             break
 
     if header_line_index != -1:
         for i in range(header_line_index + 1, len(lines)):
-            if lines[i].strip().startswith("#"):
+            if lines[i].strip().startswith("# "):
                 section_end_index = i
                 break
         insertion_index = section_end_index
@@ -168,11 +178,11 @@ def get_obsidian_state(file_path):
     # --- 3. Global task scan (With project context) ---
     current_parent_project = None
     for i, line in enumerate(lines):
-        # 跟踪当前所在的项目标题上下文 (### [[Project]])
-        h3_m = re.match(r'^###\s+\[\[(.*?)\]\]', line.strip())
+        # 跟踪当前所在的项目标题上下文 (## [[Project]])
+        h3_m = re.match(r'^(?:##|###)\s+\[\[(.*?)\]\]', line.strip())
         if h3_m:
             current_parent_project = h3_m.group(1).split('|')[0].strip()
-        elif line.strip().startswith("## "):
+        elif line.strip().startswith("# "):
             current_parent_project = None
 
         result = parse_obsidian_line(line, i)

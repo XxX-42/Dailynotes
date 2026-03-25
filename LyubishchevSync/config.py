@@ -9,7 +9,21 @@ class Config:
     # ==========================
     VAULT_ROOT = r'/Users/user999/Documents/【Liang_project】/远程仓库1'
     REL_ATTACHMENT_DIR = r'【ATTACHMENT】'
-    REL_TEMPLATE_FILE = r'00_Infobox/Templates/DayPlanTemplate_beta 2.md'
+    REL_TEMPLATE_FILE = r'00_Infobox/Templates/DayPlanTemplate_beta 3.md'
+
+    # Beta 3 daily note anchors
+    DEPLOYMENT_HEADER = "# Deployment 🚀"
+    THINKING_HEADER = "# Thinking 🧠"
+    TAKEIN_HEADER = "# Takein 🍱"
+    EXERCICE_HEADER = "# Exercice 🏋️"
+    ECONOMIC_HEADER = "# Economic 📈"
+    TOP_LEVEL_DAILY_HEADERS = [
+        DEPLOYMENT_HEADER,
+        THINKING_HEADER,
+        TAKEIN_HEADER,
+        EXERCICE_HEADER,
+        ECONOMIC_HEADER,
+    ]
 
     # 自动拼接
     DAILY_NOTE_DIR = os.path.join(VAULT_ROOT, REL_ATTACHMENT_DIR, r'【DAILYNOTE】')
@@ -69,7 +83,7 @@ class Config:
     # [v2.0] EventKit Sync
     # No file watching required for calendar
     # 范围限制
-    DAILY_NOTE_SECTIONS = ['# Deployment', '## Single', '## Archive']
+    DAILY_NOTE_SECTIONS = [DEPLOYMENT_HEADER]
     SOURCE_FILE_CALLOUTS = ['> [!note] Tasks', '> [!note]- Tasks', '> [!note]+ Tasks']
 
     # ==========================

@@ -9,6 +9,38 @@ from .utils import FileUtils, Logger
 
 class FormatCore:
     @staticmethod
+    def _is_deployment_header(text: str) -> bool:
+        stripped = text.strip()
+        return stripped in (Config.DEPLOYMENT_HEADER, "# Deployment")
+
+    @staticmethod
+    def _normalize_deployment_progress_quote(lines: list[str], deployment_quotes: dict[int, str]) -> list[str]:
+        if not deployment_quotes:
+            return lines
+
+        out = []
+        i = 0
+        while i < len(lines):
+            out.append(lines[i])
+            quote_text = deployment_quotes.get(i)
+            if quote_text is None:
+                i += 1
+                continue
+
+            j = i + 1
+            while j < len(lines) and not lines[j].strip():
+                j += 1
+
+            if j < len(lines) and re.match(r'^>\s*\d+%\s*$', lines[j].strip()):
+                j += 1
+
+            out.append(quote_text)
+            i += 1
+            while i < j:
+                i += 1
+        return out
+
+    @staticmethod
     def _enforce_hyphen_space(line: str, context: str = "", filename: str = "") -> str:
         return line
 
@@ -319,6 +351,7 @@ class FormatCore:
             return (total, checked, total_mins)
             
         updates = {}
+        deployment_quotes = {}
         # 为了给外部报表提供数据，挂载节点对象的信息
         cls._last_calculated_costs = getattr(cls, '_last_calculated_costs', {})
         cls._last_calculated_costs.clear()
@@ -387,7 +420,10 @@ class FormatCore:
                 # [新功能] 寻找 [[测试aaa#^2qss78|⮐]] 这种反向链接语法
                 # 如果存在，则把百分比塞进链接文字里，形如 [[...|⮐ 67%]]
                 backlink_pattern = r'(\[\[[^\]]+\|⮐)\]\]'
-                if node.is_task and re.search(backlink_pattern, base_text):
+                if node.is_header and cls._is_deployment_header(base_text):
+                    updates[node.idx] = Config.DEPLOYMENT_HEADER
+                    deployment_quotes[node.idx] = f"> {pct}%"
+                elif node.is_task and re.search(backlink_pattern, base_text):
                     updates[node.idx] = re.sub(backlink_pattern, rf'\1 {pct}%]]', base_text)
                 else:
                     updates[node.idx] = f"{base_text.rstrip()} {pct}%"
@@ -413,7 +449,8 @@ class FormatCore:
                 new_lines.append(updates[i])
             else:
                 new_lines.append(line)
-        
+
+        new_lines = cls._normalize_deployment_progress_quote(new_lines, deployment_quotes)
         return "\n".join(new_lines)
 
     @staticmethod

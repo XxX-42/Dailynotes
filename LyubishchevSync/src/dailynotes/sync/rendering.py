@@ -358,14 +358,7 @@ def reconstruct_daily_block(sd, target_date, preserved_time=None):
     bid = sd['bid']
     status = sd['status']
     text = re.sub(r'\[\[\d{4}-\d{2}-\d{2}\]\]', '', sd['pure']).strip()
-    link_tag = f"[[{fname}]]"
-    
-    # [FIX] 更智能的检查：如果 text 中已经包含了指向该文件的链接（甚至带锚点/别名），就不要再加了
-    # 检查 [[fname]] 或 [[fname#...]] 或 [[fname|...]]
-    # 使用 re.escape 处理文件名中的特殊字符
-    has_link = re.search(rf'\[\[{re.escape(fname)}(?:[#\|].*?)?\]\]', text)
-    if not has_link: 
-        text = f"{link_tag} {text}"
+    text = clean_task_text(text, bid, fname)
 
     # [FIX] 如果传入了保留的时间，将其注入到 text 前端供 format_line 识别
     if preserved_time:

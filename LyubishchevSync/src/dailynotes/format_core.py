@@ -14,9 +14,23 @@ class FormatCore:
         return stripped in (Config.DEPLOYMENT_HEADER, "# Deployment")
 
     @staticmethod
-    def _normalize_deployment_progress_quote(lines: list[str], deployment_quotes: dict[int, str]) -> list[str]:
+    def _normalize_deployment_progress_quote(
+        lines: list[str],
+        deployment_quotes: dict[int, str],
+        preserve_layout: bool = False,
+    ) -> list[str]:
         if not deployment_quotes:
             return lines
+
+        if preserve_layout:
+            out = list(lines)
+            for i, quote_text in deployment_quotes.items():
+                j = i + 1
+                while j < len(out) and not out[j].strip():
+                    j += 1
+                if j < len(out) and re.match(r'^>\s*\d+%\s*$', out[j].strip()):
+                    out[j] = quote_text
+            return out
 
         out = []
         i = 0
@@ -205,6 +219,10 @@ class FormatCore:
 
             l1_key = cls.get_header_sorting_key(title)
             deployment_key = cls.get_header_sorting_key(Config.DEPLOYMENT_HEADER)
+            should_sort_subsection_body = l1_key in {
+                cls.get_header_sorting_key("# Day planner"),
+                cls.get_header_sorting_key("# Journey"),
+            }
             is_target_section = l1_key in {
                 deployment_key,
                 cls.get_header_sorting_key("# Day planner"),
@@ -230,7 +248,8 @@ class FormatCore:
 
                 final_l2_content = ""
                 if l2_content:
-                    if is_target_section:
+                    # Deployment 下的 ## 项目分组需要保持原顺序，避免代码块/任务被重新串线。
+                    if should_sort_subsection_body:
                         final_l2_content = cls.sort_day_planner_content(l2_content)
                     else:
                         final_l2_content = l2_content
@@ -264,7 +283,7 @@ class FormatCore:
         return cls._safe_strip("\n\n".join(output))
 
     @classmethod
-    def update_progress_percentage(cls, content: str) -> str:
+    def update_progress_percentage(cls, content: str, preserve_layout: bool = False) -> str:
         """
         [vX] 自动基于最深任务（叶子节点）打卡状态计算上级与根项目（### 标题）的进度比率。
         """
@@ -374,7 +393,11 @@ class FormatCore:
                 seen_backlinks.add(link)
                 return link
             base_text = re.sub(r'\[\[[^\]]+\|⮐\]\]', _dedup_backlink, base_text)
-            base_text = re.sub(r'\s{2,}', ' ', base_text)  # 清理多余空格
+            leading_ws_m = re.match(r'^([ \t]*)', base_text)
+            leading_ws = leading_ws_m.group(1) if leading_ws_m else ""
+            body_text = base_text[len(leading_ws):]
+            body_text = re.sub(r'\s{2,}', ' ', body_text)  # 清理正文中的多余空格，不破坏缩进
+            base_text = leading_ws + body_text
             
             if total > 0 and node.children:
                 # [ICE加权 v4.4] 逐任务独立加权：通过 block ID 查找每个任务的 ICE 分数
@@ -450,7 +473,11 @@ class FormatCore:
             else:
                 new_lines.append(line)
 
-        new_lines = cls._normalize_deployment_progress_quote(new_lines, deployment_quotes)
+        new_lines = cls._normalize_deployment_progress_quote(
+            new_lines,
+            deployment_quotes,
+            preserve_layout=preserve_layout,
+        )
         return "\n".join(new_lines)
 
     @staticmethod
@@ -850,7 +877,7 @@ class FormatCore:
                 for l in changed_lines[:5]: Logger.debug(l)
 
     @classmethod
-    def execute(cls, filepath: str, instant: bool = False) -> bool:
+    def execute(cls, filepath: str, instant: bool = False, preserve_focus: bool = False) -> bool:
         if not os.path.exists(filepath): return False
         content = FileUtils.read_content(filepath)
         if not content: return False
@@ -876,21 +903,33 @@ class FormatCore:
             c = cls.sort_markdown_sections(c, filename=fname)
 
         # Step 4: 注入并计算任务深度的百分比进度
-        c = cls.update_progress_percentage(c)
+        c = cls.update_progress_percentage(c, preserve_layout=preserve_focus)
         
         # Step 5: 更新 Insights 数据报表
-        c = cls.update_insights_table(c, instant=instant)
+        if not preserve_focus:
+            c = cls.update_insights_table(c, instant=instant)
 
         if not instant:
             cls._log_diff("FormatCore", prev_text, c)
 
-        c = c.strip() + "\n"
+        if preserve_focus:
+            had_trailing_newline = content.endswith('\n')
+            c = c.rstrip('\n')
+            if had_trailing_newline:
+                c += "\n"
+        else:
+            c = c.strip() + "\n"
         new_hash = hashlib.md5(c.encode('utf-8')).hexdigest()
 
         if orig_hash != new_hash:
-            tag = "Instant" if instant else "Format"
+            if preserve_focus:
+                tag = "FocusSafe"
+                strategy = "inplace"
+            else:
+                tag = "Instant" if instant else "Format"
+                strategy = "atomic"
             Logger.info(f"✨ [{tag}] 优化日记排版与间距/进度更新: {os.path.basename(filepath)}")
-            return FileUtils.write_file(filepath, c)
+            return FileUtils.write_file(filepath, c, strategy=strategy)
         return False
 
     @staticmethod

@@ -16,8 +16,10 @@ if _current_dir not in sys.path:
 from read_today_note import AppleNotesReader
 try:
     from dailynotes.daily_sections import find_daily_section, normalize_daily_note_lines
+    from dailynotes.utils import FileUtils
 except ImportError:
     from src.dailynotes.daily_sections import find_daily_section, normalize_daily_note_lines
+    from src.dailynotes.utils import FileUtils
 
 
 class NoteMonitor:
@@ -79,6 +81,18 @@ class NoteMonitor:
     def _find_daily_section(self, lines, primary_header, legacy_headers=None):
         return find_daily_section(lines, primary_header, legacy_headers)
 
+    def _read_note_lines(self, path):
+        lines = FileUtils.read_file(path)
+        if lines is None:
+            self._log(f"⚠️ [NoteMonitor] 读取失败或 UTF-8 解码失败: {path}")
+        return lines
+
+    def _write_note_content(self, path, content, strategy="atomic"):
+        ok = FileUtils.write_file(path, content, strategy=strategy)
+        if not ok:
+            self._log(f"⚠️ [NoteMonitor] 写入失败: {path}")
+        return ok
+
     def _sync_obsidian_tasks_to_notes(self, note_name, current_notes_content):
         """
         [v5.4] 单向同步: Obsidian Unchecked Tasks -> Apple Notes
@@ -110,8 +124,9 @@ class NoteMonitor:
             return False, current_notes_content
             
         try:
-            with open(daily_note_path, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
+            lines = self._read_note_lines(daily_note_path)
+            if lines is None:
+                return False, current_notes_content
 
             lines = self._normalize_daily_note_lines(lines)
             
@@ -148,11 +163,9 @@ class NoteMonitor:
                     import time
                     self._log(f"⏳ 检测到新 Apple Notes 任务，为防打断打字，延迟 {delay} 秒后再注入主键...")
                     time.sleep(delay)
-                    try:
-                        with open(daily_note_path, 'r', encoding='utf-8') as f:
-                            lines = f.readlines()
-                    except Exception as e:
-                        self._log(f"⚠️ 延迟后重新读取文件失败: {e}")
+                    reread_lines = self._read_note_lines(daily_note_path)
+                    if reread_lines is not None:
+                        lines = reread_lines
                         
             new_obsidian_lines = []
             
@@ -200,8 +213,8 @@ class NoteMonitor:
 
             # Update Obsidian File
             if obsidian_changed:
-                with open(daily_note_path, 'w', encoding='utf-8') as f:
-                    f.writelines(new_obsidian_lines)
+                if not self._write_note_content(daily_note_path, new_obsidian_lines):
+                    return False, current_notes_content
                 self._log(f"📝 [Sync] Marked new tasks in Obsidian with IDs.")
 
             # --- Step 2: Process Apple Notes (Diff & Merge) ---
@@ -501,8 +514,8 @@ class NoteMonitor:
                     template_content = self._read_template()
 
                     try:
-                        with open(tomorrow_path, 'w', encoding='utf-8') as f:
-                            f.write(template_content)
+                        if not self._write_note_content(tomorrow_path, template_content):
+                            raise RuntimeError("write failed")
                         self._log(f"📅 [NoteMonitor] 次日 Obsidian 日记已创建: {tomorrow_str}.md")
                     except Exception as e:
                         self._log(f"❌ [NoteMonitor] 创建次日日记失败: {e}")
@@ -579,8 +592,8 @@ tags:
                 self._log(f"⚠️ [NoteMonitor] 今日日记缺失，正在创建: {today_str}.md")
                 template_content = self._read_template()
                 try:
-                    with open(today_path, 'w', encoding='utf-8') as f:
-                        f.write(template_content)
+                    if not self._write_note_content(today_path, template_content):
+                        raise RuntimeError("write failed")
                     self._log(f"✅ [NoteMonitor] 今日日记创建成功")
                 except Exception as e:
                     self._log(f"❌ [NoteMonitor] 创建今日日记失败: {e}")
@@ -640,8 +653,9 @@ tags:
         self._log(f"   [DEBUG] 心跳写入目标: {os.path.basename(target_file_path)}")
             
         try:
-            with open(target_file_path, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
+            lines = self._read_note_lines(target_file_path)
+            if lines is None:
+                return False
             
             updated = False
             
@@ -814,9 +828,7 @@ tags:
                     new_lines.append(line)
             
             if updated:
-                with open(target_file_path, 'w', encoding='utf-8') as f:
-                    f.writelines(new_lines)
-                return True
+                return self._write_note_content(target_file_path, new_lines, strategy="inplace")
             self._log(f"   [DEBUG] 心跳写入未触发 updated=True，返回 False")
             return False
         except Exception as e:
@@ -1069,8 +1081,9 @@ tags:
                 print(f"{RED}❌ 日记文件未找到: {daily_note_path}{RESET}")
                 return False
 
-            with open(daily_note_path, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
+            lines = self._read_note_lines(daily_note_path)
+            if lines is None:
+                return False
 
             lines = self._normalize_daily_note_lines(lines)
 
@@ -1088,8 +1101,8 @@ tags:
             # 读取并重组 ## #Water 章节
             final_lines = self._reorganize_water_section(lines, new_line_clean)
             
-            with open(daily_note_path, 'w', encoding='utf-8') as f:
-                f.writelines(final_lines)
+            if not self._write_note_content(daily_note_path, final_lines):
+                return False
 
             return True
 
@@ -1346,8 +1359,9 @@ tags:
             parsed_new['is_new'] = True
 
             # 2. 读取现有文件
-            with open(daily_note_path, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
+            lines = self._read_note_lines(daily_note_path)
+            if lines is None:
+                return False
 
             lines = self._normalize_daily_note_lines(lines)
 
@@ -1522,8 +1536,8 @@ tags:
             # 8. Replace in file
             final_lines = lines[:start_idx] + new_content_lines + lines[section_end_idx:]
             
-            with open(daily_note_path, 'w', encoding='utf-8') as f:
-                f.writelines(final_lines)
+            if not self._write_note_content(daily_note_path, final_lines):
+                return False
 
             return True
 
@@ -1622,8 +1636,9 @@ tags:
             new_table_row = f"| {t_time} | {t_type} | {t_name} | {t_cost} |\n"
 
             # 读取文件并插入
-            with open(daily_note_path, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
+            lines = self._read_note_lines(daily_note_path)
+            if lines is None:
+                return False
 
             lines = self._normalize_daily_note_lines(lines)
 
@@ -1664,8 +1679,8 @@ tags:
                 # 表格行已存在，不需要再插入
                 if cleaned_any_raw:
                     # 虽然表格已存在，但需要写回清洗结果
-                    with open(daily_note_path, 'w', encoding='utf-8') as f:
-                        f.writelines(lines)
+                    if not self._write_note_content(daily_note_path, lines):
+                        return False
                 self._log(f"⏭️ [Account] 跳过重复记账: {t_time} - {t_name} ({t_cost})")
                 return True
 
@@ -1713,8 +1728,8 @@ tags:
             rebuilt_section.append("\n")
             lines[section_start_idx:next_header_idx] = rebuilt_section
             
-            with open(daily_note_path, 'w', encoding='utf-8') as f:
-                f.writelines(lines)
+            if not self._write_note_content(daily_note_path, lines):
+                return False
 
                 
             return True

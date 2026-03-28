@@ -5,6 +5,7 @@ import time
 import tempfile
 import inspect
 import hashlib
+import json
 from typing import List, Union
 from config import Config
 
@@ -98,6 +99,82 @@ class FileUtils:
             content = ""
         return hashlib.md5(content.encode('utf-8')).hexdigest()
 
+    @staticmethod
+    def _get_audit_log_path() -> str:
+        return getattr(
+            Config,
+            "MODIFICATION_AUDIT_LOG",
+            os.path.join(Config.DAILY_NOTE_DIR, ".modification_audit.json"),
+        )
+
+    @staticmethod
+    def _get_write_caller():
+        try:
+            stack = inspect.stack()
+            for frame in stack[2:]:
+                fn = os.path.basename(frame.filename)
+                if fn != 'utils.py':
+                    func = frame.function if frame.function != '<module>' else 'Main'
+                    return {
+                        "file": frame.filename,
+                        "function": func,
+                        "line": frame.lineno,
+                        "label": f"{fn}:{func}:{frame.lineno}",
+                    }
+        except Exception:
+            pass
+        return {
+            "file": "unknown",
+            "function": "unknown",
+            "line": 0,
+            "label": "unknown",
+        }
+
+    @classmethod
+    def _append_modification_audit(cls, filepath: str, strategy: str, content: str):
+        log_path = cls._get_audit_log_path()
+        if os.path.abspath(filepath) == os.path.abspath(log_path):
+            return
+
+        entry = {
+            "timestamp": datetime.datetime.now().isoformat(timespec='seconds'),
+            "target_file": filepath,
+            "strategy": strategy,
+            "content_hash": cls.calculate_hash(content),
+            "snapshot": content,
+            "caller": cls._get_write_caller(),
+        }
+
+        try:
+            entries = []
+            if os.path.exists(log_path):
+                with open(log_path, 'r', encoding='utf-8') as f:
+                    loaded = json.load(f)
+                    if isinstance(loaded, list):
+                        entries = loaded
+
+            entries.append(entry)
+            limit = max(1, int(getattr(Config, "MODIFICATION_AUDIT_LIMIT", 30)))
+            entries = entries[-limit:]
+
+            dir_name = os.path.dirname(log_path) or '.'
+            temp_name = None
+            try:
+                with tempfile.NamedTemporaryFile('w', dir=dir_name, delete=False, encoding='utf-8') as tf:
+                    temp_name = tf.name
+                    json.dump(entries, tf, ensure_ascii=False, indent=2)
+                    tf.flush()
+                    os.fsync(tf.fileno())
+                os.replace(temp_name, log_path)
+            finally:
+                if temp_name and os.path.exists(temp_name):
+                    try:
+                        os.remove(temp_name)
+                    except OSError:
+                        pass
+        except Exception as e:
+            Logger.error_once(f"audit_log_{log_path}", f"写入修改审计日志失败: {e}")
+
     @classmethod
     def is_system_write(cls, content_hash: str) -> bool:
         """
@@ -120,22 +197,36 @@ class FileUtils:
     @staticmethod
     def read_file(filepath):
         try:
-            with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+            with open(filepath, 'r', encoding='utf-8') as f:
                 return f.readlines()
+        except UnicodeDecodeError as e:
+            Logger.error_once(
+                f"decode_readlines_{filepath}",
+                f"UTF-8 解码失败，已中止读取以避免静默乱码固化: {filepath}: {e}"
+            )
+            return None
         except Exception:
             return None
 
     @staticmethod
     def read_content(filepath):
         try:
-            with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+            with open(filepath, 'r', encoding='utf-8') as f:
                 return f.read()
+        except UnicodeDecodeError as e:
+            Logger.error_once(
+                f"decode_read_{filepath}",
+                f"UTF-8 解码失败，已中止读取以避免静默乱码固化: {filepath}: {e}"
+            )
+            return None
         except Exception:
             return None
 
     @staticmethod
-    def write_file(filepath, lines_or_content):
-        # [原子性] 使用 tempfile + os.replace 以确保原子写入
+    def write_file(filepath, lines_or_content, strategy: str = "atomic"):
+        # strategy:
+        # - atomic: tempfile + os.replace，适合后台批处理
+        # - inplace: 就地覆盖同一 inode，尽量减少编辑器焦点/光标抖动
         dir_name = os.path.dirname(filepath) or '.'
         temp_name = None
         
@@ -146,6 +237,7 @@ class FileUtils:
             final_content = "".join([str(l) for l in lines_or_content if l is not None])
         else:
             final_content = str(lines_or_content)
+        final_bytes = final_content.encode('utf-8')
         
         # [CRITICAL] Calculate hash BEFORE write and register
         content_hash = FileUtils.calculate_hash(final_content)
@@ -159,10 +251,20 @@ class FileUtils:
         FileUtils._system_write_hashes[content_hash] = time.time()
         
         try:
+            if strategy == "inplace" and os.path.exists(filepath):
+                with open(filepath, 'r+b') as f:
+                    f.seek(0)
+                    f.write(final_bytes)
+                    f.truncate()
+                    f.flush()
+                    os.fsync(f.fileno())
+                FileUtils._append_modification_audit(filepath, strategy, final_content)
+                return True
+
             # 在同一目录中创建临时文件（原子重命名所需）
-            with tempfile.NamedTemporaryFile('w', dir=dir_name, delete=False, encoding='utf-8') as tf:
+            with tempfile.NamedTemporaryFile('wb', dir=dir_name, delete=False) as tf:
                 temp_name = tf.name
-                tf.write(final_content)
+                tf.write(final_bytes)
                 
                 # 刷新并 fsync 以确保数据物理写入
                 tf.flush()
@@ -170,10 +272,11 @@ class FileUtils:
             
             # 原子交换
             os.replace(temp_name, filepath)
+            FileUtils._append_modification_audit(filepath, strategy, final_content)
             return True
-            
+
         except Exception as e:
-            Logger.error_once(f"write_{filepath}", f"写入失败 {filepath}: {e}")
+            Logger.error_once(f"write_{strategy}_{filepath}", f"写入失败 {filepath}: {e}")
             # Remove hash on failure (write didn't happen)
             if content_hash in FileUtils._system_write_hashes:
                 del FileUtils._system_write_hashes[content_hash]

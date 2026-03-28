@@ -114,6 +114,7 @@ def inject_into_task_section(file_lines, block_lines, filename_stem=None):
     current_header_date = None
     header_pattern = re.compile(r'^#+\s*\[\[\s*(\d{4}-\d{2}-\d{2})\s*\]\]')
     id_pattern = re.compile(r'(?:\^([a-zA-Z0-9]{6,})|<span id="([a-zA-Z0-9]{6,})"(?: data-timestamps="[^"]*")?></span>)')
+    daily_backlink_pattern = re.compile(r'\[\[\d{4}-\d{2}-\d{2}\#\^[a-zA-Z0-9]{6,}\|')
 
     for line in existing_content:
         stripped = line.strip()
@@ -165,15 +166,21 @@ def inject_into_task_section(file_lines, block_lines, filename_stem=None):
 
             # 简单计算前导空白长度 (Tab算1个字符，但在startswith逻辑下足够区分顶层)
             raw_indent_len = len(line) - len(line.lstrip())
+            visual_indent = get_indent_depth(line)
 
             # 如果是顶层任务 (Indent 0 or 1 space/tab usually 0)
             # 使用更宽松的阈值：比如 < 2。
             # 注意：如果您的顶层任务也有缩进，这里需要调整。通常顶层任务是贴边的。
-            is_toplevel = (raw_indent_len < 2)
+            is_toplevel = (visual_indent < 2)
+            looks_like_misnested_synced_task = (
+                visual_indent >= 2
+                and bool(id_pattern.search(line))
+                and bool(daily_backlink_pattern.search(line))
+            )
 
-            if is_toplevel:
+            if is_toplevel or looks_like_misnested_synced_task:
                 flush_block(current_block)
-                current_block = [line]
+                current_block = [line.lstrip(' \t') if looks_like_misnested_synced_task else line]
             else:
                 # 是子任务，加入当前块
                 if current_block:

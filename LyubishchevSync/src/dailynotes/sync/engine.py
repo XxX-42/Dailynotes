@@ -83,6 +83,17 @@ class SyncCore:
     def generate_block_id(self):
         return '^' + ''.join(random.choices(string.ascii_lowercase + string.digits, k=6))
 
+    @staticmethod
+    def _is_daily_task_path(path: str) -> bool:
+        if not path:
+            return False
+        try:
+            daily_dir = os.path.normcase(os.path.normpath(Config.DAILY_NOTE_DIR))
+            candidate = os.path.normcase(os.path.normpath(path))
+            return os.path.commonpath([daily_dir, candidate]) == daily_dir
+        except Exception:
+            return False
+
     def scan_projects(self):
         # Delegate to discovery module
         self.project_map, self.project_path_map, self.file_path_map = scan_projects()
@@ -506,6 +517,14 @@ class SyncCore:
     def process_date(self, target_date, src_tasks_for_date):
         today_str = datetime.date.today().strftime('%Y-%m-%d')
         daily_path = os.path.join(Config.DAILY_NOTE_DIR, f"{target_date}.md")
+        daily_path_norm = os.path.normcase(os.path.normpath(daily_path))
+
+        # 防止把 Daily 自己解析出的任务再次当作 Source 回灌，造成自反链与重复注入。
+        src_tasks_for_date = {
+            bid: sd for bid, sd in src_tasks_for_date.items()
+            if os.path.normcase(os.path.normpath(sd.get('path', ''))) != daily_path_norm
+            and not self._is_daily_task_path(sd.get('path', ''))
+        }
 
         # [NEW] 模版初始化
         if not os.path.exists(daily_path) and src_tasks_for_date:
@@ -845,7 +864,10 @@ class SyncCore:
                         self._task_registry.update_file(potential_source, self.sm)
                         
                         # 重新尝试从更新后的注册表中获取任务
-                        refreshed_src_tasks = self._task_registry.get_tasks_by_date(target_date)
+                        refreshed_src_tasks = {
+                            bid: sd for bid, sd in self._task_registry.get_tasks_by_date(target_date).items()
+                            if not self._is_daily_task_path(sd.get('path', ''))
+                        }
                         if bid in refreshed_src_tasks:
                             Logger.debug(f"    🛡️ [Rescue] 发现任务 {bid} 仍在磁盘，拦截误删并修正缓存")
                             # 既然找到了，我们手动修正本轮循环的状态，将其从"删除"转为"同步"

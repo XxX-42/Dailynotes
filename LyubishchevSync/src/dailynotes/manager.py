@@ -85,6 +85,19 @@ class ObsidianEventHandler(FileSystemEventHandler):
         # [v5.0] 保存最新读取的内容，用以比对是否仅为时间戳修改，实现毫秒同步
         self._last_file_content = {}
 
+    @staticmethod
+    def _get_frontmost_app_name() -> str:
+        import subprocess
+        try:
+            cmd = ['osascript', '-e', 'tell application "System Events" to get name of first application process whose frontmost is true']
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=1.0)
+            return result.stdout.strip()
+        except Exception:
+            return ""
+
+    def _is_obsidian_frontmost(self) -> bool:
+        return 'Obsidian' in self._get_frontmost_app_name()
+
     def _detect_change_source(self, filepath: str, is_system_write: bool) -> str:
         """
         [v3.1] 检测文件变更来源
@@ -172,9 +185,7 @@ class ObsidianEventHandler(FileSystemEventHandler):
             # --- B. 当前窗口检测 (辅助验证 + Idle熔断) ---
             if not is_typing:
                 try:
-                    cmd = ['osascript', '-e', 'tell application "System Events" to get name of first application process whose frontmost is true']
-                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=1.0)
-                    active_app = result.stdout.strip()
+                    active_app = self._get_frontmost_app_name()
                     
                     if 'Obsidian' in active_app:
                         # [v3.6] 回归朴素：只要 Obsidian 是前台窗口且文件变了，就认为是用户操作
@@ -269,9 +280,10 @@ class ObsidianEventHandler(FileSystemEventHandler):
             time.sleep(0.1)  # 最短等待，确保文件写入完成
             
             # 即时执行格式化（进度、ICE 指数更新），仅限日记文件
+            # [FocusSafe] 用户正在 Obsidian 前台编辑时，不做即时回写，避免光标/焦点漂移
             filename = os.path.basename(filepath)
             is_daily = bool(re.match(r'^\d{4}-\d{2}-\d{2}\.md$', filename))
-            if is_daily:
+            if is_daily and change_source != 'OBSIDIAN_TYPING':
                 try:
                     if FormatCore.execute(filepath, instant=True):
                         Logger.info(f"⚡ [Instant] 进度即时更新: {filename}")
@@ -282,8 +294,24 @@ class ObsidianEventHandler(FileSystemEventHandler):
             def delayed_archiving_task():
                 Logger.info(f"📝 [Event] 计时结束，延迟归档触发: {os.path.basename(filepath)}")
                 try:
+                    if change_source == 'OBSIDIAN_TYPING' and self._is_obsidian_frontmost():
+                        if is_daily:
+                            try:
+                                if FormatCore.execute(filepath, instant=True, preserve_focus=True):
+                                    Logger.info(f"🪶 [FocusSafe] 前台编辑中，仅做无痛进度刷新: {filename}")
+                            except Exception as e:
+                                Logger.error_once(f"focus_safe_fmt_{filepath}", f"无痛进度刷新异常: {e}")
+
+                        retry_delay = getattr(Config, 'FOCUS_SAFE_RETRY_SECONDS', 6.0)
+                        Logger.debug(f"[FocusSafe] Obsidian 仍在前台，完整同步延后 {retry_delay}s: {filename}")
+                        retry_timer = threading.Timer(retry_delay, delayed_archiving_task)
+                        self._delayed_timers[filepath] = retry_timer
+                        retry_timer.start()
+                        return
+
                     self.manager.on_file_changed(filepath)
                 except Exception as e:
+                    self.manager._set_gui_status("error")
                     Logger.error_once(f"timer_err_{filepath}", f"定时器触发同步异常: {e}")
 
             # 清理之前的定时器（如果你在 15 秒内又打字了，系统重新开始倒计时 15 秒）
@@ -301,6 +329,9 @@ class ObsidianEventHandler(FileSystemEventHandler):
                 Logger.debug(f"[Event] 检测到后台同步，已重置倒计时 {delay}s...")
             else:
                 delay = getattr(Config, 'CHANGE_SOURCE_TYPING_DELAY', 15.0)
+
+            debounce_token = self.manager._set_gui_status("debounce")
+            self.manager._schedule_gui_idle(debounce_token, delay=delay + 1.0)
                 
             # 设置新的倒计时线程
             new_timer = threading.Timer(delay, delayed_archiving_task)
@@ -308,6 +339,7 @@ class ObsidianEventHandler(FileSystemEventHandler):
             new_timer.start()
             
         except Exception as e:
+            self.manager._set_gui_status("error")
             Logger.error_once(f"event_err_{filepath}", f"事件处理异常: {e}")
 
     def on_modified(self, event):
@@ -364,6 +396,25 @@ class FusionManager:
         self._last_midnight_check = datetime.date.today()
         self._startup_sync_done = False
         self._last_calendar_sync_time = 0  # [P2 FIX] Debounce timer
+
+    def _set_gui_status(self, state: str):
+        app = getattr(self.__class__, 'app_ref', None)
+        if not app:
+            return None
+        try:
+            return app.set_status(state)
+        except Exception as e:
+            Logger.debug(f"⚠️ GUI 状态更新失败 ({state}): {e}")
+            return None
+
+    def _schedule_gui_idle(self, token, delay: float = 1.5):
+        app = getattr(self.__class__, 'app_ref', None)
+        if not app or token is None:
+            return
+        try:
+            app.schedule_idle(token, delay=delay)
+        except Exception as e:
+            Logger.debug(f"⚠️ GUI idle 恢复失败: {e}")
 
     def process_single_date(self, date_str, is_event_trigger=False):
         """
@@ -432,30 +483,34 @@ class FusionManager:
         """
         [v3.0] 事件驱动入口：文件变更时调用
         """
-        filename = os.path.basename(filepath)
-        
-        if not self._registry_warmup_done:
-            Logger.info("🔄 [Manager] Warming up TaskRegistry...")
-            self.sync_core.initialize_registry()
-            self._registry_warmup_done = True
-        
-        date_match = re.match(r'^(\d{4}-\d{2}-\d{2})\.md$', filename)
-        
-        if date_match:
-            date_str = date_match.group(1)
-            Logger.info(f"   🔄 [Sync] 触发日期同步: {date_str}")
-            self.process_single_date(date_str, is_event_trigger=True)
-        else:
-            affected_dates = self.sync_core.process_file_event(filepath)
+        status_token = self._set_gui_status("syncing")
+        try:
+            filename = os.path.basename(filepath)
             
-            if affected_dates:
-                Logger.info(f"   🔄 [Sync] 项目文件变更，影响 {len(affected_dates)} 个日期")
-                for date_str in affected_dates:
-                    self.process_single_date(date_str, is_event_trigger=True)
+            if not self._registry_warmup_done:
+                Logger.info("🔄 [Manager] Warming up TaskRegistry...")
+                self.sync_core.initialize_registry()
+                self._registry_warmup_done = True
+            
+            date_match = re.match(r'^(\d{4}-\d{2}-\d{2})\.md$', filename)
+            
+            if date_match:
+                date_str = date_match.group(1)
+                Logger.info(f"   🔄 [Sync] 触发日期同步: {date_str}")
+                self.process_single_date(date_str, is_event_trigger=True)
             else:
-                today_str = datetime.date.today().strftime('%Y-%m-%d')
-                Logger.info(f"   🔄 [Sync] 项目文件变更（无任务），触发今日同步")
-                self.process_single_date(today_str, is_event_trigger=True)
+                affected_dates = self.sync_core.process_file_event(filepath)
+                
+                if affected_dates:
+                    Logger.info(f"   🔄 [Sync] 项目文件变更，影响 {len(affected_dates)} 个日期")
+                    for date_str in affected_dates:
+                        self.process_single_date(date_str, is_event_trigger=True)
+                else:
+                    today_str = datetime.date.today().strftime('%Y-%m-%d')
+                    Logger.info(f"   🔄 [Sync] 项目文件变更（无任务），触发今日同步")
+                    self.process_single_date(today_str, is_event_trigger=True)
+        finally:
+            self._schedule_gui_idle(status_token, delay=1.5)
 
     def _on_calendar_push_event(self):
         """
@@ -556,100 +611,108 @@ class FusionManager:
         范围: 过去 CHRONOS_FULL_RANGE_PAST_DAYS 天 ~ 未来 CHRONOS_FULL_RANGE_FUTURE_YEARS 年
         性能优化: 仅同步日历中有事件的日期，避免遍历所有空白日期
         """
-        if not self._ek_client:
-            Logger.info("⚠️ [Chronos] EventKit 不可用，跳过窗口同步")
-            return
-        
-        today = datetime.date.today()
-        
-        # [v3.7] DEBUG_TODAY_ONLY 模式：只处理今天的日记
-        if getattr(Config, 'DEBUG_TODAY_ONLY', 0) == 1:
-            start_date = today
-            end_date = today
-            Logger.info(f"🔄 [Chronos] 窗口同步 (DEBUG模式): 仅今天 {today}")
-        else:
-            start_date = today - datetime.timedelta(days=Config.CHRONOS_FULL_RANGE_PAST_DAYS)
-            end_date = today + datetime.timedelta(days=Config.CHRONOS_FULL_RANGE_FUTURE_YEARS * 365)
+        status_token = self._set_gui_status("calendar")
+        try:
+            if not self._ek_client:
+                Logger.info("⚠️ [Chronos] EventKit 不可用，跳过窗口同步")
+                return
             
-            # 确保不早于 SYNC_START_DATE
-            sync_start = datetime.datetime.strptime(Config.SYNC_START_DATE, '%Y-%m-%d').date()
-            if start_date < sync_start:
-                start_date = sync_start
+            today = datetime.date.today()
             
-            Logger.info(f"🔄 [Chronos] 窗口同步: {start_date} ~ {end_date}")
-        
-        # [性能优化] 使用 EventKit 批量获取有事件的日期，避免逐天遍历
-        events_by_date = self._ek_client.fetch_range_events(
-            start_date, 
-            end_date, 
-            Config.CHRONOS_EVENTKIT_BATCH_DAYS
-        )
-        
-        if not events_by_date:
-            Logger.info("📭 [Chronos] 窗口范围内无日历事件")
-            return
-        
-        Logger.info(f"📅 [Chronos] 发现 {len(events_by_date)} 天有日历事件")
-        
-        # 只同步有事件的日期
-        synced_count = 0
-        for date_str in sorted(events_by_date.keys()):
-            if date_str >= Config.SYNC_START_DATE:
-                result = self.process_single_date(date_str, is_event_trigger=True)
-                if result["apple_to_obsidian"] or result["obsidian_to_apple"]:
-                    synced_count += 1
-        
-        Logger.info(f"✅ [Chronos] 窗口同步完成: {synced_count} 天有变动")
+            # [v3.7] DEBUG_TODAY_ONLY 模式：只处理今天的日记
+            if getattr(Config, 'DEBUG_TODAY_ONLY', 0) == 1:
+                start_date = today
+                end_date = today
+                Logger.info(f"🔄 [Chronos] 窗口同步 (DEBUG模式): 仅今天 {today}")
+            else:
+                start_date = today - datetime.timedelta(days=Config.CHRONOS_FULL_RANGE_PAST_DAYS)
+                end_date = today + datetime.timedelta(days=Config.CHRONOS_FULL_RANGE_FUTURE_YEARS * 365)
+                
+                # 确保不早于 SYNC_START_DATE
+                sync_start = datetime.datetime.strptime(Config.SYNC_START_DATE, '%Y-%m-%d').date()
+                if start_date < sync_start:
+                    start_date = sync_start
+                
+                Logger.info(f"🔄 [Chronos] 窗口同步: {start_date} ~ {end_date}")
+            
+            # [性能优化] 使用 EventKit 批量获取有事件的日期，避免逐天遍历
+            events_by_date = self._ek_client.fetch_range_events(
+                start_date, 
+                end_date, 
+                Config.CHRONOS_EVENTKIT_BATCH_DAYS
+            )
+            
+            if not events_by_date:
+                Logger.info("📭 [Chronos] 窗口范围内无日历事件")
+                return
+            
+            Logger.info(f"📅 [Chronos] 发现 {len(events_by_date)} 天有日历事件")
+            
+            # 只同步有事件的日期
+            synced_count = 0
+            for date_str in sorted(events_by_date.keys()):
+                if date_str >= Config.SYNC_START_DATE:
+                    result = self.process_single_date(date_str, is_event_trigger=True)
+                    if result["apple_to_obsidian"] or result["obsidian_to_apple"]:
+                        synced_count += 1
+            
+            Logger.info(f"✅ [Chronos] 窗口同步完成: {synced_count} 天有变动")
+        finally:
+            self._schedule_gui_idle(status_token, delay=1.5)
 
     def sync_full_range(self):
         """
         [v3.0] 全量同步：过去1年到未来10年
         仅同步日历中实际有事件的日期，避免创建大量空白笔记
         """
-        if not self._ek_client:
-            Logger.info("⚠️ [Chronos] EventKit 不可用，跳过全量同步")
-            return
-        
-        today = datetime.date.today()
-        
-        # [v3.7] DEBUG_TODAY_ONLY 模式：只处理今天的日记
-        if getattr(Config, 'DEBUG_TODAY_ONLY', 0) == 1:
-            start_date = today
-            end_date = today
-            Logger.info(f"🚀 [Chronos] 全量同步启动 (DEBUG模式): 仅今天 {today}")
-        else:
-            start_date = today - datetime.timedelta(days=Config.CHRONOS_FULL_RANGE_PAST_DAYS)
-            end_date = today + datetime.timedelta(days=Config.CHRONOS_FULL_RANGE_FUTURE_YEARS * 365)
+        status_token = self._set_gui_status("calendar")
+        try:
+            if not self._ek_client:
+                Logger.info("⚠️ [Chronos] EventKit 不可用，跳过全量同步")
+                return
             
-            # 确保不早于 SYNC_START_DATE
-            sync_start = datetime.datetime.strptime(Config.SYNC_START_DATE, '%Y-%m-%d').date()
-            if start_date < sync_start:
-                start_date = sync_start
+            today = datetime.date.today()
             
-            Logger.info(f"🚀 [Chronos] 全量同步启动: {start_date} ~ {end_date}")
-        
-        # 获取日历中有事件的日期
-        events_by_date = self._ek_client.fetch_range_events(
-            start_date, 
-            end_date, 
-            Config.CHRONOS_EVENTKIT_BATCH_DAYS
-        )
-        
-        if not events_by_date:
-            Logger.info("📭 [Chronos] 日历范围内无事件")
-            return
-        
-        Logger.info(f"📅 [Chronos] 发现 {len(events_by_date)} 天有日历事件")
-        
-        # 只同步有事件的日期
-        synced_count = 0
-        for date_str in sorted(events_by_date.keys()):
-            if date_str >= Config.SYNC_START_DATE:
-                result = self.process_single_date(date_str, is_event_trigger=True)
-                if result["apple_to_obsidian"] or result["obsidian_to_apple"]:
-                    synced_count += 1
-        
-        Logger.info(f"✅ [Chronos] 全量同步完成: {synced_count} 天有变动")
+            # [v3.7] DEBUG_TODAY_ONLY 模式：只处理今天的日记
+            if getattr(Config, 'DEBUG_TODAY_ONLY', 0) == 1:
+                start_date = today
+                end_date = today
+                Logger.info(f"🚀 [Chronos] 全量同步启动 (DEBUG模式): 仅今天 {today}")
+            else:
+                start_date = today - datetime.timedelta(days=Config.CHRONOS_FULL_RANGE_PAST_DAYS)
+                end_date = today + datetime.timedelta(days=Config.CHRONOS_FULL_RANGE_FUTURE_YEARS * 365)
+                
+                # 确保不早于 SYNC_START_DATE
+                sync_start = datetime.datetime.strptime(Config.SYNC_START_DATE, '%Y-%m-%d').date()
+                if start_date < sync_start:
+                    start_date = sync_start
+                
+                Logger.info(f"🚀 [Chronos] 全量同步启动: {start_date} ~ {end_date}")
+            
+            # 获取日历中有事件的日期
+            events_by_date = self._ek_client.fetch_range_events(
+                start_date, 
+                end_date, 
+                Config.CHRONOS_EVENTKIT_BATCH_DAYS
+            )
+            
+            if not events_by_date:
+                Logger.info("📭 [Chronos] 日历范围内无事件")
+                return
+            
+            Logger.info(f"📅 [Chronos] 发现 {len(events_by_date)} 天有日历事件")
+            
+            # 只同步有事件的日期
+            synced_count = 0
+            for date_str in sorted(events_by_date.keys()):
+                if date_str >= Config.SYNC_START_DATE:
+                    result = self.process_single_date(date_str, is_event_trigger=True)
+                    if result["apple_to_obsidian"] or result["obsidian_to_apple"]:
+                        synced_count += 1
+            
+            Logger.info(f"✅ [Chronos] 全量同步完成: {synced_count} 天有变动")
+        finally:
+            self._schedule_gui_idle(status_token, delay=1.5)
 
     def _check_midnight_crossing(self):
         """

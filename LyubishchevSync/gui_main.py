@@ -22,8 +22,9 @@ from dailynotes.utils import ProcessLock, Logger
 class LyubishchevApp(rumps.App):
     def __init__(self):
         super(LyubishchevApp, self).__init__("柳比歇夫", title="⏳ 柳比歇夫")
+        self.status_item = rumps.MenuItem("Status: Initializing...", callback=None)
         self.menu = [
-            rumps.MenuItem("Status: Initializing...", callback=None),
+            self.status_item,
             None,
             rumps.MenuItem("Open Log File", callback=self.open_log),
             rumps.MenuItem("Restart Sync", callback=self.restart_sync),
@@ -31,6 +32,78 @@ class LyubishchevApp(rumps.App):
         ]
         self.sync_thread = None
         self.should_run = True
+        self._status_lock = threading.Lock()
+        self._status_timer = None
+        self._status_token = 0
+        self._status_state = "starting"
+        self._status_priority = {
+            "idle": 0,
+            "debounce": 1,
+            "syncing": 2,
+            "calendar": 3,
+            "error": 4,
+        }
+        self._status_titles = {
+            "idle": "🚀 柳比歇夫",
+            "debounce": "👀 防抖",
+            "syncing": "⚡ 处理中",
+            "calendar": "📅 日历处理中",
+            "error": "❌ 出错",
+            "starting": "⏳ 柳比歇夫",
+        }
+        self._status_menu_titles = {
+            "idle": "Status: Idle",
+            "debounce": "Status: Debouncing",
+            "syncing": "Status: Syncing",
+            "calendar": "Status: Calendar Sync",
+            "error": "Status: Error",
+            "starting": "Status: Initializing...",
+        }
+
+    def _apply_status_ui(self, state):
+        self.title = self._status_titles.get(state, self._status_titles["idle"])
+        self.status_item.title = self._status_menu_titles.get(state, self._status_menu_titles["idle"])
+
+    def set_status(self, state, force=False):
+        with self._status_lock:
+            if self._status_timer:
+                self._status_timer.cancel()
+                self._status_timer = None
+
+            new_priority = self._status_priority.get(state, 0)
+            current_priority = self._status_priority.get(self._status_state, -1)
+            if not force and new_priority < current_priority:
+                return self._status_token
+
+            self._status_state = state
+            self._status_token += 1
+            token = self._status_token
+
+        try:
+            self._apply_status_ui(state)
+        except Exception:
+            pass
+        return token
+
+    def schedule_idle(self, token, delay=1.5):
+        def _reset():
+            with self._status_lock:
+                if token != self._status_token or self._status_state == "error":
+                    return
+                self._status_state = "idle"
+                self._status_token += 1
+                self._status_timer = None
+            try:
+                self._apply_status_ui("idle")
+            except Exception:
+                pass
+
+        with self._status_lock:
+            if self._status_timer:
+                self._status_timer.cancel()
+            self._status_timer = threading.Timer(delay, _reset)
+            self._status_timer.daemon = True
+            self._status_timer.start()
 
     def run_sync_logic(self):
         """
@@ -76,9 +149,7 @@ class LyubishchevApp(rumps.App):
         # Success acquiring lock
         Logger.info("✅ [GUI] Lock acquired. Starting engine...")
         try:
-             # Update Status UI (Safely?)
-            self.title = "🚀 柳比歇夫"
-            self.menu["Status: Initializing..."].title = "Status: Running"
+            self.set_status("idle", force=True)
         except: pass
 
         try:
@@ -88,7 +159,7 @@ class LyubishchevApp(rumps.App):
         except Exception as e:
             Logger.error_once("gui_thread_crash", f"❌ Sync thread crashed: {e}")
             try:
-                self.title = "⚠️ Valid"
+                self.set_status("error", force=True)
             except: pass
         finally:
             # Cleanup
@@ -96,7 +167,7 @@ class LyubishchevApp(rumps.App):
             main.stop_caffeinate()
             try:
                 self.title = "🔴 Stop"
-                self.menu["Status: Initializing..."].title = "Status: Stopped"
+                self.status_item.title = "Status: Stopped"
             except: pass
 
     @rumps.clicked("Open Log File")

@@ -21,7 +21,7 @@ from dailynotes.utils import ProcessLock, Logger
 
 class LyubishchevApp(rumps.App):
     def __init__(self):
-        super(LyubishchevApp, self).__init__("柳比歇夫", title="⏳ 柳比歇夫")
+        super(LyubishchevApp, self).__init__("柳比歇夫", title="⏳启动")
         self.status_item = rumps.MenuItem("Status: Initializing...", callback=None)
         self.menu = [
             self.status_item,
@@ -41,21 +41,25 @@ class LyubishchevApp(rumps.App):
             "debounce": 1,
             "syncing": 2,
             "calendar": 3,
+            "handoff": 4,
             "error": 4,
         }
         self._status_titles = {
-            "idle": "🚀 柳比歇夫",
-            "debounce": "👀 防抖",
-            "syncing": "⚡ 处理中",
-            "calendar": "📅 日历处理中",
-            "error": "❌ 出错",
-            "starting": "⏳ 柳比歇夫",
+            # rumps 仅直接设置 NSStatusItem title；这里保留 emoji + 中文，但尽量缩短以降低菜单栏截断概率。
+            "idle": "🚀柳比",
+            "debounce": "👀防抖",
+            "syncing": "⚡同步",
+            "calendar": "📅日历",
+            "handoff": "🔁交接",
+            "error": "❌出错",
+            "starting": "⏳启动",
         }
         self._status_menu_titles = {
             "idle": "Status: Idle",
             "debounce": "Status: Debouncing",
             "syncing": "Status: Syncing",
             "calendar": "Status: Calendar Sync",
+            "handoff": "Status: Handoff",
             "error": "Status: Error",
             "starting": "Status: Initializing...",
         }
@@ -119,6 +123,10 @@ class LyubishchevApp(rumps.App):
         # 2. Acquire Lock
         if not ProcessLock.acquire():
             Logger.info("⚠️ [GUI] Lock held by another process. Attempting takeover...")
+            try:
+                self.set_status("handoff", force=True)
+            except Exception:
+                pass
             old_pid = ProcessLock.read_pid()
             if old_pid and old_pid != os.getpid():
                 Logger.info(f"🛑 Killing old process {old_pid}...")
@@ -139,7 +147,7 @@ class LyubishchevApp(rumps.App):
             time.sleep(1)
             if not ProcessLock.acquire():
                 Logger.error_once("lock_fail", "❌ Could not acquire lock even after cleanup.")
-                dum_title = "❌ Error"
+                dum_title = "❌出错"
                 try:
                     self.title = dum_title
                     rumps.notification("Sync Error", "Lock Failed", "Could not start sync engine.")
@@ -166,7 +174,7 @@ class LyubishchevApp(rumps.App):
             ProcessLock.release()
             main.stop_caffeinate()
             try:
-                self.title = "🔴 Stop"
+                self.title = "🔴停止"
                 self.status_item.title = "Status: Stopped"
             except: pass
 

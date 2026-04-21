@@ -532,9 +532,12 @@ class SyncCore:
                 try:
                     tmpl_lines = FileUtils.read_file(Config.TEMPLATE_FILE)
                     if tmpl_lines:
-                        Logger.info(f"   📄 [TEMPLATE] 检测到未来/缺失日记，正在从模版创建: {target_date}.md")
-                        FileUtils.write_file(daily_path, tmpl_lines)
-                        time.sleep(0.1)
+                        result = FileUtils.create_file_if_absent(daily_path, tmpl_lines)
+                        if result == "CREATED":
+                            Logger.info(f"   📄 [TEMPLATE] 检测到未来/缺失日记，正在从模版创建: {target_date}.md")
+                            time.sleep(0.1)
+                        elif result == "ALREADY_EXISTS":
+                            Logger.debug(f"[TEMPLATE] 并发创建已完成，跳过覆盖: {target_date}.md")
                 except Exception as e:
                     Logger.error_once(f"tmpl_fail_{target_date}", f"模版创建失败: {e}")
             else:
@@ -560,7 +563,9 @@ class SyncCore:
                     Config.ECONOMIC_HEADER + "\n",
                     "\n",
                 ]
-                FileUtils.write_file(daily_path, base_scaffold)
+                result = FileUtils.create_file_if_absent(daily_path, base_scaffold)
+                if result == "ALREADY_EXISTS":
+                    Logger.debug(f"[TEMPLATE] 并发基础骨架已存在，跳过覆盖: {target_date}.md")
 
         organized_bids = set()
         if os.path.exists(daily_path): 

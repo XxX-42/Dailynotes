@@ -289,6 +289,57 @@ class FileUtils:
             return False
 
     @staticmethod
+    def create_file_if_absent(filepath, lines_or_content):
+        """
+        Create a file exactly once without overwriting an existing one.
+
+        Returns one of:
+        - "CREATED"
+        - "ALREADY_EXISTS"
+        - "FAILED"
+        """
+        if lines_or_content is None:
+            final_content = ""
+        elif isinstance(lines_or_content, list):
+            final_content = "".join([str(l) for l in lines_or_content if l is not None])
+        else:
+            final_content = str(lines_or_content)
+        final_bytes = final_content.encode('utf-8')
+        content_hash = FileUtils.calculate_hash(final_content)
+
+        try:
+            fd = os.open(filepath, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
+            return "ALREADY_EXISTS"
+        except Exception as e:
+            Logger.error_once(f"create_absent_open_{filepath}", f"创建失败 {filepath}: {e}")
+            return "FAILED"
+
+        try:
+            with os.fdopen(fd, 'wb') as f:
+                f.write(final_bytes)
+                f.flush()
+                os.fsync(f.fileno())
+
+            if len(FileUtils._system_write_hashes) >= FileUtils._MAX_HASH_CACHE:
+                oldest_keys = list(FileUtils._system_write_hashes.keys())[:FileUtils._MAX_HASH_CACHE // 2]
+                for k in oldest_keys:
+                    del FileUtils._system_write_hashes[k]
+            FileUtils._system_write_hashes[content_hash] = time.time()
+
+            FileUtils._append_modification_audit(filepath, "create_if_absent", final_content)
+            return "CREATED"
+        except Exception as e:
+            Logger.error_once(f"create_absent_write_{filepath}", f"创建失败 {filepath}: {e}")
+            try:
+                os.remove(filepath)
+            except OSError:
+                pass
+            if content_hash in FileUtils._system_write_hashes:
+                del FileUtils._system_write_hashes[content_hash]
+            return "FAILED"
+
+    @staticmethod
     def get_mtime(filepath):
         try:
             return os.path.getmtime(filepath)

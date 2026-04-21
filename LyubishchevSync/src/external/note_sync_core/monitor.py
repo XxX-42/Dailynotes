@@ -93,6 +93,12 @@ class NoteMonitor:
             self._log(f"⚠️ [NoteMonitor] 写入失败: {path}")
         return ok
 
+    def _create_note_file_if_absent(self, path, content):
+        result = FileUtils.create_file_if_absent(path, content)
+        if result == "FAILED":
+            self._log(f"⚠️ [NoteMonitor] 创建失败: {path}")
+        return result
+
     def _sync_obsidian_tasks_to_notes(self, note_name, current_notes_content):
         """
         [v5.4] 单向同步: Obsidian Unchecked Tasks -> Apple Notes
@@ -508,19 +514,14 @@ class NoteMonitor:
             # 1. 创建 Obsidian 日记
             if daily_note_dir:
                 tomorrow_path = os.path.join(daily_note_dir, f"{tomorrow_str}.md")
-
-                if not os.path.exists(tomorrow_path):
-                    # 读取模板
-                    template_content = self._read_template()
-
-                    try:
-                        if not self._write_note_content(tomorrow_path, template_content):
-                            raise RuntimeError("write failed")
-                        self._log(f"📅 [NoteMonitor] 次日 Obsidian 日记已创建: {tomorrow_str}.md")
-                    except Exception as e:
-                        self._log(f"❌ [NoteMonitor] 创建次日日记失败: {e}")
-                else:
+                template_content = self._read_template()
+                result = self._create_note_file_if_absent(tomorrow_path, template_content)
+                if result == "CREATED":
+                    self._log(f"📅 [NoteMonitor] 次日 Obsidian 日记已创建: {tomorrow_str}.md")
+                elif result == "ALREADY_EXISTS":
                     self._log(f"ℹ️ [NoteMonitor] 次日 Obsidian 日记已存在，跳过创建")
+                else:
+                    self._log(f"❌ [NoteMonitor] 创建次日日记失败")
 
             # 2. 创建 Apple Note
             try:
@@ -588,15 +589,15 @@ tags:
         
         if daily_note_dir:
             today_path = os.path.join(daily_note_dir, f"{today_str}.md")
-            if not os.path.exists(today_path):
+            template_content = self._read_template()
+            result = self._create_note_file_if_absent(today_path, template_content)
+            if result == "CREATED":
                 self._log(f"⚠️ [NoteMonitor] 今日日记缺失，正在创建: {today_str}.md")
-                template_content = self._read_template()
-                try:
-                    if not self._write_note_content(today_path, template_content):
-                        raise RuntimeError("write failed")
-                    self._log(f"✅ [NoteMonitor] 今日日记创建成功")
-                except Exception as e:
-                    self._log(f"❌ [NoteMonitor] 创建今日日记失败: {e}")
+                self._log(f"✅ [NoteMonitor] 今日日记创建成功")
+            elif result == "ALREADY_EXISTS":
+                pass
+            else:
+                self._log(f"❌ [NoteMonitor] 创建今日日记失败")
 
         # 2. Check/Create Apple Note
         note_name = f"{today.year}/{today.month}/{today.day}"

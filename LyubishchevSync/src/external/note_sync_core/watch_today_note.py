@@ -3,6 +3,12 @@ import sys
 import os
 import time
 import logging
+import atexit
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 
 # ==========================================
 # 路径设置: 确保能导入项目模块
@@ -47,6 +53,61 @@ class SimpleLogger:
     def info(msg):
         print(msg)
 
+
+_note_monitor_lock_fd = None
+
+
+def _note_monitor_lock_path():
+    daily_dir = getattr(Config, 'DAILY_NOTE_DIR', None)
+    if daily_dir:
+        return os.path.join(daily_dir, '.note_monitor.lock')
+    return os.path.join(current_dir, '.note_monitor.lock')
+
+
+def acquire_note_monitor_lock(logger):
+    global _note_monitor_lock_fd
+    if not fcntl:
+        return True
+
+    lock_path = _note_monitor_lock_path()
+    try:
+        _note_monitor_lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+        fcntl.flock(_note_monitor_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        os.ftruncate(_note_monitor_lock_fd, 0)
+        os.write(_note_monitor_lock_fd, str(os.getpid()).encode())
+        return True
+    except (BlockingIOError, OSError):
+        logger.info("ℹ️ [NoteMonitor] 已有监听子进程在运行，当前实例退出")
+        if _note_monitor_lock_fd is not None:
+            try:
+                os.close(_note_monitor_lock_fd)
+            except OSError:
+                pass
+            _note_monitor_lock_fd = None
+        return False
+
+
+def release_note_monitor_lock():
+    global _note_monitor_lock_fd
+    if not fcntl or _note_monitor_lock_fd is None:
+        return
+
+    lock_path = _note_monitor_lock_path()
+    try:
+        fcntl.flock(_note_monitor_lock_fd, fcntl.LOCK_UN)
+    except OSError:
+        pass
+    try:
+        os.close(_note_monitor_lock_fd)
+    except OSError:
+        pass
+    _note_monitor_lock_fd = None
+    try:
+        if os.path.exists(lock_path):
+            os.remove(lock_path)
+    except OSError:
+        pass
+
 # ==========================================
 # 主入口
 # ==========================================
@@ -55,6 +116,9 @@ def main():
     
     # 使用项目 Logger 或 SimpleLogger
     logger = Logger if 'Logger' in locals() else SimpleLogger
+    if not acquire_note_monitor_lock(logger):
+        return
+    atexit.register(release_note_monitor_lock)
     
     # 初始化 Monitor
     # Config 应该包含 DAILY_NOTE_DIR, TEMPLATE_FILE, KEYWORD_MAPPING

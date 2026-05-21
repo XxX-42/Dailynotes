@@ -1,13 +1,39 @@
 import os
 
 
+def _resolve_vault_root():
+    env_path = os.environ.get("LYUBISHCHEV_VAULT_ROOT")
+    if env_path:
+        return os.path.expanduser(env_path)
+
+    candidates = [
+        os.path.expanduser("~/Documents/远程仓库1"),
+        r"/Users/user999/Documents/【Liang_project】/远程仓库1",
+    ]
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return candidate
+    return candidates[0]
+
+
+def _resolve_daily_note_dir(vault_root):
+    candidates = [
+        os.path.join(vault_root, r'【ATTACHMENT】', r'【DAILYNOTE】'),
+        os.path.join(vault_root, r'00_Archive', r'2_DailyNote'),
+    ]
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return candidate
+    return candidates[0]
+
+
 class Config:
     VERSION = "v3.0.0 (Chronos Mode)"    # [2026-01-22] Pure event-driven, no polling
     
     # ==========================
     # 1. 基础路径配置 (来自 Dailynotes)
     # ==========================
-    VAULT_ROOT = r'/Users/user999/Documents/【Liang_project】/远程仓库1'
+    VAULT_ROOT = _resolve_vault_root()
     REL_ATTACHMENT_DIR = r'【ATTACHMENT】'
     REL_TEMPLATE_FILE = r'00_Infobox/Templates/DayPlanTemplate_beta 3.md'
 
@@ -26,7 +52,7 @@ class Config:
     ]
 
     # 自动拼接
-    DAILY_NOTE_DIR = os.path.join(VAULT_ROOT, REL_ATTACHMENT_DIR, r'【DAILYNOTE】')
+    DAILY_NOTE_DIR = _resolve_daily_note_dir(VAULT_ROOT)
     TEMPLATE_FILE = os.path.join(VAULT_ROOT, REL_TEMPLATE_FILE)
 
     # 排除项
@@ -65,6 +91,7 @@ class Config:
     # 根据检测到的变更来源，在执行格式化/同步前等待不同时间
     CHANGE_SOURCE_TYPING_DELAY = 9.0   # 用户打字：短延迟，减少打断感
     CHANGE_SOURCE_SYNC_DELAY = 19.0    # 后台同步：长延迟，等待批量同步稳定
+    BROKEN_WIKI_LINK_DELAY = 0.8       # 坏 wiki link：独立短防抖，尽快修复关联但不击穿其它防抖层
     
     # [v3.0] Chronos Mode - 全事件驱动架构
     CHRONOS_SYNC_WINDOW_DAYS = 30      # 日历变更时同步的窗口大小（前后各15天）

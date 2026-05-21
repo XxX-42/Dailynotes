@@ -98,6 +98,16 @@ class ObsidianEventHandler(FileSystemEventHandler):
     def _is_obsidian_frontmost(self) -> bool:
         return 'Obsidian' in self._get_frontmost_app_name()
 
+    @staticmethod
+    def _detect_broken_wiki_link_reason(content: str):
+        if not content or "[[" not in content or "\\" not in content:
+            return None
+        if re.search(r'\[\[[^\]]*\\_[^\]]*\]\]', content):
+            return "坏链接"
+        if re.search(r'\[\[[^\]]*\\\|[^\]]*\]\]', content):
+            return "转义链接"
+        return None
+
     def _detect_change_source(self, filepath: str, is_system_write: bool) -> str:
         """
         [v3.1] 检测文件变更来源
@@ -318,19 +328,37 @@ class ObsidianEventHandler(FileSystemEventHandler):
             if filepath in self._delayed_timers:
                 self._delayed_timers[filepath].cancel()
 
+            broken_link_reason = self._detect_broken_wiki_link_reason(content)
+            debounce_reason = broken_link_reason
+
             if is_time_only_change:
                 delay = 0.1
+                debounce_reason = debounce_reason or "改时间"
                 Logger.info("⚡ [InstantSync] 检测到任务纯时间修改，绕过系统打字延迟，即刻触发日历同步!")
             elif change_source == 'OBSIDIAN_TYPING':
                 delay = getattr(Config, 'CHANGE_SOURCE_TYPING_DELAY', 15.0)
+                debounce_reason = debounce_reason or "打字中"
                 Logger.debug(f"[Event] 检测到用户输入，已重置倒计时 {delay}s...")
             elif change_source == 'OBSIDIAN_SYNC':
                 delay = getattr(Config, 'CHANGE_SOURCE_SYNC_DELAY', 25.0)
+                debounce_reason = debounce_reason or "后台同步"
                 Logger.debug(f"[Event] 检测到后台同步，已重置倒计时 {delay}s...")
             else:
                 delay = getattr(Config, 'CHANGE_SOURCE_TYPING_DELAY', 15.0)
+                debounce_reason = debounce_reason or "文件变更"
 
-            debounce_token = self.manager._set_gui_status("debounce")
+            # [BrokenLink Lane] 坏链接使用独立短防抖，优先于同文件上的普通打字/同步等待；
+            # 但它仍然运行在通用事件防抖与定时器框架内，不会击穿整体防抖机制。
+            if broken_link_reason:
+                broken_link_delay = getattr(Config, 'BROKEN_WIKI_LINK_DELAY', 0.8)
+                if delay > broken_link_delay:
+                    Logger.info(
+                        f"🔧 [BrokenLink] 检测到 wiki link 风险，当前文件切换到独立短防抖 {broken_link_delay:.1f}s: "
+                        f"{os.path.basename(filepath)}"
+                    )
+                delay = min(delay, broken_link_delay)
+
+            debounce_token = self.manager._set_gui_status("debounce", debounce_reason)
             self.manager._schedule_gui_idle(debounce_token, delay=delay + 1.0)
                 
             # 设置新的倒计时线程
@@ -397,12 +425,12 @@ class FusionManager:
         self._startup_sync_done = False
         self._last_calendar_sync_time = 0  # [P2 FIX] Debounce timer
 
-    def _set_gui_status(self, state: str):
+    def _set_gui_status(self, state: str, detail: str = None):
         app = getattr(self.__class__, 'app_ref', None)
         if not app:
             return None
         try:
-            return app.set_status(state)
+            return app.set_status(state, detail=detail)
         except Exception as e:
             Logger.debug(f"⚠️ GUI 状态更新失败 ({state}): {e}")
             return None
@@ -782,8 +810,15 @@ class FusionManager:
 
         # 主循环
         try:
-            from CoreFoundation import CFRunLoopRunInMode, kCFRunLoopDefaultMode
-            
+            try:
+                from CoreFoundation import CFRunLoopRunInMode, kCFRunLoopDefaultMode
+                use_cf_runloop = True
+            except ImportError:
+                CFRunLoopRunInMode = None
+                kCFRunLoopDefaultMode = None
+                use_cf_runloop = False
+                Logger.info("⚠️ [Chronos] CoreFoundation 不可用，降级为 sleep 循环")
+
             while self._running:
                 # [v3.0] 纯事件驱动：仅处理标志位
                 if self._calendar_dirty_flag:
@@ -800,8 +835,11 @@ class FusionManager:
                 # 检查午夜跨越
                 self._check_midnight_crossing()
                 
-                # 保持 RunLoop 唤醒，returnAfterSourceHandled=True
-                CFRunLoopRunInMode(kCFRunLoopDefaultMode, Config.CHRONOS_LOOP_INTERVAL, True)
+                if use_cf_runloop:
+                    # 保持 RunLoop 唤醒，returnAfterSourceHandled=True
+                    CFRunLoopRunInMode(kCFRunLoopDefaultMode, Config.CHRONOS_LOOP_INTERVAL, True)
+                else:
+                    time.sleep(Config.CHRONOS_LOOP_INTERVAL)
 
                 
         except KeyboardInterrupt:

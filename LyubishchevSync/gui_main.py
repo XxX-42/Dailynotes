@@ -19,6 +19,11 @@ import main
 from config import Config
 from dailynotes.utils import ProcessLock, Logger
 
+
+def _python_executable():
+    return sys.executable or "/Library/Developer/CommandLineTools/usr/bin/python3"
+
+
 class LyubishchevApp(rumps.App):
     def __init__(self):
         super(LyubishchevApp, self).__init__("柳比歇夫", title="⏳启动")
@@ -36,6 +41,7 @@ class LyubishchevApp(rumps.App):
         self._status_timer = None
         self._status_token = 0
         self._status_state = "starting"
+        self._status_detail = None
         self._status_priority = {
             "idle": 0,
             "debounce": 1,
@@ -64,11 +70,25 @@ class LyubishchevApp(rumps.App):
             "starting": "Status: Initializing...",
         }
 
-    def _apply_status_ui(self, state):
-        self.title = self._status_titles.get(state, self._status_titles["idle"])
-        self.status_item.title = self._status_menu_titles.get(state, self._status_menu_titles["idle"])
+    def _format_status_titles(self, state, detail=None):
+        base_title = self._status_titles.get(state, self._status_titles["idle"])
+        base_menu_title = self._status_menu_titles.get(state, self._status_menu_titles["idle"])
+        clean_detail = (detail or "").strip()
 
-    def set_status(self, state, force=False):
+        if not clean_detail:
+            return base_title, base_menu_title
+
+        if len(clean_detail) > 8:
+            clean_detail = clean_detail[:8]
+
+        return f"{base_title}（{clean_detail}）", f"{base_menu_title} ({clean_detail})"
+
+    def _apply_status_ui(self, state, detail=None):
+        title, menu_title = self._format_status_titles(state, detail)
+        self.title = title
+        self.status_item.title = menu_title
+
+    def set_status(self, state, detail=None, force=False):
         with self._status_lock:
             if self._status_timer:
                 self._status_timer.cancel()
@@ -80,11 +100,12 @@ class LyubishchevApp(rumps.App):
                 return self._status_token
 
             self._status_state = state
+            self._status_detail = detail
             self._status_token += 1
             token = self._status_token
 
         try:
-            self._apply_status_ui(state)
+            self._apply_status_ui(state, detail)
         except Exception:
             pass
         return token
@@ -95,10 +116,11 @@ class LyubishchevApp(rumps.App):
                 if token != self._status_token or self._status_state == "error":
                     return
                 self._status_state = "idle"
+                self._status_detail = None
                 self._status_token += 1
                 self._status_timer = None
             try:
-                self._apply_status_ui("idle")
+                self._apply_status_ui("idle", None)
             except Exception:
                 pass
 
@@ -192,8 +214,8 @@ class LyubishchevApp(rumps.App):
         rumps.notification("柳比歇夫", "Restarting...", "The synchronization engine is restarting.")
         
         # 组装完整的后台启动 shell 命令
-        python_path = "/Users/user999/Documents/【Liang_project】/Code_Scripits/2025_DailynoteSync_complete_beta_v2/.venv/bin/python"
-        script_path = "/Users/user999/Documents/【Liang_project】/Code_Scripits/2025_DailynoteSync_complete_beta_v2/LyubishchevSync/gui_main.py"
+        python_path = _python_executable()
+        script_path = os.path.abspath(__file__)
         log_path = "/tmp/LyubishchevSync_startup.log"
         
         cmd = f'export PYTHONIOENCODING=utf-8; "{python_path}" -u "{script_path}" > "{log_path}" 2>&1 &'
@@ -269,7 +291,14 @@ if __name__ == "__main__":
 
         # 主循环
         try:
-            from CoreFoundation import CFRunLoopRunInMode, kCFRunLoopDefaultMode
+            try:
+                from CoreFoundation import CFRunLoopRunInMode, kCFRunLoopDefaultMode
+                use_cf_runloop = True
+            except ImportError:
+                CFRunLoopRunInMode = None
+                kCFRunLoopDefaultMode = None
+                use_cf_runloop = False
+                Logger.info("⚠️ [GUI] CoreFoundation 不可用，降级为 sleep 循环")
             
             while self.app_ref.should_run and self._running:
                 # [v3.0] 纯事件驱动：仅处理标志位
@@ -281,8 +310,11 @@ if __name__ == "__main__":
                 # 检查午夜跨越
                 self._check_midnight_crossing()
                 
-                # 保持 RunLoop 唤醒
-                CFRunLoopRunInMode(kCFRunLoopDefaultMode, Config.CHRONOS_LOOP_INTERVAL, False)
+                if use_cf_runloop:
+                    # 保持 RunLoop 唤醒
+                    CFRunLoopRunInMode(kCFRunLoopDefaultMode, Config.CHRONOS_LOOP_INTERVAL, False)
+                else:
+                    time.sleep(Config.CHRONOS_LOOP_INTERVAL)
                 
         except KeyboardInterrupt:
             Logger.info("\n⏹️ 收到中断信号...")

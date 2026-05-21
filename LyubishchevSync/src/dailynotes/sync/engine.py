@@ -16,6 +16,7 @@ from .parsing import (
     normalize_block_content, 
     extract_routing_target,
     extract_routing_info,
+    detect_broken_wiki_link_risk,
     capture_block, 
     get_indent_depth
 )
@@ -850,6 +851,13 @@ class SyncCore:
                 dd = dn_tasks[bid]
                 raw_first = dd['raw'][0]
                 db_data = self.sm.state.get(bid, {})
+                broken_link_risk = detect_broken_wiki_link_risk(raw_first)
+
+                if broken_link_risk:
+                    Logger.info(
+                        f"   🔎 [MYFIND] 检测到 Obsidian 坏链接风险 ({bid}): {broken_link_risk} "
+                        f"-> 这类 `\\_` / `\\|` 转义可能导致项目关联失败，本轮将谨慎避免按正常路由误判"
+                    )
                 
                 # 确定该任务"理应"存在的源文件路径
                 last_path = db_data.get('source_path', '')
@@ -969,6 +977,8 @@ class SyncCore:
                     # 其他情况：无法确定，执行删除
                     should_push = False
                     deletion_reason = "无法确定目标文件"
+                    if broken_link_risk:
+                        deletion_reason += "（疑似 wiki link 转义损坏）"
 
                 if should_push:
                     target_file = None

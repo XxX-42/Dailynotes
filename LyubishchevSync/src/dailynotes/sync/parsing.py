@@ -149,6 +149,23 @@ def extract_routing_target(line, file_path_map):
     return path
 
 
+def detect_broken_wiki_link_risk(line):
+    """
+    Detect wiki links that are syntactically present but likely fail routing because
+    markdown escaping leaked into the Obsidian link body, e.g. `[[2026\\_5_Project]]`.
+    Returns the raw risky wiki link text, or None if no obvious risk is found.
+    """
+    if "[[" not in line or "\\" not in line:
+        return None
+
+    for match in re.finditer(r'\[\[(.*?)\]\]', line):
+        raw_text = match.group(0)
+        inner = match.group(1)
+        if re.search(r'\\[_|\[\]]', inner):
+            return raw_text
+    return None
+
+
 def generate_block_id() -> str:
     """Generate a unique block ID."""
     import random

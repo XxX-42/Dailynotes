@@ -220,16 +220,20 @@ class BatchExecutor:
         This ensures no ID conflicts when recreating moved events.
         """
         if not (self.creates or self.updates or self.deletes):
-            return
+            return {
+                "ok": True,
+                "success": {"delete": 0, "create": 0, "update": 0},
+                "errors": {"delete": 0, "create": 0, "update": 0},
+            }
 
         client = _get_ek_client()
         if not client:
             print("❌ [BatchExecutor] EventKit 不可用，无法执行操作")
-            return
+            return {"ok": False, "error": "eventkit_unavailable"}
         
         if not client.access_granted:
             print("❌ [BatchExecutor] 没有日历访问权限")
-            return
+            return {"ok": False, "error": "calendar_access_denied"}
 
         store = client.store
         
@@ -361,3 +365,8 @@ class BatchExecutor:
             print(f"⚡ 执行批处理: +{success_count['create']} ~{success_count['update']} -{success_count['delete']} (❌{total_errors}错误)")
         else:
             print(f"⚡ 执行批处理: +{success_count['create']} ~{success_count['update']} -{success_count['delete']}")
+        return {
+            "ok": total_errors == 0,
+            "success": success_count,
+            "errors": error_count,
+        }

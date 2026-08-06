@@ -29,6 +29,7 @@ from .rendering import (
     inject_into_task_section
 )
 from ..daily_sections import normalize_daily_note_lines
+from ..daily_note_factory import ensure_daily_note
 
 class SyncCore:
     def __init__(self, state_manager):
@@ -527,46 +528,11 @@ class SyncCore:
             and not self._is_daily_task_path(sd.get('path', ''))
         }
 
-        # [NEW] 模版初始化
         if not os.path.exists(daily_path) and src_tasks_for_date:
-            if os.path.exists(Config.TEMPLATE_FILE):
-                try:
-                    tmpl_lines = FileUtils.read_file(Config.TEMPLATE_FILE)
-                    if tmpl_lines:
-                        result = FileUtils.create_file_if_absent(daily_path, tmpl_lines)
-                        if result == "CREATED":
-                            Logger.info(f"   📄 [TEMPLATE] 检测到未来/缺失日记，正在从模版创建: {target_date}.md")
-                            time.sleep(0.1)
-                        elif result == "ALREADY_EXISTS":
-                            Logger.debug(f"[TEMPLATE] 并发创建已完成，跳过覆盖: {target_date}.md")
-                except Exception as e:
-                    Logger.error_once(f"tmpl_fail_{target_date}", f"模版创建失败: {e}")
-            else:
-                Logger.info(f"   ⚠️ 未找到模版文件 ({Config.REL_TEMPLATE_FILE})，创建基础骨架: {target_date}.md")
-                base_scaffold = [
-                    "---\n",
-                    "tags:\n",
-                    "  - DayPlan\n",
-                    "  - timecost\n",
-                    "  - tradecost\n",
-                    "---\n",
-                    Config.DEPLOYMENT_HEADER + "\n",
-                    "\n",
-                    Config.THINKING_HEADER + "\n",
-                    "\n",
-                    "| id  |     |\n",
-                    "| --- | --- |\n",
-                    "\n",
-                    Config.TAKEIN_HEADER + "\n",
-                    "\n",
-                    Config.EXERCICE_HEADER + "\n",
-                    "\n",
-                    Config.ECONOMIC_HEADER + "\n",
-                    "\n",
-                ]
-                result = FileUtils.create_file_if_absent(daily_path, base_scaffold)
-                if result == "ALREADY_EXISTS":
-                    Logger.debug(f"[TEMPLATE] 并发基础骨架已存在，跳过覆盖: {target_date}.md")
+            try:
+                ensure_daily_note(target_date, reason="obsidian_task")
+            except Exception as e:
+                Logger.error_once(f"tmpl_fail_{target_date}", f"模版创建失败: {e}")
 
         organized_bids = set()
         if os.path.exists(daily_path): 

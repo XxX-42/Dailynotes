@@ -373,12 +373,12 @@ def perform_bidirectional_sync(date_str, obs_path, state_manager, target_dt):
                 del current_obs[old_sem_key]
 
     # 4. Execute AppleScript batch
-    batch.execute()
+    batch_result = batch.execute()
 
     # [v1.7.3] State Stabilization:
     # If any creations occurred, re-fetch calendar state immediately to capture IDs.
     # This prevents duplication if a renamed/modified version appears in the next run.
-    if len(batch.creates) > 0:
+    if batch_result.get("ok") and len(batch.creates) > 0:
         current_cal = get_all_calendars_state(target_dt)
 
     # Phase C: Atomic Write
@@ -387,7 +387,7 @@ def perform_bidirectional_sync(date_str, obs_path, state_manager, target_dt):
             current_mtime_now = os.path.getmtime(obs_path)
             if current_mtime_now != initial_mtime:
                 print(f"⚠️ [Concurrency] 放弃写入 {date_str}：文件在计算期间已被修改")
-                return False, False
+                return False, False, False
 
             if insert_idx == len(file_lines):
                 # [v4.0] 不再插入旧的 # Day planner 标题
@@ -420,9 +420,12 @@ def perform_bidirectional_sync(date_str, obs_path, state_manager, target_dt):
                     print(f"⚠️ Obsidian 文件写入被跳过 (无变动?): {date_str}")
             except Exception as e:
                 print(f"❌ 文件写入失败: {e}")
-                return False, False
+                return False, False, False
+
+    apple_ops_count = len(batch.creates) + len(batch.updates) + len(batch.deletes)
+    if not batch_result.get("ok"):
+        print(f"⚠️ [Snapshot] Calendar 批处理未完整，不推进 {date_str} 同步快照")
+        return file_dirty, apple_ops_count > 0, False
 
     state_manager.update_snapshot(date_str, current_obs, current_cal)
-    
-    apple_ops_count = len(batch.creates) + len(batch.updates) + len(batch.deletes)
-    return file_dirty, apple_ops_count > 0
+    return file_dirty, apple_ops_count > 0, True

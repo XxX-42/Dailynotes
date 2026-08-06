@@ -42,6 +42,16 @@ class StateManager:
         entry = self.data[date_str]
         return entry.get("obsidian", {}), entry.get("calendar", {})
 
+    def get_snapshot_dates(self):
+        """Return dates that still carry Obsidian or Calendar reconciliation state."""
+        dates = set()
+        for date_str, entry in self.data.items():
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("obsidian") or entry.get("calendar"):
+                dates.add(date_str)
+        return dates
+
     def update_snapshot(self, date_str, obs_state, cal_state):
         """Update the state snapshot for a date."""
         clean_obs = {}

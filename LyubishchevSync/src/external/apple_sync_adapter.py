@@ -74,14 +74,14 @@ class AppleSyncAdapter:
         Args:
             date_str: Date string in YYYY-MM-DD format        """
         if not self.enabled:
-            return False, False
+            return False, False, True
         
         try:
             target_dt = datetime.datetime.strptime(date_str, "%Y-%m-%d")
             daily_path = os.path.join(Config.DAILY_NOTE_DIR, f"{date_str}.md")
             
             if not os.path.exists(daily_path):
-                return False, False
+                return False, False, True
             
             # Import and call the core sync logic
             from .task_sync_core.sync_engine import perform_bidirectional_sync
@@ -91,8 +91,13 @@ class AppleSyncAdapter:
             
         except Exception as e:
             Logger.error_once(f"apple_sync_err_{date_str}", f"Apple Sync Error: {e}")
-            return False, False
+            return False, False, False
     
     def is_available(self) -> bool:
         """Check if Apple Sync is available and initialized."""
         return self.enabled
+
+    def get_snapshot_dates(self):
+        if not self.enabled or self.sm is None:
+            return set()
+        return self.sm.get_snapshot_dates()

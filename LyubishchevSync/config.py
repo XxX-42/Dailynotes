@@ -18,6 +18,10 @@ def _resolve_vault_root():
 
 
 def _resolve_daily_note_dir(vault_root):
+    env_path = os.environ.get("LYUBISHCHEV_DAILY_NOTE_DIR")
+    if env_path:
+        return os.path.expanduser(env_path)
+
     candidates = [
         os.path.join(vault_root, r'【ATTACHMENT】', r'【DAILYNOTE】'),
         os.path.join(vault_root, r'00_Archive', r'2_DailyNote'),
@@ -100,6 +104,8 @@ class Config:
     CHRONOS_FULL_RANGE_FUTURE_YEARS = 10  # 全量同步：未来N年
     CHRONOS_EVENTKIT_BATCH_DAYS = 1460  # EventKit批次大小（约4年，系统限制）
     CHRONOS_LOOP_INTERVAL = 60.0       # 主循环间隔（秒）
+    CALENDAR_EVENT_INDEX_FILE = os.path.join(DAILY_NOTE_DIR, ".calendar_event_index.json")
+    CALENDAR_NOTIFICATION_DEBOUNCE_SECONDS = 1.5
     
     # [v2.0+] 指数动态调度参数
     # 调度公式: I(d) = EXP_BASE * exp(EXP_COEFF * d) + EXP_OFFSET

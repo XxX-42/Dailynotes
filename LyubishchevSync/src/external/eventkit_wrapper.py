@@ -2,6 +2,8 @@ import objc
 import threading
 import datetime
 import time
+from dataclasses import dataclass
+from typing import Dict, Optional
 from EventKit import EKEventStore, EKEntityTypeEvent
 from Foundation import NSDate, NSDistributedNotificationCenter, NSObject, NSNotificationCenter
 from PyObjCTools import AppHelper
@@ -9,6 +11,14 @@ from PyObjCTools import AppHelper
 # 定义通知名称常量
 EKEventStoreChangedNotification = "EKEventStoreChangedNotification"
 DistributedCalendarChangedNotification = "com.apple.calendar.database.changed"
+
+
+@dataclass(frozen=True)
+class CalendarFetchResult:
+    ok: bool
+    complete: bool
+    events_by_date: Dict
+    error: Optional[str] = None
 
 class CalendarObserver(NSObject):
     """
@@ -260,7 +270,7 @@ class EventKitClient:
             
         return result
 
-    def fetch_range_events(self, start_date, end_date, batch_days=1460):
+    def fetch_range_events_result(self, start_date, end_date, batch_days=1460, calendar_names=None):
         """
         [v3.0 Chronos Mode] 获取日期范围内的所有事件
         
@@ -278,7 +288,7 @@ class EventKitClient:
         if not self.access_granted:
             if not self.check_access():
                 print("🚫 访问被拒绝：请在 '系统设置 > 隐私与安全性 > 日历' 中授权终端/Python。")
-                return {}
+                return CalendarFetchResult(False, False, {}, "calendar_access_denied")
 
         # 标准化日期
         if isinstance(start_date, datetime.datetime):
@@ -294,6 +304,8 @@ class EventKitClient:
         
         # 按日期分组的结果
         result_by_date = {}  # {date_str: {key: event_data}}
+        allowed_calendars = set(calendar_names) if calendar_names is not None else None
+        parse_errors = []
         
         # 分批获取
         current_start = start_date
@@ -310,13 +322,13 @@ class EventKitClient:
             ns_start = NSDate.dateWithTimeIntervalSince1970_(start_dt.timestamp())
             ns_end = NSDate.dateWithTimeIntervalSince1970_(end_dt.timestamp())
             
-            # 创建查询谓词
-            predicate = self.store.predicateForEventsWithStartDate_endDate_calendars_(
-                ns_start, ns_end, None
-            )
-            
-            # 执行查询
-            events = self.store.eventsMatchingPredicate_(predicate)
+            try:
+                predicate = self.store.predicateForEventsWithStartDate_endDate_calendars_(
+                    ns_start, ns_end, None
+                )
+                events = self.store.eventsMatchingPredicate_(predicate)
+            except Exception as e:
+                return CalendarFetchResult(False, False, {}, f"eventkit_query_failed: {e}")
             
             if events:
                 for event in events:
@@ -326,6 +338,8 @@ class EventKitClient:
                         clean_name = title.lstrip("✅✓").strip()
                         
                         cal_title = event.calendar().title() if event.calendar() else "Unknown"
+                        if allowed_calendars is not None and cal_title not in allowed_calendars:
+                            continue
                         
                         # 提取开始日期和时间
                         event_start = event.startDate()
@@ -343,6 +357,8 @@ class EventKitClient:
                         
                         # 生成唯一 Key
                         event_id = event.eventIdentifier() or ""
+                        if not event_id:
+                            raise ValueError("managed Calendar event has no stable eventIdentifier")
                         id_tail = event_id[-6:] if len(event_id) >= 6 else event_id
                         key = f"{clean_name}_{start_time_str}_{id_tail}"
                         semantic_key = f"{clean_name}_{start_time_str}"
@@ -363,13 +379,28 @@ class EventKitClient:
                         }
                     except Exception as e:
                         print(f"⚠️ 处理事件失败: {e}")
+                        parse_errors.append(str(e))
                         continue
             
             # 移动到下一批次
             current_start = current_end + datetime.timedelta(days=1)
         
         print(f"📅 [EventKit] 范围查询完成: {start_date} ~ {end_date} ({total_days}天, {batch_count}批次, {len(result_by_date)}天有事件)")
-        return result_by_date
+        if parse_errors:
+            return CalendarFetchResult(
+                True,
+                False,
+                result_by_date,
+                f"{len(parse_errors)} event(s) could not be parsed",
+            )
+        return CalendarFetchResult(True, True, result_by_date)
+
+    def fetch_range_events(self, start_date, end_date, batch_days=1460):
+        """Compatibility wrapper for callers that still expect a dictionary."""
+        result = self.fetch_range_events_result(start_date, end_date, batch_days)
+        if not result.ok or not result.complete:
+            return {}
+        return result.events_by_date
 if __name__ == "__main__":
     # 简单的测试桩
     from Foundation import NSBundle

@@ -20,6 +20,14 @@ from .utils import Logger, FileUtils
 from .format_core import FormatCore
 from .state_manager import StateManager
 from .sync import SyncCore
+from .calendar_event_index import (
+    CalendarEventIndexStore,
+    build_event_index,
+    diff_event_indexes,
+    diff_event_indexes_fast_window,
+)
+from .calendar_sync_planner import build_incremental_plan, build_startup_plan
+from .daily_note_factory import ensure_daily_note
 from external.apple_sync_adapter import AppleSyncAdapter
 
 # [v1.9] Native Calendar Monitor Import
@@ -420,10 +428,14 @@ class FusionManager:
         
         # [v3.0] Chronos Mode
         self._calendar_dirty_flag = False
+        self._calendar_event_lock = threading.Lock()
+        self._calendar_debounce_timer = None
         self._reminder_dirty_flag = False
         self._last_midnight_check = datetime.date.today()
         self._startup_sync_done = False
         self._last_calendar_sync_time = 0  # [P2 FIX] Debounce timer
+        self._sync_execution_lock = threading.RLock()
+        self._calendar_index_store = CalendarEventIndexStore(Config.CALENDAR_EVENT_INDEX_FILE)
 
     def _set_gui_status(self, state: str, detail: str = None):
         app = getattr(self.__class__, 'app_ref', None)
@@ -444,7 +456,27 @@ class FusionManager:
         except Exception as e:
             Logger.debug(f"⚠️ GUI idle 恢复失败: {e}")
 
-    def process_single_date(self, date_str, is_event_trigger=False):
+    def process_single_date(
+        self,
+        date_str,
+        is_event_trigger=False,
+        calendar_has_events=False,
+    ):
+        """Serialize all file and Calendar work through one reconciliation lane."""
+        with self._sync_execution_lock:
+            if calendar_has_events:
+                create_result = ensure_daily_note(date_str, reason="calendar_event")
+                if create_result == "FAILED":
+                    return {
+                        "internal_mod": False,
+                        "apple_to_obsidian": False,
+                        "obsidian_to_apple": False,
+                        "skipped": False,
+                        "success": False,
+                    }
+            return self._process_single_date_unlocked(date_str, is_event_trigger)
+
+    def _process_single_date_unlocked(self, date_str, is_event_trigger=False):
         """
         Process a single date: internal sync + formatting + Apple sync.
         [v3.0] Only creates note if calendar has events for that date.
@@ -453,7 +485,8 @@ class FusionManager:
             "internal_mod": False,
             "apple_to_obsidian": False,
             "obsidian_to_apple": False,
-            "skipped": False
+            "skipped": False,
+            "success": True,
         }
 
         daily_path = os.path.join(Config.DAILY_NOTE_DIR, f"{date_str}.md")
@@ -483,6 +516,7 @@ class FusionManager:
                     Logger.info(f"   ✨ [Internal] 格式化完成: {date_str}")
 
         except Exception as e:
+            results["success"] = False
             Logger.error_once(f"sync_fail_{date_str}", f"内部同步异常 [{date_str}]: {e}")
 
         # --- [PRIORITY 2] Apple Calendar Sync ---
@@ -496,13 +530,15 @@ class FusionManager:
 
         if should_sync_apple:
             try:
-                obs_mod, apple_mod = self.apple_sync.sync_day(date_str)
+                obs_mod, apple_mod, apple_success = self.apple_sync.sync_day(date_str)
                 results["apple_to_obsidian"] = obs_mod
                 results["obsidian_to_apple"] = apple_mod
+                results["success"] = results["success"] and apple_success
                 
                 if obs_mod or apple_mod:
                     Logger.info(f"   🍏 [Apple] {date_str} 同步成功")
             except Exception as e:
+                results["success"] = False
                 Logger.error_once(f"apple_exec_fail_{date_str}", f"外部同步异常: {e}")
 
         return results
@@ -545,12 +581,25 @@ class FusionManager:
         [v3.0] Callback for EventKit notification.
         Thread-safe: Just sets a flag and stops the runloop.
         """
-        self._calendar_dirty_flag = True
-        try:
-            from CoreFoundation import CFRunLoopStop, CFRunLoopGetCurrent
-            CFRunLoopStop(CFRunLoopGetCurrent())
-        except Exception as e:
-            Logger.debug(f"⚠️ Failed to stop CFRunLoop in calendar callback: {e}")
+        def mark_dirty():
+            with self._calendar_event_lock:
+                self._calendar_dirty_flag = True
+                self._calendar_debounce_timer = None
+            try:
+                from CoreFoundation import CFRunLoopGetMain, CFRunLoopStop
+                CFRunLoopStop(CFRunLoopGetMain())
+            except Exception as e:
+                Logger.debug(f"⚠️ Failed to wake CFRunLoop after Calendar debounce: {e}")
+
+        with self._calendar_event_lock:
+            if self._calendar_debounce_timer:
+                self._calendar_debounce_timer.cancel()
+            self._calendar_debounce_timer = threading.Timer(
+                Config.CALENDAR_NOTIFICATION_DEBOUNCE_SECONDS,
+                mark_dirty,
+            )
+            self._calendar_debounce_timer.daemon = True
+            self._calendar_debounce_timer.start()
 
     def _on_reminder_push_event(self):
         """
@@ -633,112 +682,173 @@ class FusionManager:
             Logger.error_once("rem_sync_fail", f"提醒事项同步失败: {e}")
 
     def sync_recent_window(self):
-        """
-        [v3.1] 日历变更触发的窗口同步
-        
-        范围: 过去 CHRONOS_FULL_RANGE_PAST_DAYS 天 ~ 未来 CHRONOS_FULL_RANGE_FUTURE_YEARS 年
-        性能优化: 仅同步日历中有事件的日期，避免遍历所有空白日期
-        """
-        status_token = self._set_gui_status("calendar")
-        try:
-            if not self._ek_client:
-                Logger.info("⚠️ [Chronos] EventKit 不可用，跳过窗口同步")
-                return
-            
-            today = datetime.date.today()
-            
-            # [v3.7] DEBUG_TODAY_ONLY 模式：只处理今天的日记
-            if getattr(Config, 'DEBUG_TODAY_ONLY', 0) == 1:
-                start_date = today
-                end_date = today
-                Logger.info(f"🔄 [Chronos] 窗口同步 (DEBUG模式): 仅今天 {today}")
-            else:
-                start_date = today - datetime.timedelta(days=Config.CHRONOS_FULL_RANGE_PAST_DAYS)
-                end_date = today + datetime.timedelta(days=Config.CHRONOS_FULL_RANGE_FUTURE_YEARS * 365)
-                
-                # 确保不早于 SYNC_START_DATE
-                sync_start = datetime.datetime.strptime(Config.SYNC_START_DATE, '%Y-%m-%d').date()
-                if start_date < sync_start:
-                    start_date = sync_start
-                
-                Logger.info(f"🔄 [Chronos] 窗口同步: {start_date} ~ {end_date}")
-            
-            # [性能优化] 使用 EventKit 批量获取有事件的日期，避免逐天遍历
-            events_by_date = self._ek_client.fetch_range_events(
-                start_date, 
-                end_date, 
-                Config.CHRONOS_EVENTKIT_BATCH_DAYS
-            )
-            
-            if not events_by_date:
-                Logger.info("📭 [Chronos] 窗口范围内无日历事件")
-                return
-            
-            Logger.info(f"📅 [Chronos] 发现 {len(events_by_date)} 天有日历事件")
-            
-            # 只同步有事件的日期
-            synced_count = 0
-            for date_str in sorted(events_by_date.keys()):
-                if date_str >= Config.SYNC_START_DATE:
-                    result = self.process_single_date(date_str, is_event_trigger=True)
-                    if result["apple_to_obsidian"] or result["obsidian_to_apple"]:
-                        synced_count += 1
-            
-            Logger.info(f"✅ [Chronos] 窗口同步完成: {synced_count} 天有变动")
-        finally:
-            self._schedule_gui_idle(status_token, delay=1.5)
+        return self._sync_calendar_candidates(startup=False)
 
     def sync_full_range(self):
-        """
-        [v3.0] 全量同步：过去1年到未来10年
-        仅同步日历中实际有事件的日期，避免创建大量空白笔记
-        """
+        return self._sync_calendar_candidates(startup=True)
+
+    def _calendar_range(self):
+        today = datetime.date.today()
+        if getattr(Config, 'DEBUG_TODAY_ONLY', 0) == 1:
+            return today, today
+        start_date = today - datetime.timedelta(days=Config.CHRONOS_FULL_RANGE_PAST_DAYS)
+        sync_start = datetime.date.fromisoformat(Config.SYNC_START_DATE)
+        return max(start_date, sync_start), today + datetime.timedelta(
+            days=Config.CHRONOS_FULL_RANGE_FUTURE_YEARS * 365
+        )
+
+    def _execute_calendar_plan(self, plan, mode, skip_dates=None):
+        skipped = set(skip_dates or ())
+        processed = set()
+        synced_count = 0
+        Logger.info(
+            f"📅 [Chronos] {mode} 候选日期 {len(plan.candidate_dates)} 天 "
+            f"(当前 Calendar 有事件 {len(plan.calendar_dates)} 天)"
+        )
+        for date_str in plan.candidate_dates:
+            if date_str in skipped:
+                continue
+            reason = ",".join(sorted(plan.reasons.get(date_str, ())))
+            Logger.debug(f"[CalendarPlan] {date_str}: {reason}")
+            result = self.process_single_date(
+                date_str,
+                is_event_trigger=True,
+                calendar_has_events=date_str in plan.calendar_dates,
+            )
+            if not result.get("success", False):
+                return False, synced_count, processed
+            processed.add(date_str)
+            if result["apple_to_obsidian"] or result["obsidian_to_apple"]:
+                synced_count += 1
+        return True, synced_count, processed
+
+    def _sync_calendar_candidates(self, startup=False):
         status_token = self._set_gui_status("calendar")
         try:
             if not self._ek_client:
-                Logger.info("⚠️ [Chronos] EventKit 不可用，跳过全量同步")
-                return
-            
-            today = datetime.date.today()
-            
-            # [v3.7] DEBUG_TODAY_ONLY 模式：只处理今天的日记
-            if getattr(Config, 'DEBUG_TODAY_ONLY', 0) == 1:
-                start_date = today
-                end_date = today
-                Logger.info(f"🚀 [Chronos] 全量同步启动 (DEBUG模式): 仅今天 {today}")
-            else:
-                start_date = today - datetime.timedelta(days=Config.CHRONOS_FULL_RANGE_PAST_DAYS)
-                end_date = today + datetime.timedelta(days=Config.CHRONOS_FULL_RANGE_FUTURE_YEARS * 365)
-                
-                # 确保不早于 SYNC_START_DATE
-                sync_start = datetime.datetime.strptime(Config.SYNC_START_DATE, '%Y-%m-%d').date()
-                if start_date < sync_start:
-                    start_date = sync_start
-                
-                Logger.info(f"🚀 [Chronos] 全量同步启动: {start_date} ~ {end_date}")
-            
-            # 获取日历中有事件的日期
-            events_by_date = self._ek_client.fetch_range_events(
-                start_date, 
-                end_date, 
-                Config.CHRONOS_EVENTKIT_BATCH_DAYS
-            )
-            
-            if not events_by_date:
-                Logger.info("📭 [Chronos] 日历范围内无事件")
-                return
-            
-            Logger.info(f"📅 [Chronos] 发现 {len(events_by_date)} 天有日历事件")
-            
-            # 只同步有事件的日期
-            synced_count = 0
-            for date_str in sorted(events_by_date.keys()):
-                if date_str >= Config.SYNC_START_DATE:
-                    result = self.process_single_date(date_str, is_event_trigger=True)
-                    if result["apple_to_obsidian"] or result["obsidian_to_apple"]:
-                        synced_count += 1
-            
-            Logger.info(f"✅ [Chronos] 全量同步完成: {synced_count} 天有变动")
+                Logger.info("⚠️ [Chronos] EventKit 不可用，跳过 Calendar 同步")
+                return False
+            if not self.apple_sync.is_available():
+                Logger.info("⚠️ [Chronos] Apple Calendar 同步适配器未就绪，不推进事件索引")
+                return False
+
+            with self._sync_execution_lock:
+                start_date, end_date = self._calendar_range()
+                start_str, end_str = start_date.isoformat(), end_date.isoformat()
+                previous_index = self._calendar_index_store.load()
+                synced_count = 0
+
+                # A bounded query is the low-latency lane. It intentionally applies
+                # only additions and in-window modifications; removals wait for the
+                # full comparison because a partial query cannot distinguish delete
+                # from a move beyond the window boundary.
+                if not startup and previous_index is not None:
+                    today = datetime.date.today()
+                    half_window = max(1, Config.CHRONOS_SYNC_WINDOW_DAYS // 2)
+                    fast_start = max(start_date, today - datetime.timedelta(days=half_window))
+                    fast_end = min(end_date, today + datetime.timedelta(days=half_window - 1))
+                    fast_fetch = self._ek_client.fetch_range_events_result(
+                        fast_start,
+                        fast_end,
+                        Config.CHRONOS_EVENTKIT_BATCH_DAYS,
+                        calendar_names=Config.ALL_MANAGED_CALENDARS,
+                    )
+                    if fast_fetch.ok and fast_fetch.complete:
+                        try:
+                            fast_index = build_event_index(fast_fetch.events_by_date)
+                        except ValueError as e:
+                            Logger.info(f"⚠️ [Chronos] 近期索引无法安全构建，转入完整校验: {e}")
+                            fast_index = None
+                        if fast_index is None:
+                            fast_diff = None
+                        else:
+                            fast_diff = diff_event_indexes_fast_window(
+                                previous_index,
+                                fast_index,
+                                fast_start.isoformat(),
+                                fast_end.isoformat(),
+                            )
+                        if fast_diff is not None:
+                            fast_plan = build_incremental_plan(
+                                fast_diff,
+                                calendar_dates=fast_fetch.events_by_date.keys(),
+                                start_date=fast_start.isoformat(),
+                                end_date=fast_end.isoformat(),
+                            )
+                            fast_ok, fast_count, _ = self._execute_calendar_plan(
+                                fast_plan,
+                                mode="fast-window",
+                            )
+                            if not fast_ok:
+                                Logger.error_once(
+                                    "calendar_fast_partial",
+                                    "Calendar 近期快速通道未完整执行，本轮不推进索引",
+                                )
+                                return False
+                            synced_count += fast_count
+                    else:
+                        Logger.info(
+                            f"⚠️ [Chronos] 近期快速查询不完整，转入完整索引校验: {fast_fetch.error}"
+                        )
+
+                fetch = self._ek_client.fetch_range_events_result(
+                    start_date,
+                    end_date,
+                    Config.CHRONOS_EVENTKIT_BATCH_DAYS,
+                    calendar_names=Config.ALL_MANAGED_CALENDARS,
+                )
+                if not fetch.ok or not fetch.complete:
+                    Logger.error_once(
+                        "calendar_range_incomplete",
+                        f"⚠️ Calendar 查询不完整，为防止误删已放弃本轮同步: {fetch.error}",
+                    )
+                    return False
+
+                events_by_date = fetch.events_by_date
+                try:
+                    current_index = build_event_index(events_by_date)
+                except ValueError as e:
+                    Logger.error_once(
+                        "calendar_index_invalid",
+                        f"Calendar 事件缺少稳定唯一标识，为防止误删已放弃本轮同步: {e}",
+                    )
+                    return False
+
+                if startup or previous_index is None:
+                    plan = build_startup_plan(
+                        calendar_dates=events_by_date.keys(),
+                        obsidian_tasks_by_date=self.sync_core.scan_all_source_tasks(),
+                        snapshot_dates=self.apple_sync.get_snapshot_dates(),
+                        start_date=start_str,
+                        end_date=end_str,
+                    )
+                    mode = "startup"
+                else:
+                    plan = build_incremental_plan(
+                        diff_event_indexes(previous_index, current_index),
+                        calendar_dates=events_by_date.keys(),
+                        start_date=start_str,
+                        end_date=end_str,
+                    )
+                    mode = "incremental"
+
+                full_ok, full_count, _ = self._execute_calendar_plan(
+                    plan,
+                    mode=mode,
+                )
+                synced_count += full_count
+                if not full_ok:
+                    Logger.error_once(
+                        "calendar_plan_partial",
+                        "Calendar 候选日期未全部同步成功，本轮不推进事件索引",
+                    )
+                    return False
+                if not self._calendar_index_store.save(current_index):
+                    Logger.error_once("calendar_index_save", "Calendar 事件索引保存失败")
+                    return False
+                self._last_calendar_sync_time = time.time()
+                Logger.info(f"✅ [Chronos] {mode} 同步完成: {synced_count} 天有变动")
+                return True
         finally:
             self._schedule_gui_idle(status_token, delay=1.5)
 
@@ -845,6 +955,10 @@ class FusionManager:
         except KeyboardInterrupt:
             Logger.info("\n⏹️ 收到中断信号...")
         finally:
+            with self._calendar_event_lock:
+                if self._calendar_debounce_timer:
+                    self._calendar_debounce_timer.cancel()
+                    self._calendar_debounce_timer = None
             if self._observer:
                 Logger.info("🛑 [Watchdog] 停止监听 Vault...")
                 self._observer.stop()

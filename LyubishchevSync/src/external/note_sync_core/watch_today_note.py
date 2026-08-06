@@ -44,6 +44,7 @@ except ImportError as e:
     # 尝试相对导入
     sys.path.append(current_dir)
     from monitor import NoteMonitor
+from note_monitor_guard import terminate_note_monitor_processes
 
 # ==========================================
 # 简单的 Logger 适配器 (如果 Utils Logger不可用)
@@ -55,6 +56,13 @@ class SimpleLogger:
 
 
 _note_monitor_lock_fd = None
+
+
+def _note_monitor_script_paths():
+    return [
+        os.path.join(current_dir, 'watch_today_note.py'),
+        os.path.join(current_dir, 'run_note_monitor.py'),
+    ]
 
 
 def _note_monitor_lock_path():
@@ -119,6 +127,12 @@ def main():
     if not acquire_note_monitor_lock(logger):
         return
     atexit.register(release_note_monitor_lock)
+
+    terminate_note_monitor_processes(
+        _note_monitor_script_paths(),
+        keep_pids={os.getpid()},
+        logger=logger,
+    )
     
     # 初始化 Monitor
     # Config 应该包含 DAILY_NOTE_DIR, TEMPLATE_FILE, KEYWORD_MAPPING

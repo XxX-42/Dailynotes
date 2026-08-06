@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Dict, List, Tuple
 
 
@@ -9,6 +10,26 @@ def _cfg(config, attr_name: str, default_value: str) -> str:
 
 def _ensure_nl(line: str) -> str:
     return line if line.endswith("\n") else line + "\n"
+
+
+def _repair_wiki_link_escapes(line: str) -> str:
+    """
+    Obsidian 笔记里偶发会把 wiki link 内的 `_`、`|` 等字符写成 markdown 转义。
+    这里仅在 `[[...]]` 内做定向反转义，避免污染普通代码/正文。
+    """
+    if "[[" not in line or "\\" not in line:
+        return line
+
+    has_nl = line.endswith("\n")
+    body = line[:-1] if has_nl else line
+
+    def _repair(match: re.Match[str]) -> str:
+        inner = match.group(1)
+        repaired = re.sub(r'\\([_|[\]])', r'\1', inner)
+        return f"[[{repaired}]]"
+
+    repaired_body = re.sub(r'\[\[(.*?)\]\]', _repair, body)
+    return repaired_body + ("\n" if has_nl else "")
 
 
 def _strip_blank_edges(lines: List[str]) -> List[str]:
@@ -96,6 +117,8 @@ def _merge_chunks(chunks: List[List[str]]) -> List[str]:
 
 
 def normalize_daily_note_lines(lines: List[str], config) -> List[str]:
+    lines = [_repair_wiki_link_escapes(_ensure_nl(line)) for line in lines]
+
     deployment = _cfg(config, "DEPLOYMENT_HEADER", "# Deployment 🚀")
     thinking = _cfg(config, "THINKING_HEADER", "# Thinking 🧠")
     takein = _cfg(config, "TAKEIN_HEADER", "# Takein 🍱")

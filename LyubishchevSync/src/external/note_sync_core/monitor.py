@@ -16,9 +16,11 @@ if _current_dir not in sys.path:
 from read_today_note import AppleNotesReader
 try:
     from dailynotes.daily_sections import find_daily_section, normalize_daily_note_lines
+    from dailynotes.format_core import FormatCore
     from dailynotes.utils import FileUtils
 except ImportError:
     from src.dailynotes.daily_sections import find_daily_section, normalize_daily_note_lines
+    from src.dailynotes.format_core import FormatCore
     from src.dailynotes.utils import FileUtils
 
 
@@ -91,13 +93,77 @@ class NoteMonitor:
         ok = FileUtils.write_file(path, content, strategy=strategy)
         if not ok:
             self._log(f"⚠️ [NoteMonitor] 写入失败: {path}")
+        else:
+            self._run_internal_daily_sync_if_needed(path)
         return ok
+
+    def _run_internal_daily_sync_if_needed(self, path):
+        """
+        NoteMonitor 直接写入日记时，Watchdog 会把这次事件视为 system write 并跳过。
+        这里显式补跑一次内部同步，让 Deployment 下的新任务继续进入
+        dispatch_project_tasks / process_date，而不是停留在日记中。
+        """
+        if not self._config or not hasattr(self._config, 'DAILY_NOTE_DIR'):
+            return
+
+        daily_dir = os.path.normpath(getattr(self._config, 'DAILY_NOTE_DIR', ''))
+        norm_path = os.path.normpath(path)
+        if not daily_dir or not norm_path.startswith(daily_dir + os.sep):
+            return
+
+        filename = os.path.basename(norm_path)
+        match = re.match(r'^(\d{4}-\d{2}-\d{2})\.md$', filename)
+        if not match:
+            return
+
+        date_str = match.group(1)
+
+        try:
+            try:
+                from dailynotes.state_manager import StateManager
+                from dailynotes.sync.engine import SyncCore
+            except ImportError:
+                from src.dailynotes.state_manager import StateManager
+                from src.dailynotes.sync.engine import SyncCore
+
+            sm = StateManager()
+            sc = SyncCore(sm)
+            sc.initialize_registry()
+            tasks_for_date = sc.get_tasks_for_date(date_str)
+            sc.process_date(date_str, tasks_for_date)
+            FormatCore.execute(norm_path, instant=True)
+            self._log(f"🔁 [NoteMonitor] 已补跑内部日记同步: {filename}")
+        except Exception as e:
+            self._log(f"⚠️ [NoteMonitor] 补跑内部同步失败: {e}")
 
     def _create_note_file_if_absent(self, path, content):
         result = FileUtils.create_file_if_absent(path, content)
         if result == "FAILED":
             self._log(f"⚠️ [NoteMonitor] 创建失败: {path}")
         return result
+
+    def _ensure_single_apple_note(self, note_name, default_body):
+        notes = self._reader.list_notes_by_name(note_name)
+        if len(notes) > 1:
+            self._log(f"⚠️ [NoteMonitor] 检测到 {len(notes)} 个同名备忘录，正在自动合并: '{note_name}'")
+            dedupe_result = self._reader.dedupe_notes_by_name(note_name)
+            if dedupe_result == "DEDUPED":
+                self._log(f"✅ [NoteMonitor] 同名备忘录已合并: '{note_name}'")
+            elif dedupe_result == "FAILED":
+                self._log(f"❌ [NoteMonitor] 合并同名备忘录失败，将在后续轮询重试: '{note_name}'")
+                return "FAILED"
+            notes = self._reader.list_notes_by_name(note_name)
+
+        if len(notes) == 1:
+            return "EXISTS"
+
+        result = self._reader.create_note(note_name, default_body)
+        if result == "CREATED":
+            return "CREATED"
+        if result == "EXISTS":
+            return "EXISTS"
+        self._log(f"❌ [NoteMonitor] 创建 Apple Note 失败: '{note_name}'")
+        return "FAILED"
 
     def _sync_obsidian_tasks_to_notes(self, note_name, current_notes_content):
         """
@@ -524,19 +590,12 @@ class NoteMonitor:
                     self._log(f"❌ [NoteMonitor] 创建次日日记失败")
 
             # 2. 创建 Apple Note
-            try:
-                # 默认内容
-                default_body = f"Daily Log {tomorrow_str}<br><br>"
-                result = self._reader.create_note(tomorrow_apple_title, default_body)
-                
-                if result == "CREATED":
-                    self._log(f"🍏 [NoteMonitor] 次日 Apple Note 已创建: '{tomorrow_apple_title}'")
-                elif result == "EXISTS":
-                    self._log(f"ℹ️ [NoteMonitor] 次日 Apple Note 已存在，跳过")
-                else:
-                    self._log(f"❌ [NoteMonitor] 创建次日 Apple Note 失败")
-            except Exception as e:
-                self._log(f"❌ [NoteMonitor] 调用 Apple Notes 接口异常: {e}")
+            default_body = f"Daily Log {tomorrow_str}"
+            result = self._ensure_single_apple_note(tomorrow_apple_title, default_body)
+            if result == "CREATED":
+                self._log(f"🍏 [NoteMonitor] 次日 Apple Note 已创建: '{tomorrow_apple_title}'")
+            elif result == "EXISTS":
+                self._log(f"ℹ️ [NoteMonitor] 次日 Apple Note 已存在，跳过")
 
             # 无论成功与否，标记为已尝试，避免在 23:55-23:59 期间重复疯狂调用
             self._tomorrow_note_created = True
@@ -601,19 +660,13 @@ tags:
 
         # 2. Check/Create Apple Note
         note_name = f"{today.year}/{today.month}/{today.day}"
-        content = self._reader.get_note_content(note_name)
-        
-        if content == "NOT_FOUND" or content is None:
+        default_body = f"Daily Log {today_str}"
+        result = self._ensure_single_apple_note(note_name, default_body)
+        if result == "CREATED":
             self._log(f"⚠️ [NoteMonitor] 今日备忘录缺失，正在创建: '{note_name}'")
-            # 默认内容可以是空白，或者简单的标题
-            default_body = f"Daily Log {today_str}"
-            result = self._reader.create_note(note_name, default_body)
-            if result == "CREATED":
-                self._log(f"✅ [NoteMonitor] 备忘录创建成功")
-            elif result == "EXISTS":
-                self._log(f"ℹ️ [NoteMonitor] 备忘录已存在 (并发创建?)")
-            else:
-                self._log(f"❌ [NoteMonitor] 创建备忘录失败")
+            self._log("✅ [NoteMonitor] 备忘录创建成功")
+        elif result == "EXISTS":
+            pass
 
     # =====================
     # Obsidian Task Helper

@@ -10,6 +10,12 @@ import sys
 import os
 import time
 import datetime
+import atexit
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 
 # ==========================================
 # 路径设置
@@ -28,6 +34,7 @@ sys.path.insert(0, SCRIPT_DIR)
 # ==========================================
 from config import Config
 from monitor import NoteMonitor
+from note_monitor_guard import terminate_note_monitor_processes
 
 # ==========================================
 # 彩色日志工具
@@ -52,12 +59,74 @@ class ColorLogger:
         print(f"  {msg}")
         print(f"{'='*60}{ColorLogger.RESET}\n")
 
+
+_note_monitor_lock_fd = None
+
+
+def _note_monitor_lock_path():
+    daily_dir = getattr(Config, 'DAILY_NOTE_DIR', None)
+    if daily_dir:
+        return os.path.join(daily_dir, '.note_monitor.lock')
+    return os.path.join(SCRIPT_DIR, '.note_monitor.lock')
+
+
+def _note_monitor_script_paths():
+    return [
+        os.path.join(SCRIPT_DIR, 'watch_today_note.py'),
+        os.path.join(SCRIPT_DIR, 'run_note_monitor.py'),
+    ]
+
+
+def acquire_note_monitor_lock(logger):
+    global _note_monitor_lock_fd
+    if not fcntl:
+        return True
+
+    lock_path = _note_monitor_lock_path()
+    try:
+        _note_monitor_lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+        fcntl.flock(_note_monitor_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        os.ftruncate(_note_monitor_lock_fd, 0)
+        os.write(_note_monitor_lock_fd, str(os.getpid()).encode())
+        return True
+    except (BlockingIOError, OSError):
+        logger.info("ℹ️ [NoteMonitor] 已有监听子进程在运行，当前调试实例退出")
+        if _note_monitor_lock_fd is not None:
+            try:
+                os.close(_note_monitor_lock_fd)
+            except OSError:
+                pass
+            _note_monitor_lock_fd = None
+        return False
+
+
+def release_note_monitor_lock():
+    global _note_monitor_lock_fd
+    if not fcntl or _note_monitor_lock_fd is None:
+        return
+
+    lock_path = _note_monitor_lock_path()
+    try:
+        fcntl.flock(_note_monitor_lock_fd, fcntl.LOCK_UN)
+    except OSError:
+        pass
+    try:
+        os.close(_note_monitor_lock_fd)
+    except OSError:
+        pass
+    _note_monitor_lock_fd = None
+    try:
+        if os.path.exists(lock_path):
+            os.remove(lock_path)
+    except OSError:
+        pass
+
 # ==========================================
 # 启动前诊断
 # ==========================================
 def run_diagnostics():
     """启动前检查环境"""
-    from reader import AppleNotesReader
+    from read_today_note import AppleNotesReader
 
     logger = ColorLogger
     logger.header("🔬 NoteMonitor 独立运行 - 启动前诊断")
@@ -117,6 +186,15 @@ def run_diagnostics():
 # ==========================================
 def main():
     logger = ColorLogger
+
+    if not acquire_note_monitor_lock(logger):
+        sys.exit(0)
+    atexit.register(release_note_monitor_lock)
+    terminate_note_monitor_processes(
+        _note_monitor_script_paths(),
+        keep_pids={os.getpid()},
+        logger=logger,
+    )
 
     # 诊断
     ok = run_diagnostics()

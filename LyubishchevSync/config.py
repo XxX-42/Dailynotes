@@ -7,6 +7,7 @@ def _resolve_vault_root():
         return os.path.expanduser(env_path)
 
     candidates = [
+        os.path.expanduser("~/Documents/Documents/Obsidian/远程仓库1"),
         os.path.expanduser("~/Documents/远程仓库1"),
         r"/Users/user999/Documents/【Liang_project】/远程仓库1",
     ]
@@ -35,7 +36,7 @@ class Config:
     # ==========================
     VAULT_ROOT = _resolve_vault_root()
     REL_ATTACHMENT_DIR = r'【ATTACHMENT】'
-    REL_TEMPLATE_FILE = r'00_Infobox/Templates/DayPlanTemplate_beta 3.md'
+    REL_TEMPLATE_FILE = r'11_Infobox/01_Templates/DayPlanTemplate_beta 3.md'
 
     # Beta 3 daily note anchors
     DEPLOYMENT_HEADER = "# Deployment 🚀"

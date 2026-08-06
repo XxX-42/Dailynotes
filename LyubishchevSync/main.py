@@ -14,6 +14,7 @@ from dailynotes.utils import ProcessLock, Logger
 # [v4.0] Apple Notes Monitor（带降级处理）
 try:
     from external.note_sync_core.monitor import NoteMonitor
+    from external.note_sync_core.note_monitor_guard import terminate_note_monitor_processes
     NOTE_MONITOR_AVAILABLE = True
 except ImportError as e:
     NOTE_MONITOR_AVAILABLE = False
@@ -57,6 +58,14 @@ def stop_caffeinate():
 # [v4.0] NoteMonitor 全局实例（方便退出时清理）
 _note_monitor_proc = None
 
+
+def _note_monitor_script_paths():
+    base_dir = os.path.join(os.path.dirname(__file__), 'src', 'external', 'note_sync_core')
+    return [
+        os.path.join(base_dir, 'watch_today_note.py'),
+        os.path.join(base_dir, 'run_note_monitor.py'),
+    ]
+
 def _start_note_monitor():
     """
     [v9.0] 启动 Apple Notes 备忘录监听（独立子进程）
@@ -68,12 +77,16 @@ def _start_note_monitor():
         return
 
     try:
-        watch_script = os.path.join(
-            os.path.dirname(__file__), 'src', 'external', 'note_sync_core', 'watch_today_note.py'
-        )
+        watch_script = _note_monitor_script_paths()[0]
         if not os.path.exists(watch_script):
             Logger.info(f"⚠️ [NoteMonitor] 脚本不存在: {watch_script}")
             return
+
+        terminate_note_monitor_processes(
+            _note_monitor_script_paths(),
+            keep_pids={os.getpid()},
+            logger=Logger,
+        )
 
         _note_monitor_proc = subprocess.Popen(
             [sys.executable, watch_script],

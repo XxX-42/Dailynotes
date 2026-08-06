@@ -1,12 +1,14 @@
-
-import subprocess
 import datetime
+import subprocess
 import sys
 
 # [v1.0] Apple Notes Reader (Core)
 # Uses AppleScript to interface with the Notes.app
 
 class AppleNotesReader:
+    _NOTE_SEPARATOR = chr(30)
+    _FIELD_SEPARATOR = chr(31)
+
     def __init__(self):
         pass
 
@@ -33,58 +35,103 @@ class AppleNotesReader:
         except Exception as e:
             return None, str(e)
 
+    @staticmethod
+    def _escape_applescript(text):
+        return str(text).replace('\\', '\\\\').replace('"', '\\"')
+
+    def _to_html_body(self, content):
+        safe_content = self._escape_applescript(content)
+        return safe_content.replace('\n', '<br>')
+
+    def list_notes_by_name(self, note_name):
+        safe_name = self._escape_applescript(note_name)
+        note_sep_id = ord(self._NOTE_SEPARATOR)
+        field_sep_id = ord(self._FIELD_SEPARATOR)
+        script = f'''
+        tell application "Notes"
+            set targetName to "{safe_name}"
+            set foundNotes to every note whose name is targetName
+            if (count of foundNotes) = 0 then
+                return ""
+            end if
+
+            set noteSep to character id {note_sep_id}
+            set fieldSep to character id {field_sep_id}
+            set outputText to ""
+            repeat with i from 1 to count of foundNotes
+                set theNote to item i of foundNotes
+                set outputText to outputText & (i as string) & fieldSep & (name of theNote as string) & fieldSep & (plaintext of theNote as string)
+                if i is not (count of foundNotes) then
+                    set outputText to outputText & noteSep
+                end if
+            end repeat
+            return outputText
+        end tell
+        '''
+
+        content, error = self._run_applescript(script)
+        if error:
+            if "UserCanceled" in error or "privilege" in error:
+                print("⚠️  [Permission Denied] Please grant terminal/script access to Notes.")
+            return []
+
+        if not content:
+            return []
+
+        notes = []
+        for note_chunk in content.split(self._NOTE_SEPARATOR):
+            if not note_chunk:
+                continue
+            fields = note_chunk.split(self._FIELD_SEPARATOR, 2)
+            if len(fields) != 3:
+                continue
+            try:
+                index = int(fields[0])
+            except ValueError:
+                continue
+            notes.append(
+                {
+                    "index": index,
+                    "name": fields[1],
+                    "plaintext": fields[2],
+                }
+            )
+        return notes
+
+    def _merge_note_plaintexts(self, notes):
+        merged_lines = []
+        seen = set()
+        for note in notes:
+            for raw_line in note.get("plaintext", "").splitlines():
+                stripped = raw_line.strip()
+                if not stripped:
+                    continue
+                if stripped in seen:
+                    continue
+                seen.add(stripped)
+                merged_lines.append(raw_line.rstrip())
+        return "\n".join(merged_lines)
+
     def get_note_content(self, note_name):
         """
         Retrieves the content (plaintext) of an Apple Note by its EXACT name.
         """
-        # AppleScript Logic:
-        # 1. Target Note by Name
-        # 2. Return 'plaintext' (content without HTML tags)
-        # 3. Return "NOT_FOUND" if list is empty
-        
-        script = f'''
-        tell application "Notes"
-            set targetName to "{note_name}"
-            
-            -- Try to find the note by exact name
-            set foundNotes to every note whose name is targetName
-            
-            if (count of foundNotes) > 0 then
-                set theNote to item 1 of foundNotes
-                return plaintext of theNote
-            else
-                return "NOT_FOUND"
-            end if
-        end tell
-        '''
-        
-        content, error = self._run_applescript(script)
-        
-        if error:
-            # Handle user permissions or missing app errors
-            if "UserCanceled" in error or "privilege" in error:
-                print(f"⚠️  [Permission Denied] Please grant terminal/script access to Notes.")
+        notes = self.list_notes_by_name(note_name)
+        if not notes:
             return None
-            
-        if content == "NOT_FOUND":
-            return None
-            
-        return content
+        return notes[0].get("plaintext", "")
 
     def update_note_content(self, note_name, new_content):
         """
         [v4.0] Update the entire content of the note.
         Fixed: Converts newlines to <br> to prevent formatting loss (one-line mess).
         """
-        # 1. Escape special chars for AppleScript string
-        safe_content = new_content.replace('\\', '\\\\').replace('"', '\\"')
-        
-        # 2. Convert newlines to HTML breaks for Notes body
-        html_body = safe_content.replace('\n', '<br>')
+        safe_name = self._escape_applescript(note_name)
+        html_body = self._to_html_body(new_content)
         
         script = f'''
         tell application "Notes"
-            set targetName to "{note_name}"
+            set targetName to "{safe_name}"
             set foundNotes to every note whose name is targetName
             
             if (count of foundNotes) > 0 then
@@ -108,14 +155,16 @@ class AppleNotesReader:
         """
         [v4.1] Create a new note if it doesn't exist.
         """
-        # Escape content
-        safe_content = body_content.replace('\\', '\\\\').replace('"', '\\"')
-        html_body = safe_content.replace('\n', '<br>')
+        existing_notes = self.list_notes_by_name(note_name)
+        if existing_notes:
+            return "EXISTS"
+
+        safe_name = self._escape_applescript(note_name)
+        html_body = self._to_html_body(body_content)
         
         script = f'''
         tell application "Notes"
-            -- Check if exists first to avoid duplicates
-            set targetName to "{note_name}"
+            set targetName to "{safe_name}"
             set foundNotes to every note whose name is targetName
             
             if (count of foundNotes) = 0 then
@@ -130,9 +179,50 @@ class AppleNotesReader:
         resp, error = self._run_applescript(script)
         if error:
             print(f"❌ [AppleScript Error] Create note failed: {error}")
-            return False
-            
-        return resp == "CREATED"
+            return "FAILED"
+
+        if resp == "CREATED":
+            return "CREATED" if self.list_notes_by_name(note_name) else "FAILED"
+        if resp == "EXISTS":
+            return "EXISTS"
+        return "FAILED"
+
+    def _delete_duplicate_notes(self, note_name):
+        safe_name = self._escape_applescript(note_name)
+        script = f'''
+        tell application "Notes"
+            set targetName to "{safe_name}"
+            set foundNotes to every note whose name is targetName
+            if (count of foundNotes) <= 1 then
+                return "UNCHANGED"
+            end if
+
+            repeat with idx from (count of foundNotes) to 2 by -1
+                delete item idx of foundNotes
+            end repeat
+            return "DEDUPED"
+        end tell
+        '''
+
+        resp, error = self._run_applescript(script)
+        if error:
+            print(f"❌ [AppleScript Error] Delete duplicate notes failed: {error}")
+            return "FAILED"
+        return resp or "FAILED"
+
+    def dedupe_notes_by_name(self, note_name):
+        notes = self.list_notes_by_name(note_name)
+        if len(notes) <= 1:
+            return "UNCHANGED"
+
+        merged_content = self._merge_note_plaintexts(notes)
+        if not self.update_note_content(note_name, merged_content):
+            return "FAILED"
+
+        delete_status = self._delete_duplicate_notes(note_name)
+        if delete_status == "FAILED":
+            return "FAILED"
+        return "DEDUPED"
 
 if __name__ == "__main__":
     # Self-test logic

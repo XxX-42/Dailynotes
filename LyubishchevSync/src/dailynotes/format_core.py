@@ -9,6 +9,79 @@ from .utils import FileUtils, Logger
 
 class FormatCore:
     @staticmethod
+    def repair_obsidian_wiki_escapes(content: str) -> str:
+        """
+        只修复 wiki link 内被错误 markdown 转义的字符，保证日记一出现
+        `[[2026\\_5...]]` 这类内容就能被下一轮格式化拉回正常。
+        表格行里的 `\\|` 是 Markdown 列保护符，不能在这里还原。
+        """
+        if "[[" not in content or "\\" not in content:
+            return content
+
+        def _repair_line(line: str) -> str:
+            is_table_row = line.strip().startswith("|")
+
+            def _repair(match):
+                inner = match.group(1)
+                pattern = r'\\(_|\[|\])' if is_table_row else r'\\(_|\||\[|\])'
+                repaired = re.sub(pattern, r'\1', inner)
+                return f"[[{repaired}]]"
+
+            return re.sub(r'\[\[(.*?)\]\]', _repair, line)
+
+        return "\n".join(_repair_line(line) for line in content.split("\n"))
+
+    @staticmethod
+    def _repair_wiki_link_escapes_for_key(content: str) -> str:
+        if "[[" not in content or "\\" not in content:
+            return content
+
+        def _repair(match):
+            inner = match.group(1)
+            repaired = re.sub(r'\\([_|[\]])', r'\1', inner)
+            return f"[[{repaired}]]"
+
+        return re.sub(r'\[\[(.*?)\]\]', _repair, content)
+
+    @classmethod
+    def _normalize_table_project_key(cls, text: str) -> str:
+        normalized = cls._repair_wiki_link_escapes_for_key(text)
+        normalized = re.sub(r'[\[\]]', '', normalized)
+        normalized = normalized.replace('\\|', '|').replace('\\_', '_')
+        return normalized.strip()
+
+    @staticmethod
+    def _escape_markdown_table_cell(text: str) -> str:
+        if not text:
+            return ""
+        return re.sub(r'(?<!\\)\|', r'\\|', text)
+
+    @classmethod
+    def _build_insights_row(
+        cls,
+        display_label: str,
+        cost: str,
+        aim: str,
+        progress: str,
+        impact: str,
+        confidence: str,
+        ease: str,
+        ice_score: str,
+    ) -> str:
+        cells = [
+            display_label,
+            cost,
+            aim,
+            progress,
+            impact,
+            confidence,
+            ease,
+            ice_score,
+        ]
+        safe_cells = [cls._escape_markdown_table_cell(cell) for cell in cells]
+        return "| " + " | ".join(safe_cells) + " |"
+
+    @staticmethod
     def _is_deployment_header(text: str) -> bool:
         stripped = text.strip()
         return stripped in (Config.DEPLOYMENT_HEADER, "# Deployment")
@@ -520,7 +593,7 @@ class FormatCore:
                 
                 if len(cols) >= 8:
                     # 规范化项目名：去掉 [[]]、去掉 \| 的反斜杠
-                    proj_name = re.sub(r'[\[\]]', '', cols[0]).replace('\\|', '|').strip()
+                    proj_name = FormatCore._normalize_table_project_key(cols[0])
                     ice_raw = cols[7]
                     # 萃取 HTML/Markdown 中的纯数字 (如 <font color='red'>**16**</font>)
                     m = re.search(r'(\d+(?:\.\d+)?)', ice_raw)
@@ -587,13 +660,9 @@ class FormatCore:
                         file_name = m.group(1).strip()
                         return f"[[{file_name}#^{m.group(2)}|{file_name}]]"
                     
-                    display_label = re.sub(pattern, repl, content).strip()
-                    
-                    # 无论它原先带不带转义或⮐，统一强制将内嵌 | 转换为 \| 格式以兼容 Obsidian Table
-                    def _force_escape_pipe(tm):
-                        inner = tm.group(1).replace('\\|', '|').replace('|', '\\|')
-                        return f"[[{inner}]]"
-                    display_label = re.sub(r'\[\[(.*?)\]\]', _force_escape_pipe, display_label)
+                    display_label = cls.repair_obsidian_wiki_escapes(
+                        re.sub(pattern, repl, content).strip()
+                    )
                     
                     archive_projects[display_label] = {"pct": pct, "cost": cost_str}
                     
@@ -696,27 +765,29 @@ class FormatCore:
                     # Data row
                     if len(cols) > 0 and cols[0]:
                          # 第一列默认为 id / project name
-                         proj_name_cleaned = re.sub(r'[\[\]]', '', cols[0]).strip()
+                         proj_name_cleaned = cls._normalize_table_project_key(cols[0])
                          old_data_map[proj_name_cleaned] = cols
                          
             # 重新构建表格内容
             new_table_lines = []
             
-            # [行内刷新逻辑] 动态检查旧表头是否可用，保留排版以防 Obsidian 无限格式化死循环
-            if len(old_table_lines) >= 2 and old_table_lines[0].count('|') >= 9:
+            standard_header = ["id", "cost", "aim to", "progress", "Impact", "Confidence", "Ease", "ICE Score"]
+            standard_divider = ["---", "----", "------", "--------", "------", "----------", "----", "---------"]
+
+            # [行内刷新逻辑] 只复用精确 8 列表头，历史污染出的空列必须重建。
+            if len(old_table_lines) >= 2 and header == standard_header and len(divider) == len(standard_header):
                 new_table_lines.append(old_table_lines[0])
                 new_table_lines.append(old_table_lines[1])
             else:
-                new_header = ["id", "cost", "aim to", "progress", "Impact", "Confidence", "Ease", "ICE Score"]
-                new_table_lines.append("| " + " | ".join(new_header) + " |")
-                new_table_lines.append("| --- | ---- | ------ | -------- | ------ | ---------- | ---- | --------- |")
+                new_table_lines.append("| " + " | ".join(standard_header) + " |")
+                new_table_lines.append("| " + " | ".join(standard_divider) + " |")
             
              # 使用 Archive 扫描到的数据为主键遍历
             for display_label, data_obj in archive_projects.items():
                 pct = data_obj["pct"]
                 captured_cost = data_obj["cost"]
                 # [v4.3] 规范化 clean_proj：去掉 [[]]、去掉 \| 的反斜杠，用于松散匹配
-                clean_proj = re.sub(r'[\[\]]', '', display_label).replace('\\|', '|').strip()
+                clean_proj = cls._normalize_table_project_key(display_label)
                 
                 # 寻找旧表中的对应行，以便尽量复用它的空格
                 old_row_line = None
@@ -726,7 +797,7 @@ class FormatCore:
                     cols_tmp = _split_table_row(row)
                     if cols_tmp:
                         # [v4.3] 同样规范化：去掉 [[]]、去掉 \| 的反斜杠
-                        row_key = re.sub(r'[\[\]]', '', cols_tmp[0]).replace('\\|', '|').strip()
+                        row_key = cls._normalize_table_project_key(cols_tmp[0])
                         if row_key == clean_proj:
                             old_row_line = row
                             old_cols = cols_tmp
@@ -802,17 +873,17 @@ class FormatCore:
                 old_ease = old_cols[6] if len(old_cols) > 6 else ""
                 old_ice_score = old_cols[7] if len(old_cols) > 7 else ""
                 
-                if old_row_line and cost == old_cost and progress_col == old_progress and impact_val == old_impact and confidence_val == old_confidence and ease_val == old_ease and ice_score == old_ice_score:
-                    # 原行参数未变（无实质变更），复用旧行但确保链接内 | 已转义
-                    def _escape_row_links(row_text):
-                        def _esc(tm):
-                            inner = tm.group(1).replace('\\|', '|').replace('|', '\\|')
-                            return f"[[{inner}]]"
-                        return re.sub(r'\[\[(.*?)\]\]', _esc, row_text)
-                    new_table_lines.append(_escape_row_links(old_row_line))
-                else:
-                    row_str = f"| {display_label} | {cost} | {aim} | {progress_col} | {impact_val} | {confidence_val} | {ease_val} | {ice_score} |"
-                    new_table_lines.append(row_str)
+                row_str = cls._build_insights_row(
+                    display_label,
+                    cost,
+                    aim,
+                    progress_col,
+                    impact_val,
+                    confidence_val,
+                    ease_val,
+                    ice_score,
+                )
+                new_table_lines.append(row_str)
                 
             # 执行文本替换
             new_content_lines = lines[:table_start_idx] + new_table_lines + lines[table_end_idx:]
@@ -829,7 +900,7 @@ class FormatCore:
             for display_label, data_obj in archive_projects.items():
                 pct = data_obj["pct"]
                 captured_cost = data_obj["cost"]
-                clean_proj = re.sub(r'[\[\]]', '', display_label).strip()
+                clean_proj = cls._normalize_table_project_key(display_label)
                 
                 if captured_cost:
                     cost = captured_cost
@@ -843,7 +914,7 @@ class FormatCore:
                     pct_val = pct.replace('%', '')
                     progress_col = f"{pct_val}%"
                     
-                row_str = f"| {display_label} | {cost} | {aim} | {progress_col} |  |  |  |  |"
+                row_str = cls._build_insights_row(display_label, cost, aim, progress_col, "", "", "", "")
                 new_table_lines.append(row_str)
             new_table_lines.append("") # 行尾空行缓冲
             
@@ -879,14 +950,16 @@ class FormatCore:
     @classmethod
     def execute(cls, filepath: str, instant: bool = False, preserve_focus: bool = False) -> bool:
         if not os.path.exists(filepath): return False
-        content = FileUtils.read_content(filepath)
-        if not content: return False
+        raw_content = FileUtils.read_content(filepath)
+        if not raw_content: return False
 
         # [CRITICAL] 1. 立即强制 NFC 标准化
         # 这一步是为了消除 macOS NFD 文件名和 Python 字符串之间的隐形差异
-        content = unicodedata.normalize('NFC', content)
+        content = unicodedata.normalize('NFC', raw_content)
+        content = cls.repair_obsidian_wiki_escapes(content)
 
-        orig_hash = hashlib.md5(content.encode('utf-8')).hexdigest()
+        # 必须基于原始文件内容比较，否则“仅修复转义乱码”的改动不会落盘。
+        orig_hash = hashlib.md5(raw_content.encode('utf-8')).hexdigest()
 
         c = content
 

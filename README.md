@@ -13,6 +13,7 @@ LyubishchevSync 是一个面向 macOS 的 Obsidian 日程与任务同步工具�
 - 使用 EventKit 事件 ID 和指纹进行 Calendar 增量同步。
 - 正确处理最后一个事件被删除、跨日移动和冷启动补偿。
 - 从 Apple Notes 读取今日记录，并同步到 Obsidian Daily Note。
+- 将 Apple Notes 图片导出到 Vault，并把图片嵌入追加到其上方数据行末尾。
 - 提供 macOS 菜单栏状态、重启和日志入口。
 
 ## 架构
@@ -88,6 +89,18 @@ python -m pip install \
 ```
 
 macOS 首次运行时可能会请求 Calendar、Reminders、Notes 和辅助功能权限。如果权限被拒绝，请在“系统设置 → 隐私与安全性”中检查运行 Python 的终端或应用。
+
+### Apple Notes 图片
+
+今日备忘录中的图片会保存到 `【ATTACHMENT】/AppleNotes/YYYY-MM-DD/`。图片按照 Notes HTML
+中的正文顺序绑定到上方最近的非空数据行，并以 `![[...|L|200]]` 形式写入 Obsidian 行末。
+附件 ID、哈希和绑定行记录在 Daily Note 目录的 `.apple_notes_attachment_state.json` 中；从
+Notes 删除的图片会移动到 `【ATTACHMENT】/AppleNotes/.orphaned/`，不会立即删除。
+
+当前 macOS Notes 的 AppleScript `set body` 在实机测试中会移除正文里的图片并重建附件。
+因此含附件的备忘录采用安全模式：允许读取和导出图片、允许写入 Obsidian，但禁止整篇
+`body` 回写和自动同名合并。纯文本备忘录保持原有双向写入行为。原始 HTML 恢复副本保存在
+Daily Note 目录的 `.apple_notes_recovery/`。
 
 ## 配置
 

@@ -2,6 +2,11 @@ import datetime
 import subprocess
 import sys
 
+try:
+    from .note_attachments import AttachmentSnapshot, NoteSnapshot
+except ImportError:
+    from note_attachments import AttachmentSnapshot, NoteSnapshot
+
 # [v1.0] Apple Notes Reader (Core)
 # Uses AppleScript to interface with the Notes.app
 
@@ -120,6 +125,171 @@ class AppleNotesReader:
         if not notes:
             return None
         return notes[0].get("plaintext", "")
+
+    def notes_have_attachments(self, note_name):
+        safe_name = self._escape_applescript(note_name)
+        script = f'''
+        tell application "Notes"
+            set foundNotes to every note whose name is "{safe_name}"
+            repeat with theNote in foundNotes
+                if (count of attachments of theNote) > 0 then return "YES"
+            end repeat
+            return "NO"
+        end tell
+        '''
+        response, error = self._run_applescript(script)
+        return error is None and response == "YES"
+
+    def get_note_snapshot(self, note_name=None, note_id=None):
+        """Read HTML and attachment metadata without touching the note."""
+        if not note_id and not note_name:
+            return None
+        if note_id:
+            predicate = f'id is "{self._escape_applescript(note_id)}"'
+        else:
+            predicate = f'name is "{self._escape_applescript(note_name)}"'
+
+        field_sep_id = ord(self._FIELD_SEPARATOR)
+        script = f'''
+        tell application "Notes"
+            set foundNotes to every note whose {predicate}
+            if (count of foundNotes) = 0 then return ""
+            set theNote to item 1 of foundNotes
+            set fieldSep to character id {field_sep_id}
+            return (id of theNote as string) & fieldSep & (name of theNote as string) & fieldSep & (modification date of theNote as string) & fieldSep & (plaintext of theNote as string) & fieldSep & (body of theNote as string)
+        end tell
+        '''
+        content, error = self._run_applescript(script)
+        if error or not content:
+            return None
+        fields = content.split(self._FIELD_SEPARATOR, 4)
+        if len(fields) != 5:
+            return None
+        resolved_id, resolved_name, modification_date, plaintext, html_body = fields
+
+        record_sep_id = ord(self._NOTE_SEPARATOR)
+        attachment_script = f'''
+        tell application "Notes"
+            set foundNotes to every note whose id is "{self._escape_applescript(resolved_id)}"
+            if (count of foundNotes) = 0 then return ""
+            set theNote to item 1 of foundNotes
+            set recordSep to character id {record_sep_id}
+            set fieldSep to character id {field_sep_id}
+            set outputText to ""
+            set noteAttachments to every attachment of theNote
+            repeat with i from 1 to count of noteAttachments
+                set theAttachment to item i of noteAttachments
+                set attachmentName to ""
+                set attachmentCID to ""
+                try
+                    set attachmentName to name of theAttachment as string
+                end try
+                try
+                    set attachmentCID to content identifier of theAttachment as string
+                end try
+                set outputText to outputText & (id of theAttachment as string) & fieldSep & attachmentName & fieldSep & attachmentCID
+                if i is not (count of noteAttachments) then set outputText to outputText & recordSep
+            end repeat
+            return outputText
+        end tell
+        '''
+        attachment_content, attachment_error = self._run_applescript(attachment_script)
+        if attachment_error:
+            return None
+        attachments = []
+        seen_attachment_ids = set()
+        if attachment_content:
+            for chunk in attachment_content.split(self._NOTE_SEPARATOR):
+                parts = chunk.split(self._FIELD_SEPARATOR, 2)
+                if len(parts) == 3 and parts[0] not in seen_attachment_ids:
+                    seen_attachment_ids.add(parts[0])
+                    attachments.append(AttachmentSnapshot(parts[0], parts[2], parts[1]))
+
+        return NoteSnapshot(
+            note_id=resolved_id,
+            name=resolved_name,
+            plaintext=plaintext,
+            html_body=html_body,
+            modification_date=modification_date,
+            attachments=attachments,
+        )
+
+    def save_attachment(self, note_id, attachment_id, destination_path):
+        """Export one Notes attachment to a caller-owned temporary path."""
+        safe_note_id = self._escape_applescript(note_id)
+        safe_attachment_id = self._escape_applescript(attachment_id)
+        safe_path = self._escape_applescript(destination_path)
+        script = f'''
+        tell application "Notes"
+            set foundNotes to every note whose id is "{safe_note_id}"
+            if (count of foundNotes) = 0 then return "NOTE_NOT_FOUND"
+            set theNote to item 1 of foundNotes
+            set foundAttachments to every attachment of theNote whose id is "{safe_attachment_id}"
+            if (count of foundAttachments) = 0 then return "ATTACHMENT_NOT_FOUND"
+            set theAttachment to item 1 of foundAttachments
+            save theAttachment in POSIX file "{safe_path}"
+            return "OK"
+        end tell
+        '''
+        response, error = self._run_applescript(script)
+        return error is None and response == "OK"
+
+    def add_attachment(self, note_id, source_path):
+        safe_note_id = self._escape_applescript(note_id)
+        safe_path = self._escape_applescript(source_path)
+        script = f'''
+        tell application "Notes"
+            set foundNotes to every note whose id is "{safe_note_id}"
+            if (count of foundNotes) = 0 then return "NOTE_NOT_FOUND"
+            set theNote to item 1 of foundNotes
+            make new attachment at theNote with data POSIX file "{safe_path}"
+            return "OK"
+        end tell
+        '''
+        response, error = self._run_applescript(script)
+        return error is None and response == "OK"
+
+    def delete_note_by_id(self, note_id):
+        safe_note_id = self._escape_applescript(note_id)
+        script = f'''
+        tell application "Notes"
+            set foundNotes to every note whose id is "{safe_note_id}"
+            if (count of foundNotes) = 0 then return "NOT_FOUND"
+            delete item 1 of foundNotes
+            return "OK"
+        end tell
+        '''
+        response, error = self._run_applescript(script)
+        return error is None and response == "OK"
+
+    def update_note_html(self, note_id, new_html, expected_modification_date=None):
+        """Replace HTML after an optimistic-concurrency check."""
+        before = self.get_note_snapshot(note_id=note_id)
+        if before is None:
+            return False, None, "NOT_FOUND"
+        if expected_modification_date and before.modification_date != expected_modification_date:
+            return False, before, "CONCURRENT_MODIFICATION"
+
+        safe_note_id = self._escape_applescript(note_id)
+        safe_html = self._escape_applescript(new_html)
+        script = f'''
+        tell application "Notes"
+            set foundNotes to every note whose id is "{safe_note_id}"
+            if (count of foundNotes) = 0 then return "NOT_FOUND"
+            set body of item 1 of foundNotes to "{safe_html}"
+            return "OK"
+        end tell
+        '''
+        response, error = self._run_applescript(script)
+        if error or response != "OK":
+            return False, before, error or response
+        after = self.get_note_snapshot(note_id=note_id)
+        if after is None:
+            return False, None, "VERIFY_NOT_FOUND"
+        if len(before.attachments) != len(after.attachments):
+            return False, after, "ATTACHMENT_COUNT_MISMATCH"
+        identity_changed = before.attachment_signature != after.attachment_signature
+        return True, after, "ATTACHMENT_IDENTITIES_CHANGED" if identity_changed else None
 
     def update_note_content(self, note_name, new_content):
         """

@@ -15,6 +15,12 @@ if _current_dir not in sys.path:
 
 from read_today_note import AppleNotesReader
 try:
+    from note_attachments import render_attachment_links
+    from note_transaction import NoteAttachmentTransaction
+except ImportError:
+    from .note_attachments import render_attachment_links
+    from .note_transaction import NoteAttachmentTransaction
+try:
     from dailynotes.daily_sections import find_daily_section, normalize_daily_note_lines
     from dailynotes.format_core import FormatCore
     from dailynotes.utils import FileUtils
@@ -41,8 +47,75 @@ class NoteMonitor:
         self._thread = None
         self._running = False
         self._reader = AppleNotesReader()
+        self._note_transaction = (
+            NoteAttachmentTransaction(self._reader, config, self._log)
+            if config and hasattr(config, 'APPLE_NOTES_ATTACHMENT_STATE_FILE')
+            else None
+        )
         self._polling_interval = 2.0  # 秒
         self._tomorrow_note_created = False  # 防重复创建次日日记
+        self._rich_note_write_warning_ids = set()
+
+    def _snapshot_for_sync(self, note_name, target_date):
+        snapshot = self._reader.get_note_snapshot(note_name=note_name)
+        if snapshot and snapshot.attachments:
+            if not self._note_transaction or not self._note_transaction.prepare(snapshot, target_date):
+                return snapshot, False
+        return snapshot, True
+
+    def _write_snapshot_html(self, snapshot):
+        if not snapshot or not self._note_transaction:
+            return False
+        ok, _ = self._note_transaction.write_html(snapshot, snapshot.document.render())
+        return ok
+
+    def _attachment_links_by_line(self, snapshot):
+        if not snapshot:
+            return {}
+        suffix = getattr(self._config, 'IMAGE_PARAM_SUFFIX', '|L|200')
+        return {
+            line.index: render_attachment_links(line.attachments, suffix)
+            for line in snapshot.document.lines
+            if line.attachments
+        }
+
+    def _remove_managed_attachment_links(self):
+        today_path = os.path.join(
+            self._config.DAILY_NOTE_DIR,
+            datetime.date.today().strftime('%Y-%m-%d') + '.md',
+        )
+        if not os.path.exists(today_path):
+            return
+        lines = self._read_note_lines(today_path)
+        if lines is None:
+            return
+        rel_dir = re.escape(getattr(self._config, 'REL_ATTACHMENT_DIR', '【ATTACHMENT】').replace(os.sep, '/'))
+        pattern = re.compile(rf'\s*!\[\[{rel_dir}/AppleNotes/[^\]]+\]\]')
+        updated = [pattern.sub('', line) for line in lines]
+        if updated != lines:
+            self._write_note_content(today_path, updated)
+
+    def _reconcile_attachment_bindings(self, snapshot, note_name):
+        if not snapshot or not snapshot.attachments:
+            return
+        self._remove_managed_attachment_links()
+        lines = snapshot.content_lines
+        diff = list(difflib.unified_diff([], lines, n=0, lineterm=''))
+        self._process_diff(
+            diff,
+            lines,
+            note_name,
+            snapshot=snapshot,
+            line_attachments=self._attachment_links_by_line(snapshot),
+        )
+
+    @staticmethod
+    def _snapshot_content(snapshot):
+        if not snapshot:
+            return None
+        if snapshot.attachments:
+            return "\n".join(snapshot.content_lines)
+        return snapshot.plaintext
 
     # =====================
     # 公开接口
@@ -145,6 +218,9 @@ class NoteMonitor:
     def _ensure_single_apple_note(self, note_name, default_body):
         notes = self._reader.list_notes_by_name(note_name)
         if len(notes) > 1:
+            if self._reader.notes_have_attachments(note_name):
+                self._log(f"⛔ [NoteMonitor] 同名备忘录包含附件，禁止自动纯文本合并: '{note_name}'")
+                return "FAILED"
             self._log(f"⚠️ [NoteMonitor] 检测到 {len(notes)} 个同名备忘录，正在自动合并: '{note_name}'")
             dedupe_result = self._reader.dedupe_notes_by_name(note_name)
             if dedupe_result == "DEDUPED":
@@ -165,7 +241,7 @@ class NoteMonitor:
         self._log(f"❌ [NoteMonitor] 创建 Apple Note 失败: '{note_name}'")
         return "FAILED"
 
-    def _sync_obsidian_tasks_to_notes(self, note_name, current_notes_content):
+    def _sync_obsidian_tasks_to_notes(self, note_name, current_notes_content, snapshot=None):
         """
         [v5.4] 单向同步: Obsidian Unchecked Tasks -> Apple Notes
         机制:
@@ -419,7 +495,15 @@ class NoteMonitor:
                 if final_content and not final_content.endswith('\n'):
                      final_content += "\n"
                 
-                if self._reader.update_note_content(note_name, final_content):
+                if snapshot and snapshot.attachments:
+                     if snapshot.note_id not in self._rich_note_write_warning_ids:
+                         self._log("🛡️ [Notes附件] 含图片备忘录禁止 set body；本轮只同步到 Obsidian，不回写任务文本")
+                         self._rich_note_write_warning_ids.add(snapshot.note_id)
+                     return False, current_notes_content
+                else:
+                     write_ok = self._reader.update_note_content(note_name, final_content)
+
+                if write_ok:
                      msg = []
                      if added_count: msg.append(f"{added_count} Restored/Added")
                      self._log(f"📥 [Sync] Notes Updated: {', '.join(msg) or 'Modifications applied'}")
@@ -447,8 +531,9 @@ class NoteMonitor:
         # [v4.1] 启动检查：确保今日 Obsidian 日记和 Apple Note 存在
         self._check_and_create_today_notes(today)
 
-        # 初始读取
-        last_content = self._reader.get_note_content(note_name)
+        # 初始读取（含附件时同时完成导出和校验）
+        snapshot, snapshot_ready = self._snapshot_for_sync(note_name, today)
+        last_content = self._snapshot_content(snapshot)
         if last_content is None or last_content == "NOT_FOUND":
             self._log(f"⚠️ [NoteMonitor] 备忘录未找到，等待出现...")
             last_hash = 0
@@ -457,21 +542,30 @@ class NoteMonitor:
             
             # [v4.2] 首次全量扫描：同步遗漏的未标记项
             self._log("🔄 [NoteMonitor] 正在执行首次全量扫描 (Sync missing items)...")
-            initial_lines = last_content.splitlines()
+            initial_lines = snapshot.content_lines if snapshot and snapshot.attachments else last_content.splitlines()
             dummy_diff = list(difflib.unified_diff([], initial_lines, n=0, lineterm=''))
             
             # 调用处理逻辑 (会自动回写 ✅)
-            self._process_diff(dummy_diff, initial_lines, note_name)
+            if snapshot_ready:
+                self._process_diff(
+                    dummy_diff,
+                    initial_lines,
+                    note_name,
+                    snapshot=snapshot,
+                    line_attachments=self._attachment_links_by_line(snapshot),
+                )
             
             # 如果发生了回写，刷新 last_content
             time.sleep(1)
-            last_content = self._reader.get_note_content(note_name)
+            snapshot, snapshot_ready = self._snapshot_for_sync(note_name, today)
+            last_content = self._snapshot_content(snapshot)
             
             # [v5.0] Initial Sync from Obsidian
             if last_content and last_content != "NOT_FOUND":
-                 synced, new_text = self._sync_obsidian_tasks_to_notes(note_name, last_content)
+                 synced, new_text = self._sync_obsidian_tasks_to_notes(note_name, last_content, snapshot=snapshot)
                  if synced:
-                     last_content = new_text
+                     snapshot, snapshot_ready = self._snapshot_for_sync(note_name, today)
+                     last_content = self._snapshot_content(snapshot) or new_text
             
             last_hash = hash(last_content) if last_content else 0
 
@@ -495,7 +589,14 @@ class NoteMonitor:
                 # [v4.0] 23:55 自动创建次日日记
                 self._check_create_tomorrow_note()
 
-                current_content = self._reader.get_note_content(note_name)
+                snapshot, snapshot_ready = self._snapshot_for_sync(note_name, today)
+                current_content = self._snapshot_content(snapshot)
+                attachment_mapping_changed = bool(
+                    snapshot
+                    and snapshot.attachments
+                    and self._note_transaction
+                    and self._note_transaction.mapping_changed
+                )
 
                 # 备忘录消失
                 if current_content is None or current_content == "NOT_FOUND":
@@ -503,12 +604,20 @@ class NoteMonitor:
                         self._log("❌ [NoteMonitor] 备忘录消失!")
                         last_hash = 0
                     continue
+                if snapshot and snapshot.attachments and not snapshot_ready:
+                    continue
+                if attachment_mapping_changed:
+                    self._log("🖼️ [NoteMonitor] 检测到图片新增、删除或换行，正在重建 Obsidian 行尾链接")
+                    self._reconcile_attachment_bindings(snapshot, note_name)
+                    snapshot, snapshot_ready = self._snapshot_for_sync(note_name, today)
+                    current_content = self._snapshot_content(snapshot)
 
                 # [v5.0] 每一轮都检查 Obsidian 是否有新任务推送到 Apple Notes
                 # 注意: 这会增加一次文件读操作，但对于单机环境通常可接受
-                synced, new_text_v5 = self._sync_obsidian_tasks_to_notes(note_name, current_content)
+                synced, new_text_v5 = self._sync_obsidian_tasks_to_notes(note_name, current_content, snapshot=snapshot)
                 if synced:
-                    current_content = new_text_v5
+                    snapshot, snapshot_ready = self._snapshot_for_sync(note_name, today)
+                    current_content = self._snapshot_content(snapshot) or new_text_v5
 
                 current_hash = hash(current_content)
                 # 使用 ANSI 清行序列来执行干净的行内刷新，防残影
@@ -521,7 +630,8 @@ class NoteMonitor:
                     if "(id=" in current_content or "（id=" in current_content:
                         self._log(f"⏳ [NoteMonitor] 检测到心跳特征变更，延迟 1.0 秒等待写入缓冲...")
                         time.sleep(1.0)
-                        current_content = self._reader.get_note_content(note_name)
+                        snapshot, snapshot_ready = self._snapshot_for_sync(note_name, today)
+                        current_content = self._snapshot_content(snapshot)
                         current_hash = hash(current_content)
                         
                         # 如果缓冲后内容又弹回了上一次的旧状态（极其罕见），跳过本次
@@ -535,10 +645,16 @@ class NoteMonitor:
                     # Diff 分析
                     safe_last = last_content if last_content and last_content != "NOT_FOUND" else ""
                     old_lines = safe_last.splitlines()
-                    new_lines = current_content.splitlines()
+                    new_lines = snapshot.content_lines if snapshot and snapshot.attachments else current_content.splitlines()
 
                     diff = list(difflib.unified_diff(old_lines, new_lines, n=0, lineterm=''))
-                    self._process_diff(diff, new_lines, note_name)
+                    self._process_diff(
+                        diff,
+                        new_lines,
+                        note_name,
+                        snapshot=snapshot,
+                        line_attachments=self._attachment_links_by_line(snapshot),
+                    )
 
                     print("-" * 40)
 
@@ -672,7 +788,7 @@ tags:
     # Obsidian Task Helper
     # =====================
 
-    def _mark_obsidian_task_completed_with_time(self, task_id, completion_time):
+    def _mark_obsidian_task_completed_with_time(self, task_id, completion_time, attachment_links=""):
         """
         [v7.0] 标记 Obsidian 任务完成，并使用双 ID 格式更新时间。
         [v8.0] 基于 TaskRegistry 实现对归档/流浪者任务的跨稳健追踪。
@@ -743,6 +859,9 @@ tags:
                     parts = line.split(full_id_tag, 1)
                     pre_part = parts[0]
                     post_part = parts[1]
+                    if attachment_links and attachment_links not in post_part:
+                        newline = "\n" if post_part.endswith("\n") else ""
+                        post_part = post_part.rstrip() + " " + attachment_links + newline
                     
                     cb_match = re.search(r'^(\s*)(-\s*\[.)\](.*)', pre_part)
                     
@@ -893,7 +1012,38 @@ tags:
     # Diff 处理逻辑
     # =====================
 
-    def _process_diff(self, diff, current_lines, note_name):
+    def _append_attachment_to_obsidian_task(self, task_id, attachment_links):
+        if not attachment_links:
+            return False
+        target_path = os.path.join(
+            self._config.DAILY_NOTE_DIR,
+            datetime.date.today().strftime('%Y-%m-%d') + '.md',
+        )
+        try:
+            from dailynotes.sync.task_registry import get_registry
+            registry = get_registry()
+            if registry.is_initialized():
+                task = registry.get_task_by_id(task_id)
+                if task and task.get('path'):
+                    target_path = task['path']
+        except Exception:
+            pass
+        if not os.path.exists(target_path):
+            return False
+        lines = self._read_note_lines(target_path)
+        if lines is None:
+            return False
+        marker = re.compile(rf'<span id="{re.escape(task_id)}"(?: data-timestamps="[^"]*")?></span>')
+        changed = False
+        for idx, line in enumerate(lines):
+            if marker.search(line) and attachment_links not in line:
+                newline = '\n' if line.endswith('\n') else ''
+                lines[idx] = line.rstrip() + ' ' + attachment_links + newline
+                changed = True
+                break
+        return self._write_note_content(target_path, lines) if changed else True
+
+    def _process_diff(self, diff, current_lines, note_name, snapshot=None, line_attachments=None):
         """
         处理 unified diff 输出，识别 ADD/DEL/MOD。
         如果成功同步到 Obsidian，则更新 Apple Notes 内容（添加 ✅）。
@@ -906,6 +1056,19 @@ tags:
         changes_found = False
         current_dels = []
         current_adds = []
+        line_attachments = line_attachments or {}
+        line_occurrences = {}
+        for idx, value in enumerate(current_lines):
+            line_occurrences.setdefault(value, []).append(idx)
+        occurrence_cursor = {}
+
+        def resolve_line_index(value):
+            cursor = occurrence_cursor.get(value, 0)
+            candidates = line_occurrences.get(value, [])
+            if cursor >= len(candidates):
+                return None
+            occurrence_cursor[value] = cursor + 1
+            return candidates[cursor]
         
         # 记录需要回写 Apple Notes 的标志
         notes_updated = False
@@ -988,8 +1151,18 @@ tags:
             for i, a_line in enumerate(adds):
                 if not used_adds[i]:
                     stripped_line = a_line.strip()
+                    source_line_index = resolve_line_index(a_line)
+                    attachment_links = line_attachments.get(source_line_index, "")
                     suffix = ""
                     processed = False
+
+                    # -1. Apple Notes 原始任务行下方的图片，追加到对应 Obsidian 任务行末尾。
+                    task_line_match = re.match(r'^\*([a-zA-Z0-9:_]+)\*(.*)', stripped_line)
+                    if task_line_match and attachment_links:
+                        processed = self._append_attachment_to_obsidian_task(
+                            task_line_match.group(1),
+                            attachment_links,
+                        )
                     
                     # 0. Check Completion Heartbeat (Highest Priority)
                     # e.g. 22:24:24 *21:25:38*#B 打扫
@@ -1015,7 +1188,7 @@ tags:
                             comp_time = datetime.datetime.now().strftime('%H:%M:%S')
                         
                         # Action 1: Mark Obsidian Task Complete AND Update Time
-                        marked = self._mark_obsidian_task_completed_with_time(task_id, comp_time)
+                        marked = self._mark_obsidian_task_completed_with_time(task_id, comp_time, attachment_links)
                         
                         # [Changed] Do NOT append new line to Day Planner section.
                         # We only update the existing task line in place.
@@ -1043,19 +1216,19 @@ tags:
                             # [v4.4] Day Planner Check (starts with "*")
                             # e.g. 17:55:48"*打游戏"
                             if self._is_day_plan_entry(stripped_line):
-                                 if self._append_to_day_plan_section(a_line):
+                                 if self._append_to_day_plan_section(a_line, attachment_links):
                                     suffix = " ✅"
                                     processed = True
                             
                             # Fallback to Water/Log (Takein)
-                            elif self._append_to_daily_note(a_line):
+                            elif self._append_to_daily_note(a_line, attachment_links):
                                 suffix = " ✅"
                                 processed = True
 
                     # 2. Check Account Entries (tradetype::...)
                     # Example: (tradetype::$食物)(tradename::鸡蛋)(tradecost::-858)(tradetime::2026/2/12 00:19:36)
                     if not processed and "(tradetype::" in stripped_line and "✅" not in stripped_line:
-                        if self._append_to_account_section(a_line):
+                        if self._append_to_account_section(a_line, attachment_links):
                             suffix = " ✅"
                             processed = True
 
@@ -1068,6 +1241,8 @@ tags:
                                     if suffix:
                                         current_lines[idx] = cl + suffix
                                         notes_updated = True
+                                        if snapshot and snapshot.attachments and source_line_index is not None:
+                                            snapshot.document.append_suffix(source_line_index, suffix)
                                     break
                         except ValueError:
                             pass
@@ -1106,15 +1281,19 @@ tags:
             
         # 如果有回写需求，更新 Apple Notes
         if notes_updated:
-            new_full_content = "\n".join(current_lines)
-            self._reader.update_note_content(note_name, new_full_content)
-            self._log(f"🔄 [NoteMonitor] 已回写 ✅ 标记到 Apple Notes")
+            if snapshot and snapshot.attachments:
+                if self._write_snapshot_html(snapshot):
+                    self._log(f"🔄 [NoteMonitor] 已保留附件并回写 ✅ 标记到 Apple Notes")
+            else:
+                new_full_content = "\n".join(current_lines)
+                self._reader.update_note_content(note_name, new_full_content)
+                self._log(f"🔄 [NoteMonitor] 已回写 ✅ 标记到 Apple Notes")
 
     # =====================
     # Obsidian 日记写入
     # =====================
 
-    def _append_to_daily_note(self, line_content):
+    def _append_to_daily_note(self, line_content, attachment_links=""):
         """
         将带时间戳的行追加到今日日记的 ## #Water 章节。
         格式: HH:MM<span id="HH:MM:SS"></span> Keyword::Value
@@ -1153,7 +1332,7 @@ tags:
             new_line_clean = line_content.strip()
 
             # 读取并重组 ## #Water 章节
-            final_lines = self._reorganize_water_section(lines, new_line_clean)
+            final_lines = self._reorganize_water_section(lines, new_line_clean, attachment_links)
             
             if not self._write_note_content(daily_note_path, final_lines):
                 return False
@@ -1164,7 +1343,7 @@ tags:
             print(f"{RED}❌ 写入日记异常: {e}{RESET}")
             return False
 
-    def _reorganize_water_section(self, lines, new_raw_entry):
+    def _reorganize_water_section(self, lines, new_raw_entry, attachment_links=""):
         """
         解析并重组 ## #Water 章节:
         1. 提取现有条目 + 新条目
@@ -1173,7 +1352,7 @@ tags:
         4. 生成新内容覆盖原章节
         """
         # 1. 解析新条目
-        new_parsed = self._parse_entry(new_raw_entry)
+        new_parsed = self._parse_entry(new_raw_entry, attachment_links)
         if not new_parsed:
             # 如果解析失败，直接追加（fallback）
             # 但这里我们尽量保证能处理。如果失败，返回原 lines + 追加
@@ -1264,10 +1443,15 @@ tags:
         is_duplicate = False
         new_ts = new_parsed.get('full_ts', '')
         new_content = new_parsed.get('content', '')
+        managed_link_pat = re.compile(r'\s*!\[\[[^\]]*/AppleNotes/[^\]]+\]\]')
+        new_identity = managed_link_pat.sub('', new_content).strip()
         
         for e in entries:
-            if e.get('full_ts') == new_ts and e.get('content') == new_content:
+            existing_identity = managed_link_pat.sub('', e.get('content', '')).strip()
+            if e.get('full_ts') == new_ts and existing_identity == new_identity:
                 is_duplicate = True
+                if e.get('content') != new_content:
+                    e.update(new_parsed)
                 break
                 
         # 通过验证：无重复历史档案，方可加入合并序列
@@ -1316,7 +1500,7 @@ tags:
         final = lines[:start_idx] + new_section_lines + lines[end_idx:]
         return final
 
-    def _parse_entry(self, raw_line):
+    def _parse_entry(self, raw_line, attachment_links=""):
         """
         将原始备忘录行 '23:54"烟":"x1"' 解析为结构化数据，并处理映射
         返回: {'time':..., 'full_ts':..., 'key':..., 'raw':...}
@@ -1354,6 +1538,8 @@ tags:
         
         # 构造最终行
         span = f'<span id="{ts_full}"></span>'
+        if attachment_links and attachment_links not in cleaned:
+            cleaned = f"{cleaned} {attachment_links}".strip()
         formatted_line = f"{ts_display}{span} {cleaned}\n"
         
         return {
@@ -1375,7 +1561,7 @@ tags:
         """
         return '"*' in line or '“*' in line
 
-    def _append_to_day_plan_section(self, line_content):
+    def _append_to_day_plan_section(self, line_content, attachment_links=""):
         """
         [v4.8] 处理 # Day planner
         核心逻辑: 全局重组与合并
@@ -1409,6 +1595,8 @@ tags:
             parsed_new = self._parse_day_plan_line(line_content)
             if not parsed_new:
                 return False
+            if attachment_links and attachment_links not in parsed_new['content']:
+                parsed_new['content'] = f"{parsed_new['content']} {attachment_links}".strip()
             parsed_new['status'] = 'x'
             parsed_new['is_new'] = True
 
@@ -1471,8 +1659,18 @@ tags:
                         'is_new': False
                     })
             
-            # 加入新条目
-            all_entries.append(parsed_new)
+            # 加入或更新同一时间、同一业务内容的条目。图片换行时只更新受管链接，避免重复任务。
+            managed_link_pat = re.compile(r'\s*!\[\[[^\]]*/AppleNotes/[^\]]+\]\]')
+            new_identity = managed_link_pat.sub('', parsed_new['content']).strip()
+            replaced_existing = False
+            for existing in all_entries:
+                existing_identity = managed_link_pat.sub('', existing.get('content', '')).strip()
+                if existing.get('time_full') == parsed_new.get('time_full') and existing_identity == new_identity:
+                    existing['content'] = parsed_new['content']
+                    replaced_existing = True
+                    break
+            if not replaced_existing:
+                all_entries.append(parsed_new)
 
             # 5. 全局排序 (按 Start ID)
             all_entries.sort(key=lambda x: x['time_full'])
@@ -1632,7 +1830,7 @@ tags:
     # Account 记账处理
     # =====================
 
-    def _append_to_account_section(self, line_content):
+    def _append_to_account_section(self, line_content, attachment_links=""):
         """
         处理记账条目并插入到 # Economic 📈 章节
         输入示例: (tradetype::$食物)(tradename::鸡蛋)(tradecost::-858)(tradetime::2026/2/12 00:19:36)
@@ -1687,7 +1885,8 @@ tags:
             t_cost = data.get('tradecost', '0').strip()
 
             # 构造表格行字符串 (Markdown 风格)
-            new_table_row = f"| {t_time} | {t_type} | {t_name} | {t_cost} |\n"
+            attachment_cell = attachment_links.strip()
+            new_table_row = f"| {t_time} | {t_type} | {t_name} | {t_cost} | {attachment_cell} |\n"
 
             # 读取文件并插入
             lines = self._read_note_lines(daily_note_path)
@@ -1698,7 +1897,8 @@ tags:
 
             # 二、防重复检测与清洗
             # 1. 检查表格行是否已存在
-            row_content_to_check = f"| {t_time} | {t_type} | {t_name} | {t_cost} |"
+            row_identity = f"| {t_time} | {t_type} | {t_name} | {t_cost} |"
+            row_content_to_check = new_table_row.strip()
             is_duplicate = False
             
             # 2. 构建需要清洗的原始括号行匹配集合
@@ -1712,7 +1912,7 @@ tags:
             
             for line in lines:
                 # 检查是否是表格行重复
-                if row_content_to_check in line:
+                if row_identity in line:
                     is_duplicate = True
                 
                 # 检查当前行是否是残留的原始括号行 (逐行独立匹配)
@@ -1729,7 +1929,7 @@ tags:
                 lines = new_doc_lines
                 self._log(f"🧹 [Account] 已清洗 {len(raw_patterns_to_clean)} 条残留原始括号行")
             
-            if is_duplicate:
+            if is_duplicate and not attachment_links:
                 # 表格行已存在，不需要再插入
                 if cleaned_any_raw:
                     # 虽然表格已存在，但需要写回清洗结果
@@ -1766,6 +1966,10 @@ tags:
                     continue
                 if stripped.startswith("| 时间 |") or "---" in stripped:
                     continue
+                if row_identity in stripped:
+                    stripped = row_content_to_check
+                elif stripped.count("|") == 5:
+                    stripped = stripped[:-1].rstrip() + " |  |"
                 if stripped not in seen_rows:
                     seen_rows.add(stripped)
                     existing_rows.append(stripped)
@@ -1775,8 +1979,8 @@ tags:
                 self._log(f"📝 [Account] 已同步至 Economic 表格: {t_name}")
 
             rebuilt_section = [
-                "| 时间 | 类型 | 名称 | 金额 |\n",
-                "| --- | --- | --- | --- |\n",
+                "| 时间 | 类型 | 名称 | 金额 | 附件 |\n",
+                "| --- | --- | --- | --- | --- |\n",
             ]
             rebuilt_section.extend(row + "\n" for row in existing_rows)
             rebuilt_section.append("\n")

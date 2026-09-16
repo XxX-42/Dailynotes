@@ -74,6 +74,9 @@ class Config:
     ROOT_DIR = VAULT_ROOT
     STATE_FILE = os.path.join(DAILY_NOTE_DIR, ".sync_state.json")
     LOCK_FILE = os.path.join(DAILY_NOTE_DIR, ".fusion_sync_lock")
+    APPLE_NOTES_ATTACHMENT_STATE_FILE = os.path.join(DAILY_NOTE_DIR, ".apple_notes_attachment_state.json")
+    APPLE_NOTES_RECOVERY_DIR = os.path.join(DAILY_NOTE_DIR, ".apple_notes_recovery")
+    APPLE_NOTES_ATTACHMENT_SUBDIR = os.path.join(REL_ATTACHMENT_DIR, "AppleNotes")
 
     # 运行参数
     SYNC_START_DATE = "2025-12-08"

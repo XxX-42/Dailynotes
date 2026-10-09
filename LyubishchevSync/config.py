@@ -73,6 +73,10 @@ class Config:
     # 兼容性别名
     ROOT_DIR = VAULT_ROOT
     STATE_FILE = os.path.join(DAILY_NOTE_DIR, ".sync_state.json")
+    TASK_SECTION_BACKUP_DIR = os.path.expanduser(os.environ.get(
+        'LYUBISHCHEV_TASK_BACKUP_DIR',
+        '~/Library/Application Support/LyubishchevSync/task-section-backups',
+    ))
     LOCK_FILE = os.path.join(DAILY_NOTE_DIR, ".fusion_sync_lock")
     APPLE_NOTES_ATTACHMENT_STATE_FILE = os.path.join(DAILY_NOTE_DIR, ".apple_notes_attachment_state.json")
     APPLE_NOTES_RECOVERY_DIR = os.path.join(DAILY_NOTE_DIR, ".apple_notes_recovery")
@@ -147,6 +151,9 @@ class Config:
         {"min": 100, "tag": "#C", "calendar": "紧急不重要"},
         {"min": 0,   "tag": "#D", "calendar": "不重要不紧急"}
     ]
+
+    # Thinking is a free-form two-column panel, not an ICE routing model.
+    ENABLE_LEGACY_ICE = False
 
     # 警报规则
     ALARM_RULES = {

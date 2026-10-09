@@ -559,6 +559,8 @@ class FormatCore:
         [ICE加权] 从 # Thinking 🧠 表格中萃取 ICE Score 映射。
         返回: {项目名(str): ICE数值(float)}
         """
+        if not getattr(Config, 'ENABLE_LEGACY_ICE', False):
+            return {}
         lines = content.splitlines()
         ice_map = {}
         in_insights = False
@@ -609,331 +611,7 @@ class FormatCore:
 
     @classmethod
     def update_insights_table(cls, content: str, instant: bool = False) -> str:
-        """
-        [vX] 自动扫描 `# Deployment 🚀` 下的三级标题及其进度，将其映射更新到 `# Thinking 🧠` 的表格中。
-        """
-        # 1. 扫描出所有的统计数据，放开视野限制，遍历全文所有 `### [[xxx]]`
-        lines = content.splitlines()
-        
-        archive_projects = {}
-        
-        for line in lines:
-            stripped = line.strip()
-            if stripped.startswith("### "):
-                continue # 禁止将三级标题本身作为项目计入 Insights
-            elif stripped.lstrip().startswith("- ["):
-                # [FIX] 如果存在散养任务，但带有独立的主键id，也抓进 Insights 表格中
-                id_m = re.search(r'<span id="([a-zA-Z0-9]{6,})"', stripped)
-                if id_m:
-                    # [v4.2] 提取时间跨度 (HH:mm - HH:mm) 并计算 cost 时长
-                    cost_str = ""
-                    time_m = re.search(r'(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})', stripped)
-                    if time_m:
-                        try:
-                            t1, t2 = time_m.group(1), time_m.group(2)
-                            def _to_m(s):
-                                h, m = map(int, s.split(':'))
-                                return h * 60 + m
-                            diff = _to_m(t2) - _to_m(t1)
-                            if diff < 0: diff += 24 * 60 # 跨天
-                            cost_str = f"{diff // 60:02d}:{diff % 60:02d}"
-                        except: pass
-
-                    # [FIX] 同时匹配行尾百分比和双链内 ⮐ XX% 格式
-                    m_pct = re.search(r'(\d+)%$', stripped)
-                    if not m_pct:
-                        m_pct = re.search(r'⮐\s*(\d+)%', stripped)
-                    if m_pct:
-                        pct = m_pct.group(1) + "%"
-                    else:
-                        is_checked = "[x]" in stripped.lower()
-                        pct = "100%" if is_checked else "0%"
-                        
-                    content = re.sub(r'^[ \t]*- \[[xX\s]\]\s*', '', stripped)
-                    # [v4.2] 移除时间前缀，让 id 列变干净
-                    content = re.sub(r'(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})\s*', '', content)
-                    content = re.sub(r'<span id="[a-zA-Z0-9]{6,}"></span>\s*', '', content)
-                    content = re.sub(r'\s*\d+%$', '', content)
-                    
-                    pattern = r'\[\[(.*?)#\^([a-zA-Z0-9]{6,})\|⮐.*?\]\](?:\s*\[\[\1\]\])?'
-                    def repl(m):
-                        file_name = m.group(1).strip()
-                        return f"[[{file_name}#^{m.group(2)}|{file_name}]]"
-                    
-                    display_label = cls.repair_obsidian_wiki_escapes(
-                        re.sub(pattern, repl, content).strip()
-                    )
-                    
-                    archive_projects[display_label] = {"pct": pct, "cost": cost_str}
-                    
-        if not archive_projects:
-            # [FIX] 即使没有任务，也要清空 Thinking 表格中的残留数据行
-            # 定位现有表格位置
-            in_insights = False
-            in_table = False
-            table_start_idx = -1
-            table_end_idx = -1
-            for i, line in enumerate(lines):
-                stripped = line.strip()
-                if stripped.startswith("# "):
-                    if stripped.replace(" ", "") == Config.THINKING_HEADER.replace(" ", ""):
-                        in_insights = True
-                    else:
-                        if in_insights and in_table:
-                            table_end_idx = i
-                            break
-                        in_insights = False
-                elif in_insights:
-                    if stripped.startswith("|"):
-                        if not in_table:
-                            table_start_idx = i
-                            in_table = True
-                    else:
-                        if in_table and stripped == "":
-                            table_end_idx = i
-                            break
-            if in_table and table_end_idx == -1:
-                table_end_idx = len(lines)
-            # 如果存在表格且有数据行(超过2行=表头+分隔线)，只保留表头
-            if table_start_idx != -1 and table_end_idx != -1 and (table_end_idx - table_start_idx) > 2:
-                header_lines = lines[table_start_idx:table_start_idx + 2]
-                new_lines = lines[:table_start_idx] + header_lines + [""] + lines[table_end_idx:]
-                return "\n".join(new_lines)
-            return content
-            
-        # 2. 寻找与替换 Thinking 区域中的表格
-        in_insights = False
-        in_table = False
-        table_start_idx = -1
-        table_end_idx = -1
-        
-        for i, line in enumerate(lines):
-            stripped = line.strip()
-            if stripped.startswith("# "):
-                if stripped.replace(" ", "") == Config.THINKING_HEADER.replace(" ", ""):
-                    in_insights = True
-                else:
-                    if in_insights and in_table:
-                        table_end_idx = i
-                        break
-                    in_insights = False
-            elif in_insights:
-                if stripped.startswith("|"):
-                    if not in_table:
-                        table_start_idx = i
-                        in_table = True
-                else:
-                    if in_table and stripped == "":
-                         table_end_idx = i
-                         break
-                    
-        # 如果达到了文件尾部仍未找到终点
-        if in_table and table_end_idx == -1:
-            table_end_idx = len(lines)
-            
-        if table_start_idx != -1 and table_end_idx != -1:
-            
-            def _split_table_row(r_text: str) -> list:
-                # 暂时把 [[...|...]] 里的 '|' 替换掉以免被切割
-                parts = []
-                last = 0
-                for match in re.finditer(r'\[\[.*?\]\]', r_text):
-                    parts.append(r_text[last:match.start()])
-                    parts.append(match.group(0).replace('|', '\x00'))
-                    last = match.end()
-                parts.append(r_text[last:])
-                processed = "".join(parts)
-                # 切割后恢复
-                return [c.replace('\x00', '|').strip() for c in processed.split('|')[1:-1]]
-
-            # 提取现有的表格保留 id(项目名)、cost、aim to 等手工字段
-            old_table_lines = lines[table_start_idx:table_end_idx]
-            old_data_map = {}
-            header = []
-            divider = []
-            
-            for row in old_table_lines:
-                if not row.strip().startswith('|'): continue
-                cols = _split_table_row(row)
-                if not cols: continue
-                
-                if not header:
-                    header = cols
-                elif not divider:
-                    divider = cols
-                else:
-                    # Data row
-                    if len(cols) > 0 and cols[0]:
-                         # 第一列默认为 id / project name
-                         proj_name_cleaned = cls._normalize_table_project_key(cols[0])
-                         old_data_map[proj_name_cleaned] = cols
-                         
-            # 重新构建表格内容
-            new_table_lines = []
-            
-            standard_header = ["id", "cost", "aim to", "progress", "Impact", "Confidence", "Ease", "ICE Score"]
-            standard_divider = ["---", "----", "------", "--------", "------", "----------", "----", "---------"]
-
-            # [行内刷新逻辑] 只复用精确 8 列表头，历史污染出的空列必须重建。
-            if len(old_table_lines) >= 2 and header == standard_header and len(divider) == len(standard_header):
-                new_table_lines.append(old_table_lines[0])
-                new_table_lines.append(old_table_lines[1])
-            else:
-                new_table_lines.append("| " + " | ".join(standard_header) + " |")
-                new_table_lines.append("| " + " | ".join(standard_divider) + " |")
-            
-             # 使用 Archive 扫描到的数据为主键遍历
-            for display_label, data_obj in archive_projects.items():
-                pct = data_obj["pct"]
-                captured_cost = data_obj["cost"]
-                # [v4.3] 规范化 clean_proj：去掉 [[]]、去掉 \| 的反斜杠，用于松散匹配
-                clean_proj = cls._normalize_table_project_key(display_label)
-                
-                # 寻找旧表中的对应行，以便尽量复用它的空格
-                old_row_line = None
-                old_cols = []
-                for row in old_table_lines[2:]:
-                    if not row.strip().startswith('|'): continue
-                    cols_tmp = _split_table_row(row)
-                    if cols_tmp:
-                        # [v4.3] 同样规范化：去掉 [[]]、去掉 \| 的反斜杠
-                        row_key = cls._normalize_table_project_key(cols_tmp[0])
-                        if row_key == clean_proj:
-                            old_row_line = row
-                            old_cols = cols_tmp
-                            break
-                        
-                if not old_cols:
-                    old_cols = []
-                
-                # 更新传承或覆盖旧的手工数据
-                # 优先级: 抓取到的 cost > 统计计算的 cost > 旧表数据
-                if captured_cost:
-                    cost = captured_cost
-                else:
-                    cost_mins = cls._last_calculated_costs.get(clean_proj, 0) if hasattr(cls, '_last_calculated_costs') else 0
-                    if cost_mins > 0:
-                        cost = f"{cost_mins // 60:02d}:{cost_mins % 60:02d}"
-                    else:
-                        cost = old_cols[1] if len(old_cols) > 1 else ""
-                    
-                aim = old_cols[2] if len(old_cols) > 2 else ""
-                
-                # 构建进度列
-                progress_col = ""
-                if pct:
-                    pct_val = pct.replace('%', '')
-                    progress_col = f"{pct_val}%"
-                
-                # 读取新建的四个列（容错）
-                impact_val = old_cols[4] if len(old_cols) > 4 else ""
-                confidence_val = old_cols[5] if len(old_cols) > 5 else ""
-                ease_val = old_cols[6] if len(old_cols) > 6 else ""
-                
-                # 尝试计算 ICE Score
-                ice_score = ""
-                i_str, c_str, e_str = impact_val.strip(), confidence_val.strip(), ease_val.strip()
-                
-                if instant:
-                    # 即时更新模式下，不计算ICE，不抛出报错警告，避免影响打字体验
-                    ice_score = old_cols[7] if len(old_cols) > 7 else ""
-                else:
-                    # 如果有任意一个填写了，我们就进行严格校验
-                    if i_str or c_str or e_str:
-                        try:
-                            def _extract_score(text: str, name: str) -> float:
-                                if not text: raise ValueError(f"缺{name}")
-                                # 试图匹配文本中的第一个数字（允许小数点）
-                                m = re.search(r'(\d+(?:\.\d+)?)', text)
-                                if m: return float(m.group(1))
-                                raise ValueError(f"{name}无数字")
-                                
-                            # 逐层萃取，即使夹杂长文章批注，我们也能把数字抠出来
-                            i_val = _extract_score(i_str, "I")
-                            c_val = _extract_score(c_str, "C")
-                            e_val = _extract_score(e_str, "E")
-                            
-                            if not (1 <= i_val <= 10) or not (1 <= c_val <= 10) or not (1 <= e_val <= 10):
-                                ice_score = "⚠️越界(1-10)"
-                            else:
-                                score_num = int(i_val * c_val * e_val)
-                                # 使用 HTML font 标签渲染红色粗体
-                                ice_score = f"<font color='red'>**{score_num}**</font>"
-                        except ValueError as e:
-                            # 抛出具体的缺失或异常错误原因代替死板的“数据无效”
-                            ice_score = f"⚠️{str(e)}"
-                    else:
-                        ice_score = old_cols[7] if len(old_cols) > 7 else ""
-                
-                # === 判断是否发生实质性变动 ===
-                old_cost = old_cols[1] if len(old_cols) > 1 else ""
-                old_progress = old_cols[3] if len(old_cols) > 3 else ""
-                old_impact = old_cols[4] if len(old_cols) > 4 else ""
-                old_confidence = old_cols[5] if len(old_cols) > 5 else ""
-                old_ease = old_cols[6] if len(old_cols) > 6 else ""
-                old_ice_score = old_cols[7] if len(old_cols) > 7 else ""
-                
-                row_str = cls._build_insights_row(
-                    display_label,
-                    cost,
-                    aim,
-                    progress_col,
-                    impact_val,
-                    confidence_val,
-                    ease_val,
-                    ice_score,
-                )
-                new_table_lines.append(row_str)
-                
-            # 执行文本替换
-            new_content_lines = lines[:table_start_idx] + new_table_lines + lines[table_end_idx:]
-            return "\n".join(new_content_lines)
-            
-        else:
-            # === 如果表格甚至 Thinking 标题不存在，我们自动生成 ===
-            # 构建一个由底层向上渲染的全新空表格
-            new_table_lines = []
-            new_header = ["id", "cost", "aim to", "progress", "Impact", "Confidence", "Ease", "ICE Score"]
-            new_table_lines.append("| " + " | ".join(new_header) + " |")
-            new_table_lines.append("| --- | ---- | ------ | -------- | ------ | ---------- | ---- | --------- |")
-            
-            for display_label, data_obj in archive_projects.items():
-                pct = data_obj["pct"]
-                captured_cost = data_obj["cost"]
-                clean_proj = cls._normalize_table_project_key(display_label)
-                
-                if captured_cost:
-                    cost = captured_cost
-                else:
-                    cost_mins = cls._last_calculated_costs.get(clean_proj, 0) if hasattr(cls, '_last_calculated_costs') else 0
-                    cost = f"{cost_mins // 60:02d}:{cost_mins % 60:02d}" if cost_mins > 0 else ""
-                
-                aim = ""
-                progress_col = ""
-                if pct:
-                    pct_val = pct.replace('%', '')
-                    progress_col = f"{pct_val}%"
-                    
-                row_str = cls._build_insights_row(display_label, cost, aim, progress_col, "", "", "", "")
-                new_table_lines.append(row_str)
-            new_table_lines.append("") # 行尾空行缓冲
-            
-            thinking_line_idx = -1
-            
-            for i, line in enumerate(lines):
-                stripped = line.strip().replace(" ", "")
-                if stripped == Config.THINKING_HEADER.replace(" ", ""):
-                    thinking_line_idx = i
-                    
-            if thinking_line_idx != -1:
-                # 存在 Thinking，无表，插入在下一行并且给足换行
-                new_lines = lines[:thinking_line_idx+1] + [""] + new_table_lines + [""] + lines[thinking_line_idx+1:]
-                return "\n".join(new_lines)
-            else:
-                # 都没找到，作为顶级块附加
-                new_lines = lines + ["", Config.THINKING_HEADER, ""] + new_table_lines + [""]
-                return "\n".join(new_lines)
-                
+        """Thinking is user-owned: preserve its columns, notes and rows verbatim."""
         return content
 
     @staticmethod
@@ -953,9 +631,21 @@ class FormatCore:
         raw_content = FileUtils.read_content(filepath)
         if not raw_content: return False
 
+        # Keep the entire manual panel outside global formatting/task statistics.
+        thinking_pattern = re.compile(
+            r'^' + re.escape(Config.THINKING_HEADER) + r'[ \t]*\r?\n[\s\S]*?(?=^# |\Z)',
+            re.MULTILINE,
+        )
+        thinking_match = thinking_pattern.search(raw_content)
+        thinking_section = thinking_match.group(0) if thinking_match else None
+        working_content = thinking_pattern.sub(
+            lambda _: Config.THINKING_HEADER + '\n\nTASKSYNC_MANUAL_THINKING_PANEL\n\n',
+            raw_content, count=1,
+        ) if thinking_section is not None else raw_content
+
         # [CRITICAL] 1. 立即强制 NFC 标准化
         # 这一步是为了消除 macOS NFD 文件名和 Python 字符串之间的隐形差异
-        content = unicodedata.normalize('NFC', raw_content)
+        content = unicodedata.normalize('NFC', working_content)
         content = cls.repair_obsidian_wiki_escapes(content)
 
         # 必须基于原始文件内容比较，否则“仅修复转义乱码”的改动不会落盘。
@@ -992,6 +682,8 @@ class FormatCore:
                 c += "\n"
         else:
             c = c.strip() + "\n"
+        if thinking_section is not None:
+            c = thinking_pattern.sub(lambda _: thinking_section, c, count=1)
         new_hash = hashlib.md5(c.encode('utf-8')).hexdigest()
 
         if orig_hash != new_hash:
@@ -1002,7 +694,7 @@ class FormatCore:
                 tag = "Instant" if instant else "Format"
                 strategy = "atomic"
             Logger.info(f"✨ [{tag}] 优化日记排版与间距/进度更新: {os.path.basename(filepath)}")
-            return FileUtils.write_file(filepath, c, strategy=strategy)
+            return FileUtils.write_file(filepath, c, strategy=strategy, expected_content=raw_content)
         return False
 
     @staticmethod

@@ -18,6 +18,7 @@ import threading
 from config import Config
 from .utils import Logger, FileUtils
 from .format_core import FormatCore
+from .sync_pause import sync_pause
 from .state_manager import StateManager
 from .sync import SyncCore
 from .calendar_event_index import (
@@ -518,6 +519,7 @@ class FusionManager:
         except Exception as e:
             results["success"] = False
             Logger.error_once(f"sync_fail_{date_str}", f"内部同步异常 [{date_str}]: {e}")
+            return results
 
         # --- [PRIORITY 2] Apple Calendar Sync ---
         should_sync_apple = False
@@ -865,7 +867,20 @@ class FusionManager:
             today_str = today.strftime('%Y-%m-%d')
             self.process_single_date(today_str, is_event_trigger=True)
 
-    def run(self):
+    def _process_pending_changes(self):
+        # Clear before reconciliation: notifications arriving during it remain pending.
+        with self._calendar_event_lock:
+            calendar_dirty = self._calendar_dirty_flag
+            self._calendar_dirty_flag = False
+        if calendar_dirty:
+            Logger.info("⚡ [Chronos] 检测到日历变更")
+            self.sync_recent_window()
+        if self._reminder_dirty_flag:
+            self._reminder_dirty_flag = False
+            Logger.info("⚡ [Chronos] 检测到提醒事项变更")
+            self.sync_reminders()
+
+    def run(self, register_signals=True):
         """
         [v3.0] Chronos Mode 主循环 - 纯事件驱动
         """
@@ -873,7 +888,8 @@ class FusionManager:
             self._running = False
             raise SystemExit("Received SIGTERM")
 
-        signal.signal(signal.SIGTERM, _term_handler)
+        if register_signals:
+            signal.signal(signal.SIGTERM, _term_handler)
         self._running = True
 
         Logger.info(f"🚀 Chronos Mode 启动 - 全事件驱动架构")
@@ -904,10 +920,11 @@ class FusionManager:
         # [v3.0] 启动时全量同步
         if not self._startup_sync_done:
             Logger.info("🌅 [Chronos] 执行启动全量同步...")
-            self.sync_core.initialize_registry()
-            self._registry_warmup_done = True
-            self.sync_full_range()
-            self._startup_sync_done = True
+            with sync_pause.operation():
+                self.sync_core.initialize_registry()
+                self._registry_warmup_done = True
+                self.sync_full_range()
+                self._startup_sync_done = True
 
         # [v3.8] 启动 Reminder 监听
         if self._reminder_client:
@@ -929,19 +946,8 @@ class FusionManager:
                 use_cf_runloop = False
                 Logger.info("⚠️ [Chronos] CoreFoundation 不可用，降级为 sleep 循环")
 
-            while self._running:
-                # [v3.0] 纯事件驱动：仅处理标志位
-                if self._calendar_dirty_flag:
-                    self._calendar_dirty_flag = False
-                    Logger.info(f"⚡ [Chronos] 检测到日历变更")
-                    self.sync_recent_window()
-                
-                if self._reminder_dirty_flag:
-                    Logger.info(f"⚡ [Chronos] 检测到提醒事项变更")
-                    self._reminder_dirty_flag = False
-                    self.sync_reminders() 
-
-                
+            while self._running and getattr(getattr(self, 'app_ref', None), 'should_run', True):
+                self._process_pending_changes()
                 # 检查午夜跨越
                 self._check_midnight_crossing()
                 
@@ -964,8 +970,6 @@ class FusionManager:
                 self._observer.stop()
                 self._observer.join(timeout=3)
             
-            if self._ek_client:
-                Logger.info("🛑 [Watchdog] 停止监听 Calendar...")
             if self._ek_client:
                 Logger.info("🛑 [Watchdog] 停止监听 Calendar...")
                 self._ek_client.stop_watching()

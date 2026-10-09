@@ -158,12 +158,22 @@ class NoteMonitor:
 
     def _read_note_lines(self, path):
         lines = FileUtils.read_file(path)
+        if lines is not None:
+            if not hasattr(self, '_note_file_snapshots'):
+                self._note_file_snapshots = {}
+            self._note_file_snapshots[path] = ''.join(lines)
         if lines is None:
             self._log(f"⚠️ [NoteMonitor] 读取失败或 UTF-8 解码失败: {path}")
         return lines
 
     def _write_note_content(self, path, content, strategy="atomic"):
-        ok = FileUtils.write_file(path, content, strategy=strategy)
+        expected = getattr(self, '_note_file_snapshots', {}).get(path)
+        if expected is None:
+            self._log(f'⚠️ [NoteMonitor] 缺少读取快照，取消写入: {path}')
+            return False
+        ok = FileUtils.write_file(path, content, strategy=strategy, expected_content=expected)
+        if ok:
+            self._note_file_snapshots[path] = ''.join(content) if isinstance(content, list) else content
         if not ok:
             self._log(f"⚠️ [NoteMonitor] 写入失败: {path}")
         else:
@@ -519,9 +529,17 @@ class NoteMonitor:
     # 核心轮询逻辑 (Modified)
     # =====================
 
+    def _wait_while_sync_paused(self):
+        pause_file = os.environ.get('LYUBISHCHEV_SYNC_PAUSE_FILE')
+        while self._running and pause_file and os.path.exists(pause_file):
+            time.sleep(0.2)
+        return self._running
+
     def _polling_loop(self):
         """后台轮询主循环"""
         self._log(f"📍 [NoteMonitor] 策略: Active Polling (每 {self._polling_interval}s)")
+        if not self._wait_while_sync_paused():
+            return
 
         # 确定今日备忘录标题
         today = datetime.date.today()
@@ -572,6 +590,8 @@ class NoteMonitor:
         while self._running:
             try:
                 time.sleep(self._polling_interval)
+                if not self._wait_while_sync_paused():
+                    break
 
                 # 跨日检测
                 current_today = datetime.date.today()

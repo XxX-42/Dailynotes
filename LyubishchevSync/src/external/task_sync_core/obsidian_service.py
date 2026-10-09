@@ -69,7 +69,7 @@ def parse_obsidian_line(line, line_index):
 
     # [NEW] ICE 模型自适应路由逻辑
     ice_match = re.search(r'(?:🚀ICE:|ICE:)\s*(\d+)', display_name)
-    if ice_match:
+    if getattr(Config, 'ENABLE_LEGACY_ICE', False) and ice_match:
         try:
             score = int(ice_match.group(1))
             for entry in Config.ICE_THRESHOLDS:
@@ -140,7 +140,7 @@ def get_obsidian_state(file_path):
             # 解析表格行: | [[项目名]] | ... | Impact | Conf | Ease | ICE Score |
             if line.strip().startswith("|") and "ice score" not in line.lower() and "---" not in line:
                 cols = [c.strip() for c in line.split("|")[1:-1]]
-                if len(cols) >= 8:
+                if getattr(Config, 'ENABLE_LEGACY_ICE', False) and len(cols) >= 8:
                     try:
                         p_name = re.sub(r'[\[\]]', '', cols[0]).strip()
                         # 尝试从最后一列提取 ICE Score (可能包含 HTML 标签)

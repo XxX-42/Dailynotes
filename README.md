@@ -9,12 +9,27 @@ LyubishchevSync 是一个面向 macOS 的 Obsidian 日程与任务同步工具�
 - 监听 Obsidian Vault 的 Markdown 创建、修改和移动事件。
 - 在项目文件和 Daily Note 之间同步任务、Block ID、状态和反向链接。
 - 格式化 Daily Note 的 Deployment、Thinking、Takein、Exercice 和 Economic 区域。
+- Thinking 为用户维护的两列面板，格式化不再自动生成八列 ICE 表格，也不清空手写行；旧 ICE 权重和自动日历路由默认关闭。
 - 根据 `#A` ～ `#D` 标签将任务映射到四个 Apple Calendar。
 - 使用 EventKit 事件 ID 和指纹进行 Calendar 增量同步。
 - 正确处理最后一个事件被删除、跨日移动和冷启动补偿。
 - 从 Apple Notes 读取今日记录，并同步到 Obsidian Daily Note。
 - 将 Apple Notes 图片导出到 Vault，并把图片嵌入追加到其上方数据行末尾。
 - 提供 macOS 菜单栏状态、重启和日志入口。
+
+### 项目任务区位置
+
+项目任务区新建在正文末尾：`----------` 紧接在 `# Tasks` 上方，区末不再放分隔线。
+正文与上方分隔线之间固定保留 10 个空行（11 个换行符）；旧任务区在下一次正常同步写入时迁移到尾部，
+保留日期、ID、回链、子任务和手写内容。YAML 与代码块中的示例不参与识别。
+旧式尾部分隔线继续兼容；区域在旧式 `----------`、下一个一级标题或文件末尾结束。多个任务区或未闭合代码块会中止同步，
+不会被当作任务删除。启动扫描只读取，不批量迁移。
+
+写入前原笔记备份到 Vault 外的 `~/Library/Application Support/LyubishchevSync/task-section-backups/`，
+可用 `LYUBISHCHEV_TASK_BACKUP_DIR` 修改；备份失败或原文件发生并发变化时取消写入与状态推进。
+写入还校验任务区外正文不变，并用线程锁／跨进程文件锁串行化程序自身的写入。
+这些锁不约束 Obsidian 等外部编辑器：尚未保存的输入与校验到替换之间的极短竞态仍无法完全排除；
+编辑同步任务或执行大量输入时可使用菜单栏“暂停 sync”，完成并保存后再继续。
 
 ## 架构
 

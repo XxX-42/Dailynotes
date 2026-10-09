@@ -24,6 +24,7 @@ import threading
 from typing import Dict, List, Set, Optional, Any, Tuple
 from config import Config
 from ..utils import Logger, FileUtils
+from .task_section import UnsafeTaskSection
 from .parsing import (
     capture_block, 
     clean_task_text, 
@@ -98,7 +99,11 @@ class TaskRegistry:
                         continue
                     
                     filepath = os.path.join(root, f)
-                    tasks = self._scan_single_file(filepath, curr_proj, sm)
+                    try:
+                        tasks = self._scan_single_file(filepath, curr_proj, sm, write_back=False)
+                    except UnsafeTaskSection as error:
+                        Logger.info(f'⛔ [Tasks] 跳过异常文件 {filepath}: {error}')
+                        continue
                     
                     if tasks:
                         self._file_cache[filepath] = tasks
@@ -127,7 +132,7 @@ class TaskRegistry:
             temp = parent
         return None
     
-    def _scan_single_file(self, filepath: str, project_name: str, sm) -> List[Dict]:
+    def _scan_single_file(self, filepath: str, project_name: str, sm, write_back=True) -> List[Dict]:
         """
         Parse a single markdown file and extract all source tasks.
         [v1.8.1] Now delegates to centralized parse_file_tasks for DRY.
@@ -145,7 +150,7 @@ class TaskRegistry:
             return []
         
         # Delegate to centralized parsing function
-        tasks, _, _ = parse_file_tasks(filepath, lines, project_name, sm, write_back=True)
+        tasks, _, _ = parse_file_tasks(filepath, lines, project_name, sm, write_back=write_back)
         
         return tasks
     
@@ -185,6 +190,13 @@ class TaskRegistry:
         with self._file_lock:
             # Collect old affected dates before clearing
             old_dates = self._file_to_dates.get(filepath, set()).copy()
+
+            # Parse/write successfully before dropping any previous cache entries.
+            tasks = []
+            if os.path.exists(filepath):
+                project_name = self._resolve_project(os.path.dirname(filepath))
+                if project_name:
+                    tasks = self._scan_single_file(filepath, project_name, sm)
             
             # Clear old tasks from date index
             old_tasks = self._file_cache.get(filepath, [])
@@ -205,8 +217,6 @@ class TaskRegistry:
                 project_name = self._resolve_project(directory)
                 
                 if project_name:
-                    tasks = self._scan_single_file(filepath, project_name, sm)
-                    
                     if tasks:
                         self._file_cache[filepath] = tasks
                         self._update_date_index_from_file(filepath, tasks)

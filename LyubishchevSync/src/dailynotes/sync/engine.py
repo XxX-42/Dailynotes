@@ -30,6 +30,7 @@ from .rendering import (
 )
 from ..daily_sections import normalize_daily_note_lines
 from ..daily_note_factory import ensure_daily_note
+from .task_section import find_task_section, visible_lines, task_id, write_task_file, UnsafeTaskSection
 
 class SyncCore:
     def __init__(self, state_manager):
@@ -207,10 +208,13 @@ class SyncCore:
             
         lines = FileUtils.read_file(filepath)
         if not lines: return False
+        original_lines = list(lines)
+        region = find_task_section(lines)
+        eligible = visible_lines(lines)
         
         modified = False
         for i, line in enumerate(lines):
-            if bid in line:
+            if region and region.start < i < region.end and i in eligible and task_id(line) == bid:
                 # Regex replace status
                 # Pattern: - [char]
                 # Careful not to destroy formatting
@@ -223,7 +227,8 @@ class SyncCore:
         
         if modified:
             Logger.debug(f"   💾 [UPDATE] Status Change ({new_status}) -> {os.path.basename(filepath)}")
-            return FileUtils.write_file(filepath, lines)
+            lines = inject_into_task_section(lines, [])
+            return write_task_file(filepath, original_lines, lines)
         return False
         
     def calculate_nearest_project(self, routing_path):
@@ -268,6 +273,7 @@ class SyncCore:
         """
         lines = FileUtils.read_file(filepath)
         if not lines: return set()
+        original_content = ''.join(lines)
         lines = normalize_daily_note_lines(lines, Config)
         lines = ensure_structure(lines)
         tasks_to_move = []
@@ -513,10 +519,50 @@ class SyncCore:
                 
         Logger.info(f"归档 {len(tasks_to_move)} 个流浪/纠偏任务", date_tag)
         Logger.info(f"   💾 [WRITE] 更新归档文件: {os.path.basename(filepath)}")
-        if FileUtils.write_file(filepath, lines): return processed_bids
-        return set()
+        if FileUtils.write_file(filepath, lines, expected_content=original_content):
+            return processed_bids
+        raise UnsafeTaskSection('Daily 归档期间发生并发修改或写入失败')
+
+    def _apply_source_changes(self, path, replacements=None, deletions=()):
+        original = FileUtils.read_file(path) or []
+        region = find_task_section(original)
+        eligible = visible_lines(original)
+        output = []
+        index = 0
+        while index < len(original):
+            line = original[index]
+            bid = task_id(line) if (region and region.start < index < region.end
+                    and index in eligible and re.match(r'^[ \t]*- \[[ xX]\]', line)) else None
+            if bid and bid in deletions:
+                _, consumed = capture_block(original[:region.end], index)
+                index += consumed
+            else:
+                output.append(line)
+                index += 1
+        incoming = [line for block in (replacements or {}).values() for line in block]
+        output = inject_into_task_section(output, incoming, os.path.splitext(os.path.basename(path))[0])
+        if ''.join(output) != ''.join(original):
+            write_task_file(path, original, output)
+            self._task_registry.update_file(path, self.sm)
+            self.trigger_delayed_verification(path)
 
     def process_date(self, target_date, src_tasks_for_date):
+        import copy
+        previous_state = copy.deepcopy(self.sm.state)
+        try:
+            paths = {sd['path'] for sd in src_tasks_for_date.values()}
+            paths.update(entry.get('source_path') for entry in previous_state.values()
+                         if entry.get('date') == target_date and entry.get('source_path'))
+            for path in paths:
+                if os.path.exists(path) and not self._is_daily_task_path(path):
+                    find_task_section(FileUtils.read_file(path) or [])
+            return self._process_date_impl(target_date, src_tasks_for_date)
+        except UnsafeTaskSection as error:
+            self.sm.state = previous_state
+            Logger.info(f'⛔ [Tasks] 本轮取消，不推进任务状态: {error}')
+            raise
+
+    def _process_date_impl(self, target_date, src_tasks_for_date):
         today_str = datetime.date.today().strftime('%Y-%m-%d')
         daily_path = os.path.join(Config.DAILY_NOTE_DIR, f"{target_date}.md")
         daily_path_norm = os.path.normcase(os.path.normpath(daily_path))
@@ -542,8 +588,10 @@ class SyncCore:
         dn_tasks = {}
         new_dn_tasks = []
         dn_lines = []
+        original_dn_content = ''
         if os.path.exists(daily_path):
             dn_lines = FileUtils.read_file(daily_path) or []
+            original_dn_content = ''.join(dn_lines)
             dn_lines = normalize_daily_note_lines(dn_lines, Config)
             curr_ctx = None;
             current_section = None;
@@ -630,20 +678,23 @@ class SyncCore:
                 dn_lines[nt['idx']:nt['idx'] + nt['len']] = d_blk
                 dn_mod = True
                 sl = FileUtils.read_file(tgt) or []
+                original_sl = list(sl)
                 sl = inject_into_task_section(sl, s_blk)
                 # [FIX] 显式比对，防止 None 导致丢包
-                orig_sl = FileUtils.read_file(tgt) or []
+                orig_sl = original_sl
                 if "".join(sl) != "".join(orig_sl):
                     # === 🎯 第一次日志修改 (New Task) ===
                     Logger.info(f"   💾 [WRITE] 写入源文件 (New Task) (from {target_date}): {os.path.basename(tgt)}")
-                    FileUtils.write_file(tgt, sl)
+                    write_task_file(tgt, orig_sl, sl)
                 self.trigger_delayed_verification(tgt)
                 combined_text = clean + "|||" + normalize_block_content(nt['raw'][1:])
                 h = self.sm.calc_hash(nt['st'], combined_text)
                 self.sm.update_task(bid, h, tgt, target_date)
         if dn_mod:
             Logger.info(f"   💾 [WRITE] 更新日记文件 (Sync Pre-Save): {os.path.basename(daily_path)}")
-            FileUtils.write_file(daily_path, dn_lines)
+            if not FileUtils.write_file(daily_path, dn_lines, expected_content=original_dn_content):
+                raise UnsafeTaskSection('Daily 注册期间发生并发修改或写入失败')
+            original_dn_content = ''.join(dn_lines)
             self.sm.save()
 
         src_tasks = src_tasks_for_date
@@ -1036,81 +1087,14 @@ class SyncCore:
         if dn_mod:
             # [CRITICAL FIX] 写入日记文件前的幂等性检查
             final_dn_lines = [l for l in dn_lines if l is not None]
-            original_dn_content = FileUtils.read_content(daily_path) or ""
             new_dn_content = "".join(final_dn_lines)
 
             if original_dn_content != new_dn_content:
-                FileUtils.write_file(daily_path, final_dn_lines)
+                if not FileUtils.write_file(daily_path, final_dn_lines, expected_content=original_dn_content):
+                    raise UnsafeTaskSection('Daily 回写期间发生并发修改或写入失败')
                 Logger.info(f"   ✅ 日记文件已回写: {os.path.basename(daily_path)}")
 
-        if src_deletes:
-            for path, bids in src_deletes.items():
-                sl = FileUtils.read_file(path)
-                if not sl: continue
-                out, i, chg = [], 0, False
-                deleted_bids = list(bids.keys())
-                while i < len(sl):
-                    im = re.search(r'\^([a-zA-Z0-9]{6,})\s*$', sl[i])
-                    if not im: im = re.search(r'\(connect::.*?\^([a-zA-Z0-9]{6,})\)', sl[i])
-                    if not im: im = re.search(r'<span id="([a-zA-Z0-9]{6,})"', sl[i])
-                    if im and im.group(1) in deleted_bids:
-                        _, c = capture_block(sl, i);
-                        i += c;
-                        chg = True
-                    else:
-                        out.append(sl[i]);
-                        i += 1
-                if chg:
-                    stem = os.path.splitext(os.path.basename(path))[0]
-                    out = inject_into_task_section(out, [], stem)
-
-                    # [FIX] 显式比对
-                    orig_content = "".join(sl)
-                    new_content = "".join(out)
-                    if orig_content != new_content:
-                        Logger.info(f"   💾 [WRITE] 写入源文件 (Delete) (from {target_date}): {os.path.basename(path)}")
-                        if FileUtils.write_file(path, out):
-                            # [关键修复]：写入成功后，立即强制更新注册表缓存
-                            self._task_registry.update_file(path, self.sm)
-
-        if src_updates:
-            for path, ups in src_updates.items():
-                sl = FileUtils.read_file(path)
-                if not sl: sl = []
-                out, i, chg = [], 0, False
-                handled_bids = set()
-                while i < len(sl):
-                    im = re.search(r'\^([a-zA-Z0-9]{6,})\s*$', sl[i])
-                    if not im: im = re.search(r'\(connect::.*?\^([a-zA-Z0-9]{6,})\)', sl[i])
-                    if im and im.group(1) in ups:
-                        bid = im.group(1)
-                        _, c = capture_block(sl, i)
-                        out.extend(ups[bid])
-                        handled_bids.add(bid)
-                        i += c;
-                        chg = True
-                    else:
-                        out.append(sl[i]);
-                        i += 1
-                pending_inserts = []
-                for bid, blk in ups.items():
-                    if bid not in handled_bids: pending_inserts.extend(blk); chg = True
-
-                if chg:
-                    stem = os.path.splitext(os.path.basename(path))[0]
-                    out = inject_into_task_section(out, pending_inserts, stem)
-
-                    # [FIX] 显式比对，防止死循环
-                    orig_content = "".join(sl)
-                    new_content = "".join(out)
-
-                    if orig_content != new_content:
-                        Logger.info(
-                            f"   💾 [WRITE] 写入源文件 (Update/Insert) (from {target_date}): {os.path.basename(path)}")
-                        if FileUtils.write_file(path, out):
-                            # [关键修复]：写入成功后，立即强制更新注册表缓存
-                            # 不等 Watchdog，现在就更新"大脑"，消除"执行"与"感知"之间的时差
-                            self._task_registry.update_file(path, self.sm)
-                        self.trigger_delayed_verification(path)
+        for path in set(src_deletes) | set(src_updates):
+            self._apply_source_changes(path, src_updates.get(path), src_deletes.get(path, ()))
 
         self.sm.save()

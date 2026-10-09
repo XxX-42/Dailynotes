@@ -204,6 +204,14 @@ def parse_file_tasks(filepath: str, lines: list, project_name: str, sm,
     
     if not lines:
         return [], lines, False
+
+    from .task_section import find_task_section, visible_lines, write_task_file
+    original_lines = list(lines)
+    lines = list(lines)
+    section = find_task_section(lines)
+    if section is None:
+        return [], lines, False
+    visible = visible_lines(lines)
     
     tasks = []
     mod = False
@@ -219,6 +227,10 @@ def parse_file_tasks(filepath: str, lines: list, project_name: str, sm,
         line = lines[i]
         stripped = line.strip()
         
+        if i <= section.start or i >= section.end or i not in visible:
+            i += 1
+            continue
+
         # Detect section markers
         if stripped == '# Tasks':
             in_task_section = True
@@ -233,9 +245,7 @@ def parse_file_tasks(filepath: str, lines: list, project_name: str, sm,
             i += 1
             continue
         
-        if not in_task_section:
-            i += 1
-            continue
+        in_task_section = True
         
         # Check for date headers
         header_match = re.match(r'^#+\s*\[\[\s*(\d{4}-\d{2}-\d{2})\s*\]\]', stripped)
@@ -292,7 +302,7 @@ def parse_file_tasks(filepath: str, lines: list, project_name: str, sm,
         bid = (id_m.group(1) or id_m.group(2)) if id_m else None
         
         if not bid:
-            raw_block, _ = capture_block(lines, i)
+            raw_block, _ = capture_block(lines[:section.end], i)
             temp_clean = clean_task_text(line, None, fname)
             temp_clean = re.sub(r'\s+\^?[a-zA-Z0-9]*$', '', temp_clean).strip()
             combined_body = normalize_block_content(raw_block[1:])
@@ -328,12 +338,12 @@ def parse_file_tasks(filepath: str, lines: list, project_name: str, sm,
         
         # TIME GATE: Skip tasks before sync start date
         if task_date < Config.SYNC_START_DATE:
-            _, consumed = capture_block(lines, i)
+            _, consumed = capture_block(lines[:section.end], i)
             i += consumed
             continue
         
         # Capture full block and build task dict
-        block, consumed = capture_block(lines, i)
+        block, consumed = capture_block(lines[:section.end], i)
         combined_text = clean_txt + "|||" + normalize_block_content(block[1:])
         content_hash = sm.calc_hash(st, combined_text)
         
@@ -357,11 +367,10 @@ def parse_file_tasks(filepath: str, lines: list, project_name: str, sm,
     # Write back if modified and requested
     if mod and write_back:
         lines = inject_into_task_section(lines, [])
-        orig = FileUtils.read_file(filepath)
         new_c = "".join(lines)
-        old_c = "".join(orig) if orig else ""
+        old_c = "".join(original_lines)
         if new_c != old_c:
             Logger.info(f"   💾 [WRITE] 自动格式化源文件: {os.path.basename(filepath)}")
-            FileUtils.write_file(filepath, lines)
+            write_task_file(filepath, original_lines, lines)
     
     return tasks, lines, mod

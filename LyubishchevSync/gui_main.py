@@ -4,6 +4,8 @@ import threading
 import time
 import signal
 import subprocess
+import atexit
+import tempfile
 
 # Ensure src is in path
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
@@ -18,6 +20,7 @@ except ImportError:
 import main
 from config import Config
 from dailynotes.utils import ProcessLock, Logger
+from dailynotes.sync_pause import sync_pause
 
 
 def _python_executable():
@@ -28,15 +31,21 @@ class LyubishchevApp(rumps.App):
     def __init__(self):
         super(LyubishchevApp, self).__init__("柳比歇夫", title="⏳启动")
         self.status_item = rumps.MenuItem("Status: Initializing...", callback=None)
+        self.pause_item = rumps.MenuItem("暂停 sync", callback=self.toggle_sync_pause)
         self.menu = [
             self.status_item,
             None,
+            self.pause_item,
             rumps.MenuItem("Open Log File", callback=self.open_log),
             rumps.MenuItem("Restart Sync", callback=self.restart_sync),
             None, # Separator before Quit
         ]
         self.sync_thread = None
         self.should_run = True
+        self._pause_directory = tempfile.TemporaryDirectory(prefix="lyubishchev-pause-")
+        self._pause_path = os.path.join(self._pause_directory.name, "paused")
+        os.environ['LYUBISHCHEV_SYNC_PAUSE_FILE'] = self._pause_path
+        atexit.register(self._pause_directory.cleanup)
         self._status_lock = threading.Lock()
         self._status_timer = None
         self._status_token = 0
@@ -59,6 +68,7 @@ class LyubishchevApp(rumps.App):
             "handoff": "🔁交接",
             "error": "❌出错",
             "starting": "⏳启动",
+            "paused": "⏸柳比",
         }
         self._status_menu_titles = {
             "idle": "Status: Idle",
@@ -68,6 +78,7 @@ class LyubishchevApp(rumps.App):
             "handoff": "Status: Handoff",
             "error": "Status: Error",
             "starting": "Status: Initializing...",
+            "paused": "Status: Paused（当前操作完成后暂停）",
         }
 
     def _format_status_titles(self, state, detail=None):
@@ -90,6 +101,8 @@ class LyubishchevApp(rumps.App):
 
     def set_status(self, state, detail=None, force=False):
         with self._status_lock:
+            if sync_pause.paused and state != "paused":
+                return self._status_token
             if self._status_timer:
                 self._status_timer.cancel()
                 self._status_timer = None
@@ -113,7 +126,7 @@ class LyubishchevApp(rumps.App):
     def schedule_idle(self, token, delay=1.5):
         def _reset():
             with self._status_lock:
-                if token != self._status_token or self._status_state == "error":
+                if token != self._status_token or self._status_state in ("error", "paused") or sync_pause.paused:
                     return
                 self._status_state = "idle"
                 self._status_detail = None
@@ -130,6 +143,31 @@ class LyubishchevApp(rumps.App):
             self._status_timer = threading.Timer(delay, _reset)
             self._status_timer.daemon = True
             self._status_timer.start()
+
+    def toggle_sync_pause(self, _):
+        if sync_pause.paused:
+            try:
+                os.unlink(self._pause_path)
+            except FileNotFoundError:
+                pass
+            except OSError as error:
+                Logger.info(f"❌ [GUI] 无法继续同步: {error}")
+                return
+            sync_pause.resume()
+            self.pause_item.title = "暂停 sync"
+            self.set_status("idle", force=True)
+            Logger.info("▶️ [GUI] 已继续同步，将处理暂停期间等待的变化")
+        else:
+            try:
+                with open(self._pause_path, 'w', encoding='utf-8') as marker:
+                    marker.write(str(os.getpid()))
+            except OSError as error:
+                Logger.info(f"❌ [GUI] 无法暂停同步: {error}")
+                return
+            sync_pause.pause()
+            self.pause_item.title = "继续 sync"
+            self.set_status("paused", force=True)
+            Logger.info("⏸️ [GUI] 已请求暂停所有同步，当前操作完成后暂停")
 
     def run_sync_logic(self):
         """
@@ -248,91 +286,27 @@ if __name__ == "__main__":
     
     # Workaround: Disable signal handling in FusionManager when running under GUI
     import dailynotes.manager
+    from dailynotes.format_core import FormatCore
+
+    # Gate complete operations, including Watchdog's immediate formatting and timers.
+    # Nested operations may finish after pause, so an in-flight reconciliation is not split.
+    for method_name in (
+        'on_file_changed', 'process_single_date', 'sync_recent_window',
+        'sync_full_range', 'sync_reminders', '_check_midnight_crossing',
+    ):
+        manager_class = dailynotes.manager.FusionManager
+        setattr(manager_class, method_name, sync_pause.guard(getattr(manager_class, method_name)))
+    handler_class = dailynotes.manager.ObsidianEventHandler
+    handler_class._process_event = sync_pause.guard(handler_class._process_event)
+    FormatCore.execute = classmethod(sync_pause.guard(FormatCore.execute.__func__))
     
-    # Store original run method
+    # Use the same engine as the CLI; only signal registration differs in GUI mode.
     original_run = dailynotes.manager.FusionManager.run
-    
-    def patched_run(self):
-        # Skip signal registration
-        self._running = True
-        
-        Logger.info(f"🚀 Chronos Mode 启动 - 全事件驱动架构 (GUI Mode)")
-        Logger.info(f"   同步窗口: ±{Config.CHRONOS_SYNC_WINDOW_DAYS // 2} 天")
-        Logger.info(f"   全量范围: 过去 {Config.CHRONOS_FULL_RANGE_PAST_DAYS} 天 ~ 未来 {Config.CHRONOS_FULL_RANGE_FUTURE_YEARS} 年")
-        Logger.info(f"   循环间隔: {Config.CHRONOS_LOOP_INTERVAL} 秒")
 
-        # 初始化 Watchdog
-        if dailynotes.manager.WATCHDOG_AVAILABLE:
-            try:
-                self._observer = dailynotes.manager.Observer()
-                event_handler = dailynotes.manager.ObsidianEventHandler(self)
-                self._observer.schedule(event_handler, Config.VAULT_ROOT, recursive=True)
-                self._observer.start()
-                Logger.info(f"👁️ [Watchdog] 开始监听: {Config.VAULT_ROOT}")
-            except Exception as e:
-                Logger.error_once("observer_init", f"Watchdog 初始化失败: {e}")
-                self._observer = None
+    def gui_run(self):
+        return original_run(self, register_signals=False)
 
-            # EventKit 监听
-            if self._ek_client:
-                try:
-                    Logger.info("📅 [Watchdog] 启动 EventKit 监听...")
-                    self._ek_client.start_watching(self._on_calendar_push_event)
-                except Exception as e:
-                    Logger.error_once("cal_ek_fail", f"无法启动日历监听: {e}")
-
-        # [v3.0] 启动时全量同步
-        if not self._startup_sync_done:
-            Logger.info("🌅 [Chronos] 执行启动全量同步...")
-            self.sync_core.initialize_registry()
-            self._registry_warmup_done = True
-            self.sync_full_range()
-            self._startup_sync_done = True
-
-        # 主循环
-        try:
-            try:
-                from CoreFoundation import CFRunLoopRunInMode, kCFRunLoopDefaultMode
-                use_cf_runloop = True
-            except ImportError:
-                CFRunLoopRunInMode = None
-                kCFRunLoopDefaultMode = None
-                use_cf_runloop = False
-                Logger.info("⚠️ [GUI] CoreFoundation 不可用，降级为 sleep 循环")
-            
-            while self.app_ref.should_run and self._running:
-                # [v3.0] 纯事件驱动：仅处理标志位
-                if self._calendar_dirty_flag:
-                    Logger.info(f"⚡ [Chronos] 检测到日历变更")
-                    self.sync_recent_window()
-                    self._calendar_dirty_flag = False
-                
-                # 检查午夜跨越
-                self._check_midnight_crossing()
-                
-                if use_cf_runloop:
-                    # 保持 RunLoop 唤醒
-                    CFRunLoopRunInMode(kCFRunLoopDefaultMode, Config.CHRONOS_LOOP_INTERVAL, False)
-                else:
-                    time.sleep(Config.CHRONOS_LOOP_INTERVAL)
-                
-        except KeyboardInterrupt:
-            Logger.info("\n⏹️ 收到中断信号...")
-        finally:
-            if self._observer:
-                Logger.info("🛑 [Watchdog] 停止监听 Vault...")
-                self._observer.stop()
-                self._observer.join(timeout=3)
-            
-            if self._ek_client:
-                Logger.info("🛑 [Watchdog] 停止监听 Calendar...")
-                self._ek_client.stop_watching()
-            
-            self.sm.save()
-            Logger.info("✅ 状态已保存，Chronos 引擎已停止")
-
-    # Apply Patch
-    dailynotes.manager.FusionManager.run = patched_run
+    dailynotes.manager.FusionManager.run = gui_run
 
     app = LyubishchevApp()
     # Inject app reference to manager so it can check should_run

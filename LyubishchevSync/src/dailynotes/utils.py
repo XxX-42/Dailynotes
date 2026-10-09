@@ -6,6 +6,7 @@ import tempfile
 import inspect
 import hashlib
 import json
+import threading
 from typing import List, Union
 from config import Config
 
@@ -86,6 +87,7 @@ class Logger:
 
 
 class FileUtils:
+    _write_lock = threading.RLock()
     # [REFACTORED] Content-hash based self-awareness
     # Replaces fragile mtime comparison with deterministic content identity
     # Replaces fragile mtime comparison with deterministic content identity
@@ -223,7 +225,23 @@ class FileUtils:
             return None
 
     @staticmethod
-    def write_file(filepath, lines_or_content, strategy: str = "atomic"):
+    def write_file(filepath, lines_or_content, strategy: str = "atomic", expected_content=None):
+        # Serialize our own writers. This lock does not lock external editors.
+        with FileUtils._write_lock:
+            try:
+                lock_dir = os.path.join(tempfile.gettempdir(), 'lyubishchev-file-writes-' + str(os.getuid()))
+                os.makedirs(lock_dir, mode=0o700, exist_ok=True)
+                key = hashlib.sha256(os.path.realpath(filepath).encode('utf-8')).hexdigest()
+                with open(os.path.join(lock_dir, key + '.lock'), 'a') as lock:
+                    if fcntl is not None:
+                        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+                    return FileUtils._write_file_locked(filepath, lines_or_content, strategy, expected_content)
+            except OSError as error:
+                Logger.error_once(f'write_lock_{filepath}', f'无法获得写入锁 {filepath}: {error}')
+                return False
+
+    @staticmethod
+    def _write_file_locked(filepath, lines_or_content, strategy="atomic", expected_content=None):
         # strategy:
         # - atomic: tempfile + os.replace，适合后台批处理
         # - inplace: 就地覆盖同一 inode，尽量减少编辑器焦点/光标抖动
@@ -253,6 +271,8 @@ class FileUtils:
         try:
             if strategy == "inplace" and os.path.exists(filepath):
                 with open(filepath, 'r+b') as f:
+                    if expected_content is not None and f.read() != expected_content.encode('utf-8'):
+                        raise OSError('文件已被并发修改，取消就地写入')
                     f.seek(0)
                     f.write(final_bytes)
                     f.truncate()
@@ -271,6 +291,10 @@ class FileUtils:
                 os.fsync(tf.fileno())
             
             # 原子交换
+            if expected_content is not None:
+                with open(filepath, 'rb') as original:
+                    if original.read() != expected_content.encode('utf-8'):
+                        raise OSError('文件已被并发修改，取消写入')
             os.replace(temp_name, filepath)
             FileUtils._append_modification_audit(filepath, strategy, final_content)
             return True

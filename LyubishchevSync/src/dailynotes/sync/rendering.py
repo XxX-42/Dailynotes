@@ -69,164 +69,125 @@ def _calculate_sort_key(block_data):
     return (has_time, time_val, block_id)
 
 def inject_into_task_section(file_lines, block_lines, filename_stem=None):
-    """
-    [v14.5 Indent-Aware Injection]
-    修复 inject 逻辑误将缩进的子任务 (- [ ]) 识别为新 Block 导致的截断问题。
-    现在只有【顶层任务】(缩进 < 2 空格) 才会触发分块。
-    """
-    # --- 1. 定位锚点 ---
-    start_idx = -1
-    end_idx = -1
-    for i, line in enumerate(file_lines):
-        if line.strip() == '# Tasks': start_idx = i; break
+    """Preserve manual content, upsert managed blocks, and relocate Tasks to EOF."""
+    from .task_section import find_task_section, visible_lines, task_id, UnsafeTaskSection
 
-    if start_idx != -1:
-        for i in range(start_idx + 1, len(file_lines)):
-            curr_line = file_lines[i].strip()
-            if curr_line == '----------': end_idx = i; break
-        if end_idx <= start_idx: end_idx = -1
+    lines = ''.join(file_lines).splitlines(keepends=True)
+    section = find_task_section(lines)
+    if section is None and not block_lines:
+        return file_lines
+    body = lines[section.start + 1:section.end] if section else []
+    outside = lines[:section.before] + lines[section.after:] if section else lines
+    incoming = ''.join(block_lines).splitlines(keepends=True)
+    date_header = re.compile(r'^##+\s*\[\[(\d{4}-\d{2}-\d{2})\]\]')
+    date_link = re.compile(r'\[\[(\d{4}-\d{2}-\d{2})(?:#|\||\]\])')
 
-    # --- 2. 自愈结构 ---
-    need_scaffold = False
-    if start_idx == -1:
-        need_scaffold = True
-        file_lines = [l for l in file_lines if l.strip() not in ('# Tasks', '----------')]
-    elif end_idx == -1:
-        file_lines.append("\n----------\n")
-        end_idx = len(file_lines) - 1
-    elif end_idx < start_idx:
-        need_scaffold = True
-        file_lines = [l for l in file_lines if l.strip() not in ('# Tasks', '----------')]
-
-    if need_scaffold:
-        insert_pos = 0
-        if file_lines and file_lines[0].strip() == '---':
-            for i in range(1, len(file_lines)):
-                if file_lines[i].strip() == '---': insert_pos = i + 1; break
-        scaffold = ["\n", "# Tasks\n", "\n", "----------\n"]
-        file_lines[insert_pos:insert_pos] = scaffold
-        start_idx = insert_pos + 1
-        end_idx = insert_pos + 3
-
-    # --- 3. 提取现有内容 ---
-    existing_content = file_lines[start_idx + 1: end_idx]
-    existing_structure_map = {}
-    current_header_date = None
-    header_pattern = re.compile(r'^#+\s*\[\[\s*(\d{4}-\d{2}-\d{2})\s*\]\]')
-    id_pattern = re.compile(r'(?:\^([a-zA-Z0-9]{6,})|<span id="([a-zA-Z0-9]{6,})"(?: data-timestamps="[^"]*")?></span>)')
-    daily_backlink_pattern = re.compile(r'\[\[\d{4}-\d{2}-\d{2}\#\^[a-zA-Z0-9]{6,}\|')
-
-    for line in existing_content:
-        stripped = line.strip()
-        h_m = header_pattern.match(stripped)
-        if h_m: current_header_date = h_m.group(1); continue
-        if stripped.startswith('- ['):
-            bid_m = id_pattern.search(stripped)
-            if bid_m and current_header_date:
-                existing_structure_map[bid_m.group(1)] = current_header_date
-
-    # --- 4. 合并与分组 ---
-    candidates = existing_content + block_lines
-    blocks = []
-    current_block = []
-    date_pattern = re.compile(r'\[\[(\d{4}-\d{2}-\d{2})(?:#|\||\]\])')
-
-    def flush_block(blk_lines):
-        if not blk_lines: return
-        head = blk_lines[0]
-        bid_m = id_pattern.search(head)
-        if bid_m:
-            bid = bid_m.group(1) or bid_m.group(2)  # group(1) for ^xxx, group(2) for span
-            final_date = "0000-00-00"
-            if bid in existing_structure_map:
-                final_date = existing_structure_map[bid]
-            else:
-                date_m = date_pattern.search(head)
-                if date_m: final_date = date_m.group(1)
-            blocks.append({'id': bid, 'date': final_date, 'lines': blk_lines})
-
-    for line in candidates:
-        s_line = line.strip()
-        if not s_line: continue
-        if s_line == '-----': continue
-        if s_line == '----------': continue
-
-        # 处理标题行：强制分块
-        if s_line.startswith('#'):
-            flush_block(current_block);
-            current_block = [];
-            continue
-
-        # 处理任务行：增加缩进检测
-        if s_line.startswith('- ['):
-            # [关键修复] 计算原始缩进深度
-            # 不使用 .strip() 后的 s_line，而是使用原始 line
-            # 只有缩进非常浅 (小于2个空格或半个Tab) 的才视为新 Block
-            # 这样可以保护缩进的子任务 (		- [ ]) 不被拆分
-
-            # 简单计算前导空白长度 (Tab算1个字符，但在startswith逻辑下足够区分顶层)
-            raw_indent_len = len(line) - len(line.lstrip())
-            visual_indent = get_indent_depth(line)
-
-            # 如果是顶层任务 (Indent 0 or 1 space/tab usually 0)
-            # 使用更宽松的阈值：比如 < 2。
-            # 注意：如果您的顶层任务也有缩进，这里需要调整。通常顶层任务是贴边的。
-            is_toplevel = (visual_indent < 2)
-            looks_like_misnested_synced_task = (
-                visual_indent >= 2
-                and bool(id_pattern.search(line))
-                and bool(daily_backlink_pattern.search(line))
-            )
-
-            if is_toplevel or looks_like_misnested_synced_task:
-                flush_block(current_block)
-                current_block = [line.lstrip(' \t') if looks_like_misnested_synced_task else line]
-            else:
-                # 是子任务，加入当前块
-                if current_block:
-                    current_block.append(line)
-                # 如果没有 current_block (即孤儿缩进任务)，暂且作为新块（虽然不合规范）
+    def blocks(content, incoming=False):
+        visible = visible_lines(content)
+        result = []
+        date = None
+        for index, line in enumerate(content):
+            if index not in visible:
+                continue
+            header = date_header.match(line)
+            if header:
+                date = header[1]
+            if not re.match(r'^[ \t]*- \[[ xX]\]', line):
+                continue
+            bid = task_id(line)
+            if not bid:
+                continue
+            if get_indent_depth(line) >= 2 and not date_link.search(line):
+                continue
+            end = index + 1
+            # Only owned child lines belong to a replaceable block. Standalone
+            # prose/blank lines remain at their original position.
+            probe = end
+            while probe < len(content):
+                child = content[probe]
+                if not child.strip():
+                    probe += 1
+                    continue
+                if child.strip() and (child.startswith((' ', '\t', '>')) or child.lstrip().startswith('![[')):
+                    if task_id(child) and date_link.search(child) and re.match(r'^[ \t]*- \[[ xX]\]', child):
+                        break
+                    end = probe + 1
+                    probe += 1
                 else:
-                    current_block = [line]
+                    break
+            link = date_link.search(line)
+            result.append((index, end, bid, link[1] if link else date))
+        if incoming:
+            # Incoming data is already a complete task block. A blank line is
+            # not its end: keep subsequent child notes, images and fenced code.
+            result = [(start, result[i + 1][0] if i + 1 < len(result) else len(content), bid, date)
+                      for i, (start, end, bid, date) in enumerate(result)]
+        return result
+
+    existing = blocks(body)
+    ids = [item[2] for item in existing]
+    if len(ids) != len(set(ids)):
+        raise UnsafeTaskSection('任务区含重复主键，禁止自动覆盖')
+    incoming_blocks = blocks(incoming, incoming=True)
+    if incoming and not incoming_blocks:
+        raise UnsafeTaskSection('待插入内容没有可识别的任务主键，取消写入')
+    incoming_ids = [item[2] for item in incoming_blocks]
+    if len(incoming_ids) != len(set(incoming_ids)):
+        raise UnsafeTaskSection('待插入任务含重复主键')
+    additions = []
+    changes = {}
+    old_map = {item[2]: item for item in existing}
+    for start, end, bid, date in incoming_blocks:
+        chunk = incoming[start:end]
+        old = old_map.get(bid)
+        if old and (not date or date == old[3]):
+            changes[old[0]] = (old[1], chunk)
         else:
-            # 纯文本或其他内容，归属当前块
-            if current_block: current_block.append(line)
+            if old:
+                changes[old[0]] = (old[1], [])
+            additions.append((date, chunk))
+    merged = []
+    index = 0
+    while index < len(body):
+        if index in changes:
+            end, chunk = changes[index]
+            merged.extend(chunk)
+            index = end
+        else:
+            merged.append(body[index])
+            index += 1
+    for date, chunk in additions:
+        header_index = next((i for i, line in enumerate(merged)
+                             if date_header.match(line) and date_header.match(line)[1] == date), None)
+        if header_index is not None:
+            insert_at = next((i for i in range(header_index + 1, len(merged))
+                              if re.match(r'^#', merged[i])), len(merged))
+            merged[insert_at:insert_at] = chunk
+        else:
+            if merged and not merged[-1].endswith('\n'):
+                merged[-1] += '\n'
+            if merged and merged[-1].strip():
+                merged.append('\n')
+            if date:
+                merged.extend([f'## [[{date}]]\n', '\n'])
+            merged.extend(chunk)
 
-    flush_block(current_block)
-
-    # --- 5. 分组与排序 ---
-    unique_map = {}
-    for b in blocks: unique_map[b['id']] = b
-    date_groups = {}
-    for b in unique_map.values():
-        d = b['date']
-        if d not in date_groups: date_groups[d] = []
-        date_groups[d].append(b)
-
-    # [SORTING] 执行绝对排序
-    for date_key, group_blocks in date_groups.items():
-        group_blocks.sort(key=_calculate_sort_key)
-
-    # --- 6. 构建输出 ---
-    output_lines = []
-    sorted_dates = sorted(date_groups.keys(), reverse=True)
-    for d in sorted_dates:
-        group_blocks = date_groups[d]
-        if d and d != "0000-00-00":
-            if output_lines: output_lines.append("\n")
-            output_lines.append(f"## [[{d}]]\n")
-            output_lines.append("\n")
-        elif output_lines:
-            output_lines.append("\n")
-        for b in group_blocks:
-            output_lines.extend(b['lines'])
-            if output_lines and not output_lines[-1].endswith('\n'):
-                output_lines[-1] += '\n'
-
-    section_body = ["\n"] + output_lines + ["\n"]
-
-    # --- [FIX] 移除内部判断，总是应用变更到 list ---
-    file_lines[start_idx + 1: end_idx] = section_body
+    # Do not trim or reformat manual section content on migration.
+    while outside and not outside[-1].strip():
+        outside.pop()
+    prefix = ''.join(outside)
+    if prefix:
+        # One newline terminates the body line; the next ten are blank lines.
+        prefix = prefix.rstrip('\r\n') + '\n' * 11
+    content = ''.join(merged)
+    if not content.startswith('\n'):
+        content = '\n' + content
+    if not content.endswith('\n'):
+        content += '\n'
+    if content.rstrip('\r\n'):
+        content = content.rstrip('\r\n') + '\n\n'
+    result = prefix + '----------\n# Tasks\n' + content
+    file_lines[:] = result.splitlines(keepends=True)
     return file_lines
 
 def aggressive_daily_clean(lines: list) -> list:

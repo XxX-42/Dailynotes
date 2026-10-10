@@ -13,8 +13,8 @@ from pathlib import Path
 from unittest import mock
 
 
-ROOT = Path(__file__).resolve().parents[2]
-PROJECT = ROOT / "Dailynotes" / "LyubishchevSync"
+ROOT = Path(__file__).resolve().parents[1]
+PROJECT = ROOT / "LyubishchevSync"
 SRC = PROJECT / "src"
 for path in (str(SRC), str(PROJECT)):
     if path not in sys.path:

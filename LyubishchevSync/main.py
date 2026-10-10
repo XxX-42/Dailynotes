@@ -4,10 +4,13 @@ import os
 import sys
 import subprocess
 import atexit
+import threading
 
 # Add src to sys.path to allow importing dailynotes package
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
 from dailynotes.manager import FusionManager
+from dailynotes.health_sync import HealthSyncService
+from dailynotes.sync_pause import sync_pause
 from config import Config
 from dailynotes.utils import ProcessLock, Logger
 
@@ -57,6 +60,10 @@ def stop_caffeinate():
 
 # [v4.0] NoteMonitor 全局实例（方便退出时清理）
 _note_monitor_proc = None
+_health_sync_service = None
+_service_lock = threading.RLock()
+_shutdown_requested = threading.Event()
+_active_manager = None
 
 
 def _note_monitor_script_paths():
@@ -111,6 +118,70 @@ def _stop_note_monitor():
             _note_monitor_proc.kill()
         _note_monitor_proc = None
 
+
+def _start_health_sync():
+    """Start the Health watcher in this process after the main lock is held."""
+    global _health_sync_service
+    with _service_lock:
+        if _health_sync_service is not None:
+            return _health_sync_service
+        _health_sync_service = HealthSyncService()
+        service = _health_sync_service
+    # Health startup failures are isolated and reported in the menu; the task,
+    # Notes, and Calendar services continue to run.
+    service.start()
+    return service
+
+
+def _stop_health_sync():
+    service = _health_sync_service
+    if service is not None:
+        service.stop()
+
+
+def get_health_status_snapshot():
+    service = _health_sync_service
+    if service is None:
+        return {
+            "status": "starting",
+            "phase": "starting",
+            "queued_count": 0,
+            "current_file": None,
+            "last_successful_time": None,
+            "last_affected_date": None,
+            "last_csv": None,
+            "error_detail": None,
+        }
+    return service.snapshot()
+
+
+def request_shutdown():
+    """Request a graceful stop without blocking a GUI callback or signal handler."""
+    global _active_manager
+    _shutdown_requested.set()
+    sync_pause.cancel_waiters()
+    service = _health_sync_service
+    if service is not None:
+        service.request_stop()
+    manager = _active_manager
+    if manager is not None:
+        manager.request_stop()
+    app = getattr(FusionManager, "app_ref", None)
+    if app is not None:
+        app.should_run = False
+
+
+def stop_services():
+    """Stop child and embedded watchers, and release their locks."""
+    request_shutdown()
+    _stop_note_monitor()
+    _stop_health_sync()
+
+
+def _handle_sigterm(signum, frame):
+    request_shutdown()
+    raise SystemExit("Received SIGTERM")
+
 def run_with_self_healing():
     """
     [v2.0.1] 带错误自愈的主循环
@@ -120,52 +191,62 @@ def run_with_self_healing():
     restart_count = 0
     restart_cooldown = 30  # 重启冷却时间（秒）
     
-    # [v4.0] 在主循环之前启动备忘录监听
-    _start_note_monitor()
-    
-    while restart_count < max_restarts:
-        try:
-            app = FusionManager()
-            Logger.info(f"=== Lyubishchev Sync {Config.VERSION} (Exponential Dynamic Scheduling) ===")
-            Logger.info(f"路径: {Config.ROOT_DIR}")
-            Logger.info(f"模式: Watchdog (Vault & Calendar) + 指数动态调度")
-            Logger.info(f"调度公式: I(d) = {Config.EXP_BASE} * exp({Config.EXP_COEFF} * d) + {Config.EXP_OFFSET}")
-            
-            # [P2 FIX] Validate template file at startup
-            if os.path.exists(Config.TEMPLATE_FILE):
-                Logger.info(f"模板: ✅ {Config.REL_TEMPLATE_FILE}")
-            else:
-                Logger.info(f"⚠️ 模板文件不存在: {Config.REL_TEMPLATE_FILE} (将使用基础骨架)")
-            
-            # [v9.0] 备忘录监听状态（子进程模式）
-            if _note_monitor_proc and _note_monitor_proc.poll() is None:
-                Logger.info(f"📝 备忘录: ✅ Apple Notes -> Obsidian (PID: {_note_monitor_proc.pid})")
-            else:
-                Logger.info(f"📝 备忘录: ⚠️ 未启用")
-            
-            if restart_count > 0:
-                Logger.info(f"🔄 [Self-Healing] 自动重启成功 (第 {restart_count} 次)")
-            
-            Logger.info("=" * 50)
-            
-            app.run()
-            break  # 正常退出
-            
-        except KeyboardInterrupt:
-            Logger.info("\n停止服务...")
-            break
-        except SystemExit:
-            Logger.info("收到退出信号...")
-            break
-        except Exception as e:
-            restart_count += 1
-            Logger.error_once(f"main_crash_{restart_count}", f"❌ [Self-Healing] 主循环异常: {e}")
-            
-            if restart_count < max_restarts:
-                Logger.info(f"⏳ [Self-Healing] {restart_cooldown}秒后尝试重启 ({restart_count}/{max_restarts})...")
-                time.sleep(restart_cooldown)
-            else:
-                Logger.error_once("max_restarts", f"❌ [Self-Healing] 达到最大重启次数 ({max_restarts})，退出")
+    global _active_manager
+    try:
+        if not _shutdown_requested.is_set():
+            # The main process owns all watchers. Start Health after ProcessLock
+            # acquisition and before FusionManager's self-healing loop.
+            _start_health_sync()
+            _start_note_monitor()
+
+        while restart_count < max_restarts and not _shutdown_requested.is_set():
+            try:
+                app = FusionManager()
+                _active_manager = app
+                Logger.info(f"=== Lyubishchev Sync {Config.VERSION} (Exponential Dynamic Scheduling) ===")
+                Logger.info(f"路径: {Config.ROOT_DIR}")
+                Logger.info(f"模式: Watchdog (Vault & Calendar) + 指数动态调度")
+                Logger.info(f"调度公式: I(d) = {Config.EXP_BASE} * exp({Config.EXP_COEFF} * d) + {Config.EXP_OFFSET}")
+
+                if os.path.exists(Config.TEMPLATE_FILE):
+                    Logger.info(f"模板: ✅ {Config.REL_TEMPLATE_FILE}")
+                else:
+                    Logger.info(f"⚠️ 模板文件不存在: {Config.REL_TEMPLATE_FILE} (将使用基础骨架)")
+
+                if _note_monitor_proc and _note_monitor_proc.poll() is None:
+                    Logger.info(f"📝 备忘录: ✅ Apple Notes -> Obsidian (PID: {_note_monitor_proc.pid})")
+                else:
+                    Logger.info(f"📝 备忘录: ⚠️ 未启用")
+
+                if restart_count > 0:
+                    Logger.info(f"🔄 [Self-Healing] 自动重启成功 (第 {restart_count} 次)")
+
+                Logger.info("=" * 50)
+                app.run(register_signals=False)
+                break
+
+            except KeyboardInterrupt:
+                Logger.info("\n停止服务...")
+                request_shutdown()
+                break
+            except SystemExit:
+                Logger.info("收到退出信号...")
+                request_shutdown()
+                break
+            except Exception as e:
+                restart_count += 1
+                Logger.error_once(f"main_crash_{restart_count}", f"❌ [Self-Healing] 主循环异常: {e}")
+
+                if _shutdown_requested.is_set():
+                    break
+                if restart_count < max_restarts:
+                    Logger.info(f"⏳ [Self-Healing] {restart_cooldown}秒后尝试重启 ({restart_count}/{max_restarts})...")
+                    _shutdown_requested.wait(restart_cooldown)
+                else:
+                    Logger.error_once("max_restarts", f"❌ [Self-Healing] 达到最大重启次数 ({max_restarts})，退出")
+    finally:
+        _active_manager = None
+        stop_services()
 
 if __name__ == "__main__":
     # [v2.0.1] 注册退出时清理 caffeinate
@@ -217,8 +298,9 @@ if __name__ == "__main__":
             Logger.info("✅ 成功接管锁，服务已启动。")
 
     try:
+        signal.signal(signal.SIGTERM, _handle_sigterm)
         run_with_self_healing()
     finally:
-        _stop_note_monitor()
+        stop_services()
         stop_caffeinate()
         ProcessLock.release()

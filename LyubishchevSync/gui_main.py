@@ -32,16 +32,32 @@ class LyubishchevApp(rumps.App):
         super(LyubishchevApp, self).__init__("柳比歇夫", title="⏳启动")
         self.status_item = rumps.MenuItem("Status: Initializing...", callback=None)
         self.pause_item = rumps.MenuItem("暂停 sync", callback=self.toggle_sync_pause)
+        self.health_status_item = rumps.MenuItem("健康同步：启动中", callback=None)
+        self.health_queue_item = rumps.MenuItem("健康 CSV 队列：0", callback=None)
+        self.health_current_item = rumps.MenuItem("当前健康 CSV：无", callback=None)
+        self.health_last_success_item = rumps.MenuItem("健康上次成功：无", callback=None)
+        self.health_last_csv_item = rumps.MenuItem("健康上次 CSV：无", callback=None)
+        self.health_error_item = rumps.MenuItem("健康错误：无", callback=None)
         self.menu = [
             self.status_item,
             None,
             self.pause_item,
+            self.health_status_item,
+            self.health_queue_item,
+            self.health_current_item,
+            self.health_last_success_item,
+            self.health_last_csv_item,
+            self.health_error_item,
+            None,
             rumps.MenuItem("Open Log File", callback=self.open_log),
             rumps.MenuItem("Restart Sync", callback=self.restart_sync),
-            None, # Separator before Quit
+            rumps.MenuItem("Quit", callback=self.quit_app),
         ]
         self.sync_thread = None
         self.should_run = True
+        self._health_timer = None
+        self._exit_timer = None
+        self._exit_action = None
         self._pause_directory = tempfile.TemporaryDirectory(prefix="lyubishchev-pause-")
         self._pause_path = os.path.join(self._pause_directory.name, "paused")
         os.environ['LYUBISHCHEV_SYNC_PAUSE_FILE'] = self._pause_path
@@ -80,6 +96,14 @@ class LyubishchevApp(rumps.App):
             "starting": "Status: Initializing...",
             "paused": "Status: Paused（当前操作完成后暂停）",
         }
+
+    @staticmethod
+    def _notify_safely(title, subtitle, message):
+        """Best-effort notification; UI notification errors must not block sync actions."""
+        try:
+            rumps.notification(title, subtitle, message)
+        except Exception as error:
+            Logger.info("⚠️ [GUI] macOS 通知不可用: {}".format(error))
 
     def _format_status_titles(self, state, detail=None):
         base_title = self._status_titles.get(state, self._status_titles["idle"])
@@ -210,7 +234,7 @@ class LyubishchevApp(rumps.App):
                 dum_title = "❌出错"
                 try:
                     self.title = dum_title
-                    rumps.notification("Sync Error", "Lock Failed", "Could not start sync engine.")
+                    self._notify_safely("Sync Error", "Lock Failed", "Could not start sync engine.")
                 except: pass
                 return
 
@@ -231,6 +255,7 @@ class LyubishchevApp(rumps.App):
             except: pass
         finally:
             # Cleanup
+            main.stop_services()
             ProcessLock.release()
             main.stop_caffeinate()
             try:
@@ -238,19 +263,95 @@ class LyubishchevApp(rumps.App):
                 self.status_item.title = "Status: Stopped"
             except: pass
 
+    def refresh_health_status(self, _=None):
+        """Refresh Health rows from the service snapshot on rumps' main thread."""
+        snapshot = main.get_health_status_snapshot()
+        status_labels = {
+            "starting": "启动中",
+            "waiting-file": "等待 CSV 稳定",
+            "processing": "处理中",
+            "idle": "正常",
+            "paused": "已暂停",
+            "error": "出错",
+            "stopped": "已停止",
+        }
+        state = snapshot.get("status", "starting")
+        self.health_status_item.title = "健康同步：{}".format(status_labels.get(state, state))
+        self.health_queue_item.title = "健康 CSV 队列：{}".format(snapshot.get("queued_count", 0))
+        self.health_current_item.title = "当前健康 CSV：{}".format(snapshot.get("current_file") or "无")
+        self.health_last_success_item.title = "健康上次成功：{} / 影响日期 {}".format(
+            snapshot.get("last_successful_time") or "无",
+            snapshot.get("last_affected_date") or "无",
+        )
+        self.health_last_csv_item.title = "健康上次 CSV：{}".format(snapshot.get("last_csv") or "无")
+        self.health_error_item.title = "健康错误：{}".format(snapshot.get("error_detail") or "无")
+
+        # The compact status bar is shared with the task/calendar engine. Health
+        # adds a hint only while that engine is idle; the detailed menu rows
+        # remain available without replacing a higher-priority main state.
+        with self._status_lock:
+            main_state = self._status_state
+            main_detail = self._status_detail
+        if main_state == "idle" and not sync_pause.paused:
+            if state in ("waiting-file", "processing"):
+                self.title = "🩺柳比"
+            elif state == "error":
+                self.title = "⚠️柳比"
+            else:
+                self.title = self._format_status_titles("idle", main_detail)[0]
+
+    def _start_health_refresh(self):
+        if self._health_timer is None:
+            self._health_timer = rumps.Timer(self.refresh_health_status, 1.0)
+            self._health_timer.start()
+
+    def _stop_health_refresh(self):
+        if self._health_timer is not None:
+            self._health_timer.stop()
+            self._health_timer = None
+
+    def _begin_exit(self, action):
+        if self._exit_action is not None:
+            return
+        self._exit_action = action
+        self.should_run = False
+        main.request_shutdown()
+        self.health_status_item.title = "健康同步：正在停止"
+        if self.sync_thread is None or not self.sync_thread.is_alive():
+            self._finish_exit_when_stopped(None)
+            return
+        self._exit_timer = rumps.Timer(self._finish_exit_when_stopped, 0.25)
+        self._exit_timer.start()
+
+    def _finish_exit_when_stopped(self, _):
+        if self.sync_thread is not None and self.sync_thread.is_alive():
+            return
+        if self._exit_timer is not None:
+            self._exit_timer.stop()
+            self._exit_timer = None
+        self._stop_health_refresh()
+        if self._exit_action == "restart":
+            self._launch_restart()
+        rumps.quit_application()
+
+    def quit_app(self, _):
+        self._begin_exit("quit")
+
     @rumps.clicked("Open Log File")
     def open_log(self, _):
         log_file = "/tmp/LyubishchevSync_startup.log"
         if os.path.exists(log_file):
             subprocess.run(["open", log_file])
         else:
-            rumps.notification("Lyubishchev Sync", "Log Missing", "Log file not found at " + log_file)
+            self._notify_safely("Lyubishchev Sync", "Log Missing", "Log file not found at " + log_file)
 
     @rumps.clicked("Restart Sync")
     def restart_sync(self, _):
-        # 弹窗提示正在重启
-        rumps.notification("柳比歇夫", "Restarting...", "The synchronization engine is restarting.")
-        
+        self._notify_safely("柳比歇夫", "Restarting...", "The synchronization engine is restarting.")
+
+        self._begin_exit("restart")
+
+    def _launch_restart(self):
         # 组装完整的后台启动 shell 命令
         python_path = _python_executable()
         script_path = os.path.abspath(__file__)
@@ -260,14 +361,12 @@ class LyubishchevApp(rumps.App):
         
         # 使用 subprocess 启动全新分离的后台进程
         subprocess.Popen(cmd, shell=True)
-        
-        # 退出当前进程（完成替换接力）
-        rumps.quit_application()
 
     def start(self):
         # Start the sync logic thread
         self.sync_thread = threading.Thread(target=self.run_sync_logic, daemon=True)
         self.sync_thread.start()
+        self._start_health_refresh()
         
         # Start the Rumps App (Main Thread)
         self.run()
@@ -303,13 +402,17 @@ if __name__ == "__main__":
     # Use the same engine as the CLI; only signal registration differs in GUI mode.
     original_run = dailynotes.manager.FusionManager.run
 
-    def gui_run(self):
-        return original_run(self, register_signals=False)
+    def gui_run(self, register_signals=False):
+        return original_run(self, register_signals=register_signals)
 
     dailynotes.manager.FusionManager.run = gui_run
 
     app = LyubishchevApp()
     # Inject app reference to manager so it can check should_run
     dailynotes.manager.FusionManager.app_ref = app 
-    
+
+    def _gui_sigterm_handler(signum, frame):
+        app._begin_exit("quit")
+
+    signal.signal(signal.SIGTERM, _gui_sigterm_handler)
     app.start()

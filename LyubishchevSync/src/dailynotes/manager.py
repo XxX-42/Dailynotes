@@ -425,6 +425,7 @@ class FusionManager:
                  self._reminder_client = None
         
         self._running = False
+        self._shutdown_event = threading.Event()
         self._registry_warmup_done = False
         
         # [v3.0] Chronos Mode
@@ -437,6 +438,12 @@ class FusionManager:
         self._last_calendar_sync_time = 0  # [P2 FIX] Debounce timer
         self._sync_execution_lock = threading.RLock()
         self._calendar_index_store = CalendarEventIndexStore(Config.CALENDAR_EVENT_INDEX_FILE)
+
+    def request_stop(self):
+        """Ask the event loop to exit after active sync work finishes."""
+        self._shutdown_event.set()
+        self._running = False
+
 
     def _set_gui_status(self, state: str, detail: str = None):
         app = getattr(self.__class__, 'app_ref', None)
@@ -920,11 +927,14 @@ class FusionManager:
         # [v3.0] 启动时全量同步
         if not self._startup_sync_done:
             Logger.info("🌅 [Chronos] 执行启动全量同步...")
-            with sync_pause.operation():
-                self.sync_core.initialize_registry()
-                self._registry_warmup_done = True
-                self.sync_full_range()
-                self._startup_sync_done = True
+            with sync_pause.operation(cancel_event=self._shutdown_event) as proceed:
+                if proceed:
+                    self.sync_core.initialize_registry()
+                    self._registry_warmup_done = True
+                    self.sync_full_range()
+                    self._startup_sync_done = True
+                else:
+                    self._running = False
 
         # [v3.8] 启动 Reminder 监听
         if self._reminder_client:
@@ -953,9 +963,15 @@ class FusionManager:
                 
                 if use_cf_runloop:
                     # 保持 RunLoop 唤醒，returnAfterSourceHandled=True
-                    CFRunLoopRunInMode(kCFRunLoopDefaultMode, Config.CHRONOS_LOOP_INTERVAL, True)
+                    interval = Config.CHRONOS_LOOP_INTERVAL
+                    if getattr(self, 'app_ref', None) is not None:
+                        interval = min(interval, 1.0)
+                    CFRunLoopRunInMode(kCFRunLoopDefaultMode, interval, True)
                 else:
-                    time.sleep(Config.CHRONOS_LOOP_INTERVAL)
+                    interval = Config.CHRONOS_LOOP_INTERVAL
+                    if getattr(self, 'app_ref', None) is not None:
+                        interval = min(interval, 1.0)
+                    time.sleep(interval)
 
                 
         except KeyboardInterrupt:

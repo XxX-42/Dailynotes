@@ -36,6 +36,10 @@ LyubishchevSync 是一个面向 macOS 的 Obsidian 日程与任务同步工具�
 ```text
 main.py / gui_main.py
         │
+        ├── HealthSyncService (同一主进程)
+        │       ├── SyncFitHealth CSV watcher + single worker
+        │       └── shared pause gate + Health state lock
+        │
         ▼
 FusionManager
         ├── Watchdog 文件事件
@@ -48,9 +52,12 @@ FusionManager
         │       └── CalendarEventIndex
         └── AppleSyncAdapter
                 └── EventKit 双向同步引擎
-
-Apple Notes 由独立 NoteMonitor 子进程处理。
 ```
+
+Apple Notes 由独立 NoteMonitor 子进程处理。SyncFit Health 由 main.py 在获得
+`.fusion_sync_lock` 后启动，和任务、Calendar 同属一个主进程；不要单独启动长期运行的
+`SyncFitHealth/syncfit_health.py`。菜单栏会显示健康 CSV 队列、当前文件、上次成功时间、影响日期和错误详情。
+每次成功同步后，主进程在该导出日的直接 CSV 版本均已成功导入时，仅保留当天最新的直接 CSV 并删除当天旧版本；其他日期的导出仍保留，失败、变化中或尚未导入的文件只阻止当天清理。带 `SyncFit_...` 审计文件名的导出日取文件名中的结束日期，其他名称按文件修改时间的本地日期分组。单次诊断命令不删除输入。
 
 核心目录：
 
@@ -68,6 +75,7 @@ LyubishchevSync/
     │   └── sync/
     └── external/
         ├── eventkit_wrapper.py
+        ├── syncfit_health.py
         ├── note_sync_core/
         └── task_sync_core/
 ```
@@ -160,6 +168,8 @@ source .venv_runtime/bin/activate
 python -u LyubishchevSync/gui_main.py
 ```
 
+健康同步会随菜单栏服务自动启动，并遵循“暂停 sync”。退出或重启会先停止健康监听器、完成正在写入的 CSV，释放状态锁后再退出或启动新进程。
+
 终端模式：
 
 ```bash
@@ -225,6 +235,7 @@ export PYTHONPATH="LyubishchevSync/src:LyubishchevSync"
 - EventKit 查询不完整时禁止推进索引。
 - Calendar 通知防抖。
 - Daily Note 原子创建与不覆盖保证。
+- SyncFit Health 与主进程的启动、暂停、状态菜单刷新和有序停止。
 
 ## 安全建议
 
